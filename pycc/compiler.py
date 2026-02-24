@@ -81,7 +81,7 @@ class Compiler:
         
         # Phase 3: Semantic Analysis
         try:
-            self.analyze_semantics(ast)
+            sema_ctx = self.analyze_semantics(ast)
         except Exception as e:
             return CompilationResult(success=False, errors=[f"Semantic analysis failed: {e}"])
         
@@ -100,7 +100,7 @@ class Compiler:
         
         # Phase 6: Code Generation
         try:
-            assembly = self.get_assembly(ir)
+            assembly = self.get_assembly(ir, sema_ctx=sema_ctx)
         except Exception as e:
             return CompilationResult(success=False, errors=[f"Code generation failed: {e}"])
         
@@ -167,7 +167,7 @@ class Compiler:
     def analyze_semantics(self, ast):
         """Perform semantic analysis"""
         analyzer = SemanticAnalyzer()
-        analyzer.analyze(ast)
+        return analyzer.analyze(ast)
     
     def get_ir(self, ast):
         """Generate IR from AST"""
@@ -179,9 +179,9 @@ class Compiler:
         optimizer = Optimizer()
         return optimizer.optimize(ir)
     
-    def get_assembly(self, ir):
+    def get_assembly(self, ir, sema_ctx=None):
         """Generate assembly from IR"""
-        generator = CodeGenerator(self.optimize)
+        generator = CodeGenerator(self.optimize, sema_ctx=sema_ctx)
         return generator.generate(ir)
 
 

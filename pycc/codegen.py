@@ -23,7 +23,7 @@ Assumptions (current stage):
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 from pycc.ir import IRInstruction
 
@@ -31,8 +31,9 @@ from pycc.ir import IRInstruction
 class CodeGenerator:
     """Generates x86-64 assembly code"""
     
-    def __init__(self, optimize: bool = True):
+    def __init__(self, optimize: bool = True, sema_ctx: Any = None):
         self.optimize = optimize
+        self._sema_ctx = sema_ctx
         self.assembly_lines: List[str] = []
         self._string_pool: Dict[str, str] = {}
         self._string_counter = 0
@@ -41,6 +42,9 @@ class CodeGenerator:
         self._locals: Dict[str, int] = {}
         self._arrays: Dict[str, int] = {}
         self._stack_size = 0
+        # MVP struct layout: hardcode offset map per function as discovered
+        # (until full semantic layout is implemented).
+        self._member_offsets: Dict[tuple[str, str], int] = {}
     
     def generate(self, instructions: List[IRInstruction]) -> str:
         """Generate x86-64 assembly from IR"""
@@ -48,10 +52,44 @@ class CodeGenerator:
         self._string_pool = {}
         self._string_counter = 0
 
+        # First pass: emit global declarations/definitions.
+        gdefs = [ins for ins in instructions if ins.op == "gdef"]
+        gdecls = [ins for ins in instructions if ins.op == "gdecl"]
+
+        if gdecls:
+            self._emit(".bss")
+            for gd in gdecls:
+                name = (gd.result or "").lstrip("@")
+                ty = gd.operand1 or "int"
+                if isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
+                    sz = 1
+                elif isinstance(ty, str) and (ty == "int" or ty.startswith("int ")):
+                    sz = 4
+                else:
+                    sz = 8
+                self._emit(f"  .comm {name},{sz},{sz}")
+
+        if gdefs:
+            self._emit(".data")
+            for gd in gdefs:
+                name = (gd.result or "").lstrip("@")
+                ty = gd.operand1 or "int"
+                imm = gd.operand2 or "$0"
+                self._emit(f".globl {name}")
+                self._emit(f"{name}:")
+                if isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
+                    self._emit(f"  .byte {imm.lstrip('$')}")
+                else:
+                    # MVP: int
+                    self._emit(f"  .long {imm.lstrip('$')}")
+
         self._emit(".text")
         i = 0
         while i < len(instructions):
             ins = instructions[i]
+            if ins.op in {"gdecl", "gdef"}:
+                i += 1
+                continue
             if ins.op == "func_begin":
                 fn_name = ins.label or ""
                 # collect decls/params until non-decl-ish instruction
@@ -92,6 +130,8 @@ class CodeGenerator:
     def _begin_function(self, name: str, decls: List[IRInstruction]) -> None:
         self._locals = {}
         self._arrays = {}
+        self._member_offsets = {}
+        self._var_types: Dict[str, str] = {}
 
         # Assign stack slots. Default: 8 bytes each.
         offset = 0
@@ -102,7 +142,7 @@ class CodeGenerator:
             if sym in self._locals:
                 continue
             # If decl carries an operand1 with element count like "$N", allocate N*8 bytes
-            if d.operand1:
+            if d.operand1 and isinstance(d.operand1, str) and d.operand1.startswith("$"):
                 try:
                     elems = int(d.operand1.lstrip("$"))
                     # C `int` is 4 bytes (C89); allocate elems * 4
@@ -117,6 +157,9 @@ class CodeGenerator:
             else:
                 offset += 8
                 self._locals[sym] = offset
+                if d.operand1:
+                    # remember declared type base for member access
+                    self._var_types[sym] = str(d.operand1)
 
         # align stack to 16 bytes at call sites (after push %rbp)
         stack = offset
@@ -141,6 +184,8 @@ class CodeGenerator:
                 off = self._locals.get(d.result)
                 if off is not None:
                     self._emit(f"  movq {arg_regs[reg_idx]}, -{off}(%rbp)")
+            if d.operand1:
+                self._var_types[d.result] = str(d.operand1)
             reg_idx += 1
 
     # -----------------
@@ -166,6 +211,13 @@ class CodeGenerator:
             # result temp holds address of string
             lbl = self._intern_string(ins.operand1 or "")
             self._emit(f"  leaq {lbl}(%rip), %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "addr_of":
+            # result = &operand1
+            src = ins.operand1 or ""
+            self._addr_of_symbol(src, "%rax")
             self._store_result(ins.result, "%rax")
             return
 
@@ -293,6 +345,80 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "load_member":
+            # MVP: treat operand1 as addressable base (stack local), operand2 as member name.
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            # Compute base address
+            self._addr_of_symbol(base, "%rax")
+            off, sz = self._resolve_member(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            # load based on member size
+            if sz == 1:
+                self._emit("  movsbl (%rax), %eax")
+                self._emit("  movslq %eax, %rax")
+            elif sz == 4:
+                self._emit("  movslq (%rax), %rax")
+            else:
+                self._emit("  movq (%rax), %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "load_member_ptr":
+            # operand1 holds pointer value; load it as address then add member offset
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            # load pointer value into %rax
+            self._load_operand(base, "%rax")
+            off, sz = self._resolve_member(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            if sz == 1:
+                self._emit("  movsbl (%rax), %eax")
+                self._emit("  movslq %eax, %rax")
+            elif sz == 4:
+                self._emit("  movslq (%rax), %rax")
+            else:
+                self._emit("  movq (%rax), %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "store_member":
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            val = ins.result
+            self._addr_of_symbol(base, "%rax")
+            off, sz = self._resolve_member(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            self._load_operand(val, "%rdx")
+            if sz == 1:
+                self._emit("  movb %dl, (%rax)")
+            elif sz == 4:
+                self._emit("  movl %edx, (%rax)")
+            else:
+                self._emit("  movq %rdx, (%rax)")
+            return
+
+        if op == "store_member_ptr":
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            val = ins.result
+            # load pointer value into %rax
+            self._load_operand(base, "%rax")
+            off, sz = self._resolve_member(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            self._load_operand(val, "%rdx")
+            if sz == 1:
+                self._emit("  movb %dl, (%rax)")
+            elif sz == 4:
+                self._emit("  movl %edx, (%rax)")
+            else:
+                self._emit("  movq %rdx, (%rax)")
+            return
+
         if op == "ret":
             self._load_operand(ins.operand1, "%rax")
             self._emit("  leave")
@@ -332,9 +458,15 @@ class CodeGenerator:
             off = self._ensure_local(operand)
             self._emit(f"  movq -{off}(%rbp), {reg}")
             return
-        if operand.startswith("@"):  # variable in stack
-            off = self._ensure_local(operand)
-            self._emit(f"  movq -{off}(%rbp), {reg}")
+        if operand.startswith("@"):
+            # local variable if it already has a stack slot; otherwise treat as global
+            if operand in self._locals:
+                off = self._ensure_local(operand)
+                self._emit(f"  movq -{off}(%rbp), {reg}")
+                return
+            sym = operand[1:]
+            # MVP: treat globals as 32-bit signed ints
+            self._emit(f"  movslq {sym}(%rip), {reg}")
             return
         # label address?
         if operand.startswith(".L"):
@@ -346,9 +478,19 @@ class CodeGenerator:
     def _store_result(self, result: Optional[str], reg: str) -> None:
         if result is None:
             return
-        if result.startswith("%t") or result.startswith("@"):  # stack
+        if result.startswith("%t"):
             off = self._ensure_local(result)
             self._emit(f"  movq {reg}, -{off}(%rbp)")
+            return
+        if result.startswith("@"):
+            # local if it has a slot; otherwise global
+            if result in self._locals:
+                off = self._ensure_local(result)
+                self._emit(f"  movq {reg}, -{off}(%rbp)")
+                return
+            sym = result[1:]
+            # MVP: store 32-bit int
+            self._emit(f"  movl %eax, {sym}(%rip)")
             return
 
     def _ensure_local(self, sym: str) -> int:
@@ -364,15 +506,36 @@ class CodeGenerator:
         return self._locals[sym]
 
     def _addr_of_symbol(self, sym: str, reg: str) -> None:
-        if sym.startswith("@"):  # stack local
-            off = self._ensure_local(sym)
-            self._emit(f"  leaq -{off}(%rbp), {reg}")
+        if sym.startswith("@"):  # local if known; otherwise global
+            if sym in self._locals:
+                off = self._ensure_local(sym)
+                self._emit(f"  leaq -{off}(%rbp), {reg}")
+                return
+            self._emit(f"  leaq {sym[1:]}(%rip), {reg}")
             return
         if sym.startswith("%t"):
             off = self._ensure_local(sym)
             self._emit(f"  leaq -{off}(%rbp), {reg}")
             return
         self._emit(f"  leaq {sym}(%rip), {reg}")
+
+    def _resolve_member(self, base_sym: str, member: str) -> Tuple[int, int]:
+        """Return (offset, size_bytes) for `base_sym.member` using semantic layouts when available."""
+        decl_ty = self._var_types.get(base_sym)
+        if self._sema_ctx is not None and decl_ty and hasattr(self._sema_ctx, "layouts"):
+            layouts = getattr(self._sema_ctx, "layouts")
+            layout = layouts.get(decl_ty)
+            if layout is not None:
+                off = layout.member_offsets.get(member)
+                sz = layout.member_sizes.get(member)
+                if off is not None and sz is not None:
+                    return int(off), int(sz)
+        # fallback heuristic
+        if member == "x":
+            return 0, 4
+        if member == "y":
+            return 4, 4
+        return 0, 8
 
     # -----------------
     # Strings

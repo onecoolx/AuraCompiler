@@ -15,12 +15,15 @@ This is intentionally conservative; full C99 type system will be added later.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Union
+from typing import Dict, List, Optional, Set, Union, Tuple
 
 from pycc.ast_nodes import (
         Program,
         Declaration,
         FunctionDecl,
+    TypedefDecl,
+    StructDecl,
+    UnionDecl,
         CompoundStmt,
         Statement,
         ExpressionStmt,
@@ -42,7 +45,26 @@ from pycc.ast_nodes import (
         ArrayAccess,
         TernaryOp,
         Expression,
+        Type,
+        MemberAccess,
+        PointerMemberAccess,
 )
+
+
+@dataclass
+class StructLayout:
+    kind: str  # "struct" or "union"
+    name: str
+    size: int
+    align: int
+    member_offsets: Dict[str, int]
+    member_sizes: Dict[str, int]
+
+
+@dataclass
+class SemanticContext:
+    typedefs: Dict[str, Type]
+    layouts: Dict[str, StructLayout]  # key: "struct Tag" / "union Tag"
 
 
 class SemanticError(Exception):
@@ -56,23 +78,36 @@ class SemanticAnalyzer:
     def __init__(self):
         # A simple scope stack: list of dict(name -> kind)
         self._scopes: List[Dict[str, str]] = [{}]
+        # typedef scope stack: list of dict(name -> Type)
+        self._typedefs: List[Dict[str, Type]] = [{}]
         self.errors: List[str] = []
         self.warnings: List[str] = []
         # Track globally known functions (including implicit decls)
         self._functions: Set[str] = set()
+        self._layouts: Dict[str, StructLayout] = {}
     
-    def analyze(self, ast: Program) -> bool:
+    def analyze(self, ast: Program) -> SemanticContext:
         """Analyze AST for semantic errors"""
         self.errors = []
         self.warnings = []
         self._scopes = [{}]
         self._functions = set()
+        self._typedefs = [{}]
+        self._layouts = {}
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
                 self._declare_global(decl.name, "function")
                 self._functions.add(decl.name)
+            elif isinstance(decl, TypedefDecl):
+                # register typedef in global typedefs
+                self._declare_typedef_global(decl.name, decl.type)
+            elif isinstance(decl, (StructDecl, UnionDecl)):
+                self._register_layout_decl(decl)
             elif isinstance(decl, Declaration):
+                if decl.name == "__tagdecl__":
+                    # struct/union tag-only declarations are ignored in MVP
+                    continue
                 self._declare_global(decl.name, "variable")
 
         for decl in ast.declarations:
@@ -80,10 +115,72 @@ class SemanticAnalyzer:
                 self._analyze_function(decl)
             elif isinstance(decl, Declaration) and decl.initializer is not None:
                 self._analyze_expr(decl.initializer)
+            elif isinstance(decl, TypedefDecl):
+                # typedef has no further analysis
+                pass
 
         if self.errors:
             raise SemanticError("\n".join(self.errors))
-        return True
+        # flatten typedefs (global scope only for now)
+        return SemanticContext(typedefs=dict(self._typedefs[0]), layouts=dict(self._layouts))
+
+    def _register_layout_decl(self, decl: Union[StructDecl, UnionDecl]) -> None:
+        kind = "struct" if isinstance(decl, StructDecl) else "union"
+        tag = decl.name
+        if not tag:
+            return
+        key = f"{kind} {tag}"
+        if key in self._layouts and decl.members is None:
+            return
+        if decl.members is None:
+            # forward decl
+            self._layouts.setdefault(key, StructLayout(kind=kind, name=tag, size=0, align=1, member_offsets={}, member_sizes={}))
+            return
+        layout = self._compute_layout(kind, tag, decl.members)
+        self._layouts[key] = layout
+
+    def _compute_layout(self, kind: str, tag: str, members: List[Declaration]) -> StructLayout:
+        # MVP: only handle members of builtin int/char and pointers.
+        offsets: Dict[str, int] = {}
+        sizes: Dict[str, int] = {}
+
+        def size_align(ty: Type) -> Tuple[int, int]:
+            if ty.is_pointer:
+                return 8, 8
+            if ty.base == "int":
+                return 4, 4
+            if ty.base == "char":
+                return 1, 1
+            # unknown types treated as 8-byte
+            return 8, 8
+
+        off = 0
+        max_align = 1
+        max_size = 0
+
+        for m in members:
+            sz, al = size_align(m.type)
+            max_align = max(max_align, al)
+            if kind == "struct":
+                # align current offset
+                if off % al != 0:
+                    off += (al - (off % al))
+                offsets[m.name] = off
+                sizes[m.name] = sz
+                off += sz
+                max_size = off
+            else:
+                # union members all offset 0
+                offsets[m.name] = 0
+                sizes[m.name] = sz
+                max_size = max(max_size, sz)
+
+        size = max_size
+        # final struct size align
+        if kind == "struct" and size % max_align != 0:
+            size += (max_align - (size % max_align))
+
+        return StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes)
 
     # -----------------
     # Scopes
@@ -91,9 +188,11 @@ class SemanticAnalyzer:
 
     def _push_scope(self) -> None:
         self._scopes.append({})
+        self._typedefs.append({})
 
     def _pop_scope(self) -> None:
         self._scopes.pop()
+        self._typedefs.pop()
 
     def _declare_global(self, name: str, kind: str) -> None:
         if name in self._scopes[0]:
@@ -101,11 +200,33 @@ class SemanticAnalyzer:
         else:
             self._scopes[0][name] = kind
 
+    def _declare_typedef_global(self, name: str, ty: Type) -> None:
+        if name in self._typedefs[0]:
+            self.errors.append(f"Duplicate typedef: {name}")
+        else:
+            self._typedefs[0][name] = ty
+
+    def _declare_typedef_local(self, name: str, ty: Type) -> None:
+        if name in self._typedefs[-1]:
+            self.errors.append(f"Duplicate typedef in scope: {name}")
+        else:
+            self._typedefs[-1][name] = ty
+
+    def _lookup_typedef(self, name: str) -> Optional[Type]:
+        for td in reversed(self._typedefs):
+            if name in td:
+                return td[name]
+        return None
+
     def _declare_local(self, name: str, kind: str) -> None:
         if name in self._scopes[-1]:
             self.errors.append(f"Duplicate declaration in scope: {name}")
         else:
             self._scopes[-1][name] = kind
+
+    def _lookup_decl_type(self, name: str) -> Optional[Type]:
+        # Best-effort: types are recorded in a side table during statement analysis.
+        return getattr(self, "_decl_types", {}).get(name)
 
     def _is_declared(self, name: str) -> bool:
         for scope in reversed(self._scopes):
@@ -119,8 +240,12 @@ class SemanticAnalyzer:
 
     def _analyze_function(self, fn: FunctionDecl) -> None:
         self._push_scope()
+        # best-effort map of identifier -> declared Type
+        if not hasattr(self, "_decl_types"):
+            self._decl_types = {}
         for p in fn.parameters:
             self._declare_local(p.name, "param")
+            self._decl_types[p.name] = p.type
         self._analyze_stmt(fn.body)
         self._pop_scope()
 
@@ -130,6 +255,7 @@ class SemanticAnalyzer:
             for item in stmt.statements:
                 if isinstance(item, Declaration):
                     self._declare_local(item.name, "variable")
+                    self._decl_types[item.name] = item.type
                     if item.initializer is not None:
                         self._analyze_expr(item.initializer)
                 else:
@@ -163,6 +289,7 @@ class SemanticAnalyzer:
             self._push_scope()
             if isinstance(stmt.init, Declaration):
                 self._declare_local(stmt.init.name, "variable")
+                self._decl_types[stmt.init.name] = stmt.init.type
                 if stmt.init.initializer is not None:
                     self._analyze_expr(stmt.init.initializer)
             elif stmt.init is not None:
@@ -216,6 +343,36 @@ class SemanticAnalyzer:
             self._analyze_expr(expr.index)
             return
 
+        if isinstance(expr, MemberAccess):
+            # best-effort: only validate when base is an identifier with known declared type
+            if isinstance(expr.object, Identifier):
+                base_ty = self._lookup_decl_type(expr.object.name)
+                if base_ty is not None:
+                    # '.' expects non-pointer struct/union object
+                    if base_ty.is_pointer:
+                        self.errors.append(f"'.' used on pointer: {expr.object.name}")
+                    else:
+                        self._validate_member(base_ty, expr.member, expr.object.name)
+            else:
+                self._analyze_expr(expr.object)
+            return
+
+        if isinstance(expr, PointerMemberAccess):
+            if isinstance(expr.pointer, Identifier):
+                base_ty = self._lookup_decl_type(expr.pointer.name)
+                if base_ty is not None:
+                    # '->' expects a pointer to struct/union.
+                    if not base_ty.is_pointer:
+                        self.errors.append(f"'->' used on non-pointer: {expr.pointer.name}")
+                    else:
+                        # We don't track pointed-to type separately; in this compiler, pointer keeps base_ty.base
+                        # and sets is_pointer=True, so base identifies the pointee.
+                        pointee = Type(base=base_ty.base, line=base_ty.line, column=base_ty.column)
+                        self._validate_member(pointee, expr.member, expr.pointer.name)
+            else:
+                self._analyze_expr(expr.pointer)
+            return
+
         if isinstance(expr, FunctionCall):
             # If function is identifier and unknown: allow implicit decl.
             if isinstance(expr.function, Identifier):
@@ -236,3 +393,16 @@ class SemanticAnalyzer:
             return
 
         # Unknown expressions ignored
+
+    def _validate_member(self, base_ty: Type, member: str, base_name: str) -> None:
+        # base_ty.base may be like "struct Point" or "union U".
+        b = base_ty.base
+        if not (isinstance(b, str) and (b.startswith("struct ") or b.startswith("union "))):
+            self.errors.append(f"Member access on non-struct/union: {base_name}")
+            return
+        layout = self._layouts.get(b)
+        if layout is None:
+            self.errors.append(f"Unknown {b} for member access: {base_name}.{member}")
+            return
+        if member not in layout.member_offsets:
+            self.errors.append(f"No such member '{member}' in {b}")

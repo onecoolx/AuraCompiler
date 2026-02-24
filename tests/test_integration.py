@@ -1,5 +1,7 @@
-"""
-Integration tests for the compiler
+"""Integration tests.
+
+Note: this file mostly contains lexer integration tests.
+The end-to-end compile+run tests live in other modules.
 """
 
 import pytest
@@ -144,6 +146,68 @@ class TestFactorialProgram:
         tokens = lexer.tokenize()
         
         assert not lexer.has_errors()
+
+
+def test_global_var_read_write(tmp_path):
+    from pycc.compiler import Compiler
+    import subprocess
+
+    # Minimal global variable support: .comm + RIP-relative load/store
+    src = tmp_path / "g.c"
+    src.write_text(
+        """
+int g;
+int main(){
+    g = 41;
+    g = g + 1;
+    return g;
+}
+""".lstrip()
+    )
+    out = tmp_path / "g"
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(src), str(out))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+    r = subprocess.run([str(out)], capture_output=True, text=True)
+    assert r.returncode == 42
+
+
+def test_global_int_initializer(tmp_path):
+    from pycc.compiler import Compiler
+    import subprocess
+
+    src = tmp_path / "gi.c"
+    src.write_text(
+        """
+int g = 42;
+int main(){ return g; }
+""".lstrip()
+    )
+    out = tmp_path / "gi"
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(src), str(out))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+    r = subprocess.run([str(out)], capture_output=True, text=True)
+    assert r.returncode == 42
+
+
+def test_global_char_initializer(tmp_path):
+    from pycc.compiler import Compiler
+    import subprocess
+
+    src = tmp_path / "gc.c"
+    src.write_text(
+        """
+char c = 40;
+int main(){ return c + 2; }
+""".lstrip()
+    )
+    out = tmp_path / "gc"
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(src), str(out))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+    r = subprocess.run([str(out)], capture_output=True, text=True)
+    assert r.returncode == 42
 
 
 class TestTokenization:

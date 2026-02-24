@@ -2,7 +2,7 @@
 
 ## Overview
 
-AuraCompiler is a complete implementation of a C89 compiler written in pure Python, following the classic three-stage compiler architecture: **frontend (lexer/parser)**, **middle-end (optimization)**, and **backend (code generation)**.
+AuraCompiler is a complete implementation of a C89 compiler written in pure **Python**, following the classic three-stage compiler architecture: **frontend (lexer/parser)**, **middle-end (optimization)**, and **backend (code generation)**.
 
 ## Features
 
@@ -135,19 +135,6 @@ else:
 - [ ] Comprehensive testing
 - [ ] Documentation
 
-## Testing
-
-```bash
-# Run all tests
-python -m pytest tests/ -v
-
-# Run specific test
-python -m pytest tests/test_lexer.py -v
-
-# Run with coverage
-python -m pytest tests/ --cov=pycc --cov-report=html
-```
-
 ## Contributing
 
 This is an educational compiler project. Contributions are welcome!
@@ -165,4 +152,4 @@ MIT License - See LICENSE file for details
 
 ## Author
 
-Python C Compiler Project Contributors
+Zhang Ji Peng (onecoolx@gmail.com)

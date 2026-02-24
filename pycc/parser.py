@@ -19,14 +19,17 @@ complexity (typedef/struct/union/enums). Those can be added iteratively.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple, Union, Set
+from typing import List, Optional, Sequence, Tuple, Union, Set, Dict
 
 from pycc.lexer import Token, TokenType
 from pycc.ast_nodes import (
     Program,
     Type,
+    TypedefDecl,
     Declaration,
     FunctionDecl,
+    StructDecl,
+    UnionDecl,
     CompoundStmt,
     ExpressionStmt,
     IfStmt,
@@ -49,6 +52,8 @@ from pycc.ast_nodes import (
     Assignment,
     FunctionCall,
     ArrayAccess,
+    MemberAccess,
+    PointerMemberAccess,
     TernaryOp,
 )
 
@@ -72,6 +77,10 @@ class Parser:
         self.tokens: List[Token] = [t for t in tokens if t.type != TokenType.NEWLINE]
         self.position = 0
         self.current_token: Optional[Token] = self.tokens[0] if self.tokens else None
+        # track typedef names seen so far while parsing
+        self._typedefs: Set[str] = set()
+        # map for recent struct/union definitions: key "struct Tag"/"union Tag" -> member declarations
+        self._tag_members: Dict[str, List[Declaration]] = {}
     
     def parse(self) -> Program:
         """Parse entire program"""
@@ -132,18 +141,46 @@ class Parser:
         return tok
 
     def _is_type_specifier(self) -> bool:
-        return (
-            self.current_token is not None
-            and self.current_token.type == TokenType.KEYWORD
-            and self.current_token.value in {"int", "void", "char"}
-        )
+        if self.current_token is None:
+            return False
+        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "struct", "union"}:
+            return True
+        # typedef names may appear as identifiers serving as type specifiers
+        if self.current_token.type == TokenType.IDENTIFIER and self.current_token.value in self._typedefs:
+            return True
+        return False
 
     # -----------------
     # External decls
     # -----------------
 
     def _parse_external_declaration(self) -> Union[Declaration, FunctionDecl]:
+        # handle 'typedef' at top-level
+        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
+            self.advance()
+            base_type = self._parse_type_specifier()
+            name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
+            self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
+            td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
+            # remember typedef name for subsequent parsing
+            self._typedefs.add(td.name)
+            return td
+
         base_type = self._parse_type_specifier()
+        # handle pointer declarators like: `int *p;` or `struct S *p;`
+        while self._match(TokenType.STAR):
+            base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+        # Support standalone tag declarations like: `struct S { ... };`
+        if self._match(TokenType.SEMICOLON):
+            if isinstance(base_type, Type) and (base_type.base.startswith("struct ") or base_type.base.startswith("union ")):
+                kind, tag = base_type.base.split(" ", 1)
+                members = self._tag_members.get(base_type.base)
+                if kind == "struct":
+                    return StructDecl(name=None if tag == "<anonymous>" else tag, members=members, line=base_type.line, column=base_type.column)
+                return UnionDecl(name=None if tag == "<anonymous>" else tag, members=members, line=base_type.line, column=base_type.column)
+            # fallback: ignore
+            return Declaration(name="__tagdecl__", type=base_type, line=base_type.line, column=base_type.column)
+
         name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
 
         # function or variable?
@@ -181,8 +218,49 @@ class Parser:
         tok = self.current_token
         if not self._is_type_specifier():
             raise ParserError("Expected type specifier", tok)
-        self.advance()
-        return Type(base=tok.value, line=tok.line, column=tok.column)
+        # builtin
+        if tok.type == TokenType.KEYWORD and tok.value in {"int", "void", "char"}:
+            self.advance()
+            return Type(base=tok.value, line=tok.line, column=tok.column)
+
+        # struct/union type specifier: `struct Tag { ... }` / `struct Tag` / `struct { ... }`
+        if tok.type == TokenType.KEYWORD and tok.value in {"struct", "union"}:
+            kind = tok.value
+            self.advance()
+            tag_tok = None
+            if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
+                tag_tok = self.current_token
+                self.advance()
+
+            # optional member list
+            members = None
+            if self._match(TokenType.LBRACE):
+                members = []
+                while not self._at(TokenType.RBRACE):
+                    if self._at(TokenType.EOF):
+                        raise ParserError("Unterminated struct/union member list", self.current_token)
+                    mem_ty = self._parse_type_specifier()
+                    mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                    # no bitfields/arrays in MVP members yet
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
+                    members.append(Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column))
+                self._expect(TokenType.RBRACE, "Expected '}' after struct/union members")
+
+                # Remember members for named tags so outer declaration `struct T {...};`
+                # can be materialized as a StructDecl/UnionDecl node.
+                if tag_tok is not None:
+                    self._tag_members[f"{kind} {tag_tok.value}"] = members
+
+            # record a textual type name for now: e.g. "struct Point"
+            tag_name = tag_tok.value if tag_tok else "<anonymous>"
+            return Type(base=f"{kind} {tag_name}", line=tok.line, column=tok.column)
+
+        # typedef-name as type specifier
+        if tok.type == TokenType.IDENTIFIER and tok.value in self._typedefs:
+            self.advance()
+            return Type(base=tok.value, line=tok.line, column=tok.column)
+
+        raise ParserError("Expected type specifier", tok)
 
     def _parse_parameter_list(self) -> List[Declaration]:
         params: List[Declaration] = []
@@ -226,7 +304,17 @@ class Parser:
         return CompoundStmt(statements=items, line=lbrace.line, column=lbrace.column)
 
     def _parse_local_declaration(self) -> Declaration:
+        # support local typedefs
+        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
+            self.advance()
+            base_type = self._parse_type_specifier()
+            name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
+            self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
+            return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
+
         base_type = self._parse_type_specifier()
+        while self._match(TokenType.STAR):
+            base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
         name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
         decl = self._finish_declarator(base_type, name_tok)
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
@@ -499,6 +587,14 @@ class Parser:
                 idx = self._parse_expression()
                 self._expect(TokenType.RBRACKET, "Expected ']' after subscript")
                 expr = ArrayAccess(array=expr, index=idx, line=expr.line, column=expr.column)
+                continue
+            if self._match(TokenType.DOT):
+                mem = self._expect(TokenType.IDENTIFIER, "Expected member name after '.'")
+                expr = MemberAccess(object=expr, member=mem.value, line=mem.line, column=mem.column)
+                continue
+            if self._match(TokenType.ARROW):
+                mem = self._expect(TokenType.IDENTIFIER, "Expected member name after '->'")
+                expr = PointerMemberAccess(pointer=expr, member=mem.value, line=mem.line, column=mem.column)
                 continue
             break
         return expr

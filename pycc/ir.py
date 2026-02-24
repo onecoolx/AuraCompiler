@@ -42,6 +42,8 @@ from pycc.ast_nodes import (
     Assignment,
     FunctionCall,
     ArrayAccess,
+    MemberAccess,
+    PointerMemberAccess,
     TernaryOp,
     Statement,
     Expression,
@@ -84,9 +86,44 @@ class IRGenerator:
             if isinstance(decl, FunctionDecl) and decl.body is not None:
                 self._gen_function(decl)
             elif isinstance(decl, Declaration):
-                # global vars not supported in MVP (ignore)
-                pass
+                # Global decl/def.
+                if getattr(decl, "initializer", None) is None:
+                    self.instructions.append(
+                        IRInstruction(op="gdecl", result=f"@{decl.name}", operand1=decl.type.base)
+                    )
+                else:
+                    imm = self._const_initializer_imm(getattr(decl, "initializer"))
+                    if imm is None:
+                        raise Exception(
+                            f"unsupported global initializer for {decl.name}: only integer/char constants supported"
+                        )
+                    self.instructions.append(
+                        IRInstruction(
+                            op="gdef",
+                            result=f"@{decl.name}",
+                            operand1=decl.type.base,
+                            operand2=imm,
+                        )
+                    )
         return self.instructions
+
+    def _const_initializer_imm(self, init: Any) -> Optional[str]:
+        """Return an immediate like "$42" for supported constant initializers."""
+        from pycc.ast_nodes import IntLiteral, CharLiteral, UnaryOp
+
+        if isinstance(init, IntLiteral):
+            return f"${int(init.value)}"
+        if isinstance(init, CharLiteral):
+            return f"${int(init.value)}"
+        if isinstance(init, UnaryOp) and init.op in {"+", "-"}:
+            inner = self._const_initializer_imm(init.operand)
+            if inner is None:
+                return None
+            v = int(inner.lstrip("$"))
+            if init.op == "-":
+                v = -v
+            return f"${v}"
+        return None
 
     # -------------
     # Helpers
@@ -110,7 +147,7 @@ class IRGenerator:
         self.instructions.append(IRInstruction(op="func_begin", label=fn.name))
         # params are treated as locals; codegen will map them from ABI regs
         for p in fn.parameters:
-            self.instructions.append(IRInstruction(op="param", result=f"@{p.name}"))
+            self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=p.type.base))
         self._gen_stmt(fn.body)
         # Ensure a return exists
         self.instructions.append(IRInstruction(op="ret", operand1="$0"))
@@ -128,7 +165,8 @@ class IRGenerator:
                     if getattr(item, "array_size", None) is not None:
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=f"${item.array_size}"))
                     else:
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}"))
+                        # encode declared base type for later codegen (struct/union)
+                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=item.type.base))
                     if item.initializer is not None:
                         v = self._gen_expr(item.initializer)
                         self.instructions.append(IRInstruction(op="mov", result=f"@{item.name}", operand1=v))
@@ -251,6 +289,17 @@ class IRGenerator:
             t = self._new_temp()
             self.instructions.append(IRInstruction(op="load_index", result=t, operand1=base, operand2=idx))
             return t
+        if isinstance(expr, MemberAccess):
+            base = self._gen_expr(expr.object)
+            t = self._new_temp()
+            # layout is resolved in codegen using struct tag + member name in operand2
+            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member))
+            return t
+        if isinstance(expr, PointerMemberAccess):
+            base = self._gen_expr(expr.pointer)
+            t = self._new_temp()
+            self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member))
+            return t
         if isinstance(expr, Assignment):
             rhs = self._gen_expr(expr.value)
             # only handle identifier targets in MVP
@@ -274,13 +323,28 @@ class IRGenerator:
                 self.instructions.append(IRInstruction(op="store_index", result=rhs, operand1=base, operand2=idx))
                 return rhs
 
+            # handle struct member store: target is MemberAccess
+            if isinstance(expr.target, MemberAccess):
+                base = self._gen_expr(expr.target.object)
+                self.instructions.append(IRInstruction(op="store_member", result=rhs, operand1=base, operand2=expr.target.member))
+                return rhs
+
+            if isinstance(expr.target, PointerMemberAccess):
+                base = self._gen_expr(expr.target.pointer)
+                self.instructions.append(IRInstruction(op="store_member_ptr", result=rhs, operand1=base, operand2=expr.target.member))
+                return rhs
+
             t = self._new_temp()
             self.instructions.append(IRInstruction(op="mov", result=t, operand1=rhs))
             return t
         if isinstance(expr, UnaryOp):
             v = self._gen_expr(expr.operand)
             t = self._new_temp()
-            self.instructions.append(IRInstruction(op="unop", result=t, operand1=v, label=expr.operator))
+            if expr.operator == "&":
+                # address-of: only meaningful for identifiers/locals in MVP
+                self.instructions.append(IRInstruction(op="addr_of", result=t, operand1=v))
+            else:
+                self.instructions.append(IRInstruction(op="unop", result=t, operand1=v, label=expr.operator))
             return t
         if isinstance(expr, BinaryOp):
             l = self._gen_expr(expr.left)
