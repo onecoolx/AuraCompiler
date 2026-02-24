@@ -19,7 +19,7 @@ like $5, and labels like .L1). The code generator will interpret them.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Any
 
 from pycc.ast_nodes import (
     Program,
@@ -92,17 +92,19 @@ class IRGenerator:
                         IRInstruction(op="gdecl", result=f"@{decl.name}", operand1=decl.type.base)
                     )
                 else:
-                    imm = self._const_initializer_imm(getattr(decl, "initializer"))
-                    if imm is None:
+                    init = getattr(decl, "initializer")
+                    imm = self._const_initializer_imm(init)
+                    ptr = self._const_initializer_ptr(init)
+                    if imm is None and ptr is None:
                         raise Exception(
-                            f"unsupported global initializer for {decl.name}: only integer/char constants supported"
+                            f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
                         )
                     self.instructions.append(
                         IRInstruction(
                             op="gdef",
                             result=f"@{decl.name}",
                             operand1=decl.type.base,
-                            operand2=imm,
+                            operand2=imm if imm is not None else ptr,
                         )
                     )
         return self.instructions
@@ -123,6 +125,19 @@ class IRGenerator:
             if init.op == "-":
                 v = -v
             return f"${v}"
+        return None
+
+    def _const_initializer_ptr(self, init: Any) -> Optional[str]:
+        """Return a pointer constant operand for supported global pointer initializers.
+
+        Currently supports only string literals, encoded as a tagged operand
+        starting with "=str:"; codegen will intern the string and emit a
+        relocatable address.
+        """
+        from pycc.ast_nodes import StringLiteral
+
+        if isinstance(init, StringLiteral):
+            return f"=str:{init.value}"
         return None
 
     # -------------

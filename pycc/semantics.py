@@ -65,6 +65,7 @@ class StructLayout:
 class SemanticContext:
     typedefs: Dict[str, Type]
     layouts: Dict[str, StructLayout]  # key: "struct Tag" / "union Tag"
+    global_types: Dict[str, str]
 
 
 class SemanticError(Exception):
@@ -95,6 +96,8 @@ class SemanticAnalyzer:
         self._typedefs = [{}]
         self._layouts = {}
 
+        self._global_types: Dict[str, str] = {}
+
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
                 self._declare_global(decl.name, "function")
@@ -109,6 +112,16 @@ class SemanticAnalyzer:
                     # struct/union tag-only declarations are ignored in MVP
                     continue
                 self._declare_global(decl.name, "variable")
+                # record declared base type string for codegen (e.g. "int", "char", "struct S*", etc.)
+                try:
+                    # `decl.type` is a Type node; its `is_pointer` determines pointer-ness.
+                    # Record a normalized string so codegen can cheaply detect pointers.
+                    if getattr(decl.type, "is_pointer", False):
+                        self._global_types[decl.name] = f"{decl.type.base}*"
+                    else:
+                        self._global_types[decl.name] = str(decl.type.base)
+                except Exception:
+                    self._global_types[decl.name] = "int"
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl) and decl.body is not None:
@@ -122,7 +135,11 @@ class SemanticAnalyzer:
         if self.errors:
             raise SemanticError("\n".join(self.errors))
         # flatten typedefs (global scope only for now)
-        return SemanticContext(typedefs=dict(self._typedefs[0]), layouts=dict(self._layouts))
+        return SemanticContext(
+            typedefs=dict(self._typedefs[0]),
+            layouts=dict(self._layouts),
+            global_types=dict(self._global_types),
+        )
 
     def _register_layout_decl(self, decl: Union[StructDecl, UnionDecl]) -> None:
         kind = "struct" if isinstance(decl, StructDecl) else "union"

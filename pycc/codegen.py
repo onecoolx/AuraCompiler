@@ -77,7 +77,13 @@ class CodeGenerator:
                 imm = gd.operand2 or "$0"
                 self._emit(f".globl {name}")
                 self._emit(f"{name}:")
-                if isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
+                # string-literal pointer initializer encoded as "=str:<text>"
+                if isinstance(imm, str) and imm.startswith("=str:"):
+                    s = imm[len("=str:") :]
+                    lbl = self._intern_string(s)
+                    # pointer-sized object
+                    self._emit(f"  .quad {lbl}")
+                elif isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
                     self._emit(f"  .byte {imm.lstrip('$')}")
                 else:
                     # MVP: int
@@ -335,13 +341,34 @@ class CodeGenerator:
             # int array indexing: result = base[index]
             base = ins.operand1 or ""
             idx = ins.operand2
-            # compute address: &base + idx*4 (4-byte ints)
-            self._addr_of_symbol(base, "%rax")
+            # load element: for char* treat as 1-byte element, else int (4 bytes)
+            elem_sz = 4
+            is_char_ptr = False
+            if isinstance(base, str) and base.startswith("@"):
+                sym = base[1:]
+                ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+                if isinstance(ty, str) and ty.replace(" ", "").endswith("char*"):
+                    elem_sz = 1
+                    is_char_ptr = True
+            # compute address: base + idx*elem_sz
+            # - if base is a pointer value (char*), load the pointer value
+            # - else treat it as an array object and take its address
+            if is_char_ptr and isinstance(base, str) and base.startswith("@"):
+                self._load_operand(base, "%rax")
+            else:
+                self._addr_of_symbol(base, "%rax")
             self._load_operand(idx, "%rcx")
-            self._emit("  imulq $4, %rcx")
+            if elem_sz == 1:
+                pass
+            else:
+                self._emit(f"  imulq ${elem_sz}, %rcx")
             self._emit("  addq %rcx, %rax")
-            # load 32-bit signed int and sign-extend to %rax
-            self._emit("  movslq (%rax), %rax")
+            if elem_sz == 1:
+                self._emit("  movsbl (%rax), %eax")
+                self._emit("  movslq %eax, %rax")
+            else:
+                # load 32-bit signed int and sign-extend to %rax
+                self._emit("  movslq (%rax), %rax")
             self._store_result(ins.result, "%rax")
             return
 
@@ -364,7 +391,6 @@ class CodeGenerator:
                 self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
             return
-
         if op == "load_member_ptr":
             # operand1 holds pointer value; load it as address then add member offset
             base = ins.operand1 or ""
@@ -465,8 +491,13 @@ class CodeGenerator:
                 self._emit(f"  movq -{off}(%rbp), {reg}")
                 return
             sym = operand[1:]
-            # MVP: treat globals as 32-bit signed ints
-            self._emit(f"  movslq {sym}(%rip), {reg}")
+            # Global objects: load based on what was declared in this TU.
+            ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+            if isinstance(ty, str) and ty.endswith("*"):
+                self._emit(f"  movq {sym}(%rip), {reg}")
+            else:
+                # MVP default: 32-bit signed int
+                self._emit(f"  movslq {sym}(%rip), {reg}")
             return
         # label address?
         if operand.startswith(".L"):
@@ -489,8 +520,12 @@ class CodeGenerator:
                 self._emit(f"  movq {reg}, -{off}(%rbp)")
                 return
             sym = result[1:]
-            # MVP: store 32-bit int
-            self._emit(f"  movl %eax, {sym}(%rip)")
+            ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+            if isinstance(ty, str) and ty.endswith("*"):
+                self._emit(f"  movq {reg}, {sym}(%rip)")
+            else:
+                # MVP: store 32-bit int
+                self._emit(f"  movl %eax, {sym}(%rip)")
             return
 
     def _ensure_local(self, sym: str) -> int:
