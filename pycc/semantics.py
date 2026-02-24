@@ -66,6 +66,7 @@ class SemanticContext:
     typedefs: Dict[str, Type]
     layouts: Dict[str, StructLayout]  # key: "struct Tag" / "union Tag"
     global_types: Dict[str, str]
+    global_linkage: Dict[str, str]
 
 
 class SemanticError(Exception):
@@ -95,8 +96,11 @@ class SemanticAnalyzer:
         self._functions = set()
         self._typedefs = [{}]
         self._layouts = {}
+        self._global_linkage: Dict[str, str] = {}
 
         self._global_types: Dict[str, str] = {}
+
+        seen_globals: Dict[str, str] = {}
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
@@ -111,7 +115,21 @@ class SemanticAnalyzer:
                 if decl.name == "__tagdecl__":
                     # struct/union tag-only declarations are ignored in MVP
                     continue
+                # minimal duplicate/ABI checks for globals
+                sc = getattr(decl, "storage_class", None)
+                kind = "static" if sc == "static" else "nonstatic"
+                prev = seen_globals.get(decl.name)
+                if prev is not None and prev != kind:
+                    self.errors.append(f"conflicting linkage for global '{decl.name}'")
+                else:
+                    seen_globals[decl.name] = kind
+
                 self._declare_global(decl.name, "variable")
+                # record linkage (minimal, single TU): static = internal, otherwise external
+                if sc == "static":
+                    self._global_linkage[decl.name] = "internal"
+                else:
+                    self._global_linkage[decl.name] = "external"
                 # record declared base type string for codegen (e.g. "int", "char", "struct S*", etc.)
                 try:
                     # `decl.type` is a Type node; its `is_pointer` determines pointer-ness.
@@ -139,6 +157,7 @@ class SemanticAnalyzer:
             typedefs=dict(self._typedefs[0]),
             layouts=dict(self._layouts),
             global_types=dict(self._global_types),
+            global_linkage=dict(self._global_linkage),
         )
 
     def _register_layout_decl(self, decl: Union[StructDecl, UnionDecl]) -> None:
@@ -212,10 +231,14 @@ class SemanticAnalyzer:
         self._typedefs.pop()
 
     def _declare_global(self, name: str, kind: str) -> None:
-        if name in self._scopes[0]:
-            self.errors.append(f"Duplicate global declaration: {name}")
-        else:
+        # Minimal C89: allow repeated global declarations of the same kind
+        # (e.g. `extern int g;` followed by `int g = 1;` in the same TU).
+        prev = self._scopes[0].get(name)
+        if prev is None:
             self._scopes[0][name] = kind
+            return
+        if prev != kind:
+            self.errors.append(f"Duplicate global declaration: {name}")
 
     def _declare_typedef_global(self, name: str, ty: Type) -> None:
         if name in self._typedefs[0]:

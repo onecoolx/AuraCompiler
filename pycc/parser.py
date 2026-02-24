@@ -143,6 +143,9 @@ class Parser:
     def _is_type_specifier(self) -> bool:
         if self.current_token is None:
             return False
+        # allow storage-class specifier to appear before the type in top-level decls
+        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"extern", "static"}:
+            return True
         if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "struct", "union"}:
             return True
         # typedef names may appear as identifiers serving as type specifiers
@@ -155,6 +158,16 @@ class Parser:
     # -----------------
 
     def _parse_external_declaration(self) -> Union[Declaration, FunctionDecl]:
+        storage_class: Optional[str] = None
+        # storage-class-specifier (minimal): extern/static
+        if (
+            self.current_token
+            and self.current_token.type == TokenType.KEYWORD
+            and self.current_token.value in {"extern", "static"}
+        ):
+            storage_class = self.current_token.value
+            self.advance()
+
         # handle 'typedef' at top-level
         if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
             self.advance()
@@ -195,6 +208,7 @@ class Parser:
                     return_type=base_type,
                     parameters=params,
                     body=None,
+                    storage_class=storage_class,
                     line=name_tok.line,
                     column=name_tok.column,
                 )
@@ -205,12 +219,14 @@ class Parser:
                 return_type=base_type,
                 parameters=params,
                 body=body,
+                storage_class=storage_class,
                 line=name_tok.line,
                 column=name_tok.column,
             )
 
         # variable (maybe array) with optional initializer
         decl = self._finish_declarator(base_type, name_tok)
+        decl.storage_class = storage_class
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
         return decl
 

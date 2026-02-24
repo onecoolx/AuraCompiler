@@ -210,6 +210,65 @@ int main(){ return c + 2; }
     assert r.returncode == 42
 
 
+def test_static_global_initializer(tmp_path):
+    from pycc.compiler import Compiler
+    import subprocess
+
+    src = tmp_path / "sg.c"
+    src.write_text(
+        """
+static int g = 42;
+int main(){ return g; }
+""".lstrip()
+    )
+    out = tmp_path / "sg"
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(src), str(out))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+    r = subprocess.run([str(out)], capture_output=True, text=True)
+    assert r.returncode == 42
+
+
+def test_extern_global_declaration_then_definition(tmp_path):
+    from pycc.compiler import Compiler
+    import subprocess
+
+    src = tmp_path / "eg.c"
+    src.write_text(
+        """
+extern int g;
+int g = 41;
+int main(){ return g + 1; }
+""".lstrip()
+    )
+    out = tmp_path / "eg"
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(src), str(out))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+    r = subprocess.run([str(out)], capture_output=True, text=True)
+    assert r.returncode == 42
+
+
+def test_extern_function_prototype_and_call(tmp_path):
+    from pycc.compiler import Compiler
+    import subprocess
+
+    src = tmp_path / "ef.c"
+    src.write_text(
+        """
+extern int add(int a, int b);
+int add(int a, int b){ return a + b; }
+int main(){ return add(40, 2); }
+""".lstrip()
+    )
+    out = tmp_path / "ef"
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(src), str(out))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+    r = subprocess.run([str(out)], capture_output=True, text=True)
+    assert r.returncode == 42
+
+
 def test_global_string_pointer_initializer(tmp_path):
         from pycc.compiler import Compiler
         import subprocess

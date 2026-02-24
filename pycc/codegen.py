@@ -61,6 +61,9 @@ class CodeGenerator:
             for gd in gdecls:
                 name = (gd.result or "").lstrip("@")
                 ty = gd.operand1 or "int"
+                # extern declaration: no storage emitted in this TU
+                if gd.label == "extern":
+                    continue
                 if isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
                     sz = 1
                 elif isinstance(ty, str) and (ty == "int" or ty.startswith("int ")):
@@ -75,7 +78,9 @@ class CodeGenerator:
                 name = (gd.result or "").lstrip("@")
                 ty = gd.operand1 or "int"
                 imm = gd.operand2 or "$0"
-                self._emit(f".globl {name}")
+                # extern with initializer isn't valid C; treat as definition anyway.
+                if gd.label != "static":
+                    self._emit(f".globl {name}")
                 self._emit(f"{name}:")
                 # string-literal pointer initializer encoded as "=str:<text>"
                 if isinstance(imm, str) and imm.startswith("=str:"):

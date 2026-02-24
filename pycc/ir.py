@@ -87,9 +87,15 @@ class IRGenerator:
                 self._gen_function(decl)
             elif isinstance(decl, Declaration):
                 # Global decl/def.
+                sc = getattr(decl, "storage_class", None)
                 if getattr(decl, "initializer", None) is None:
                     self.instructions.append(
-                        IRInstruction(op="gdecl", result=f"@{decl.name}", operand1=decl.type.base)
+                        IRInstruction(
+                            op="gdecl",
+                            result=f"@{decl.name}",
+                            operand1=decl.type.base,
+                            label=sc,
+                        )
                     )
                 else:
                     init = getattr(decl, "initializer")
@@ -105,6 +111,7 @@ class IRGenerator:
                             result=f"@{decl.name}",
                             operand1=decl.type.base,
                             operand2=imm if imm is not None else ptr,
+                            label=sc,
                         )
                     )
         return self.instructions
