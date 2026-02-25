@@ -625,6 +625,14 @@ class IRGenerator:
             # MVP: keep casts as value-preserving for ints/pointers.
             # This is enough for common C89 patterns like `(int*)0`, `(char)65`.
             v = self._gen_expr(expr.expression)
+            # Best-effort: record cast destination type for later signedness decisions.
+            try:
+                dst_ty = getattr(expr, "to_type", None)
+                dst_str = getattr(dst_ty, "base", None) if dst_ty is not None else None
+            except Exception:
+                dst_str = None
+            if isinstance(dst_str, str):
+                self._var_types[v] = dst_str
             # If casting to pointer, allow integer literal 0 to stay 0; otherwise passthrough.
             return v
         if isinstance(expr, Identifier):
@@ -771,7 +779,16 @@ class IRGenerator:
             tv = self._gen_expr(expr.true_expr)
             fv = self._gen_expr(expr.false_expr)
             if self._is_unsigned_operand(tv) or self._is_unsigned_operand(fv):
-                self._var_types[t] = "unsigned int"
+                # Pick a representative unsigned type to help later comparisons.
+                # Prefer unsigned long if either side is unsigned long.
+                ty_tv = getattr(self, "_var_types", {}).get(tv, "")
+                ty_fv = getattr(self, "_var_types", {}).get(fv, "")
+                ty_tv_n = ty_tv.strip().lower() if isinstance(ty_tv, str) else ""
+                ty_fv_n = ty_fv.strip().lower() if isinstance(ty_fv, str) else ""
+                if ty_tv_n.startswith("unsigned long") or ty_fv_n.startswith("unsigned long"):
+                    self._var_types[t] = "unsigned long"
+                else:
+                    self._var_types[t] = "unsigned int"
 
             c = self._gen_expr(expr.condition)
             self.instructions.append(IRInstruction(op="jz", operand1=c, label=else_lbl))

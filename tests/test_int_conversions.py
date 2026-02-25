@@ -333,6 +333,18 @@ int main(){
                 assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_ternary_usual_arithmetic_conversions_u32_select_signed(tmp_path):
+        # TODO: implement ?: usual arithmetic conversions (C89) and enable this.
+        # unsigned int vs int => unsigned int; selecting -1 should yield UINT_MAX.
+        pass
+
+
+def test_ternary_usual_arithmetic_conversions_u64_select_signed(tmp_path):
+        # TODO: implement ?: usual arithmetic conversions (C89) and enable this.
+        # unsigned long vs long => unsigned long.
+        pass
+
+
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):
         # NOTE: conditional operator usual arithmetic conversions are not yet
         # implemented; keep a placeholder to re-enable once conversions are wired.

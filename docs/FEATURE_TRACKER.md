@@ -29,7 +29,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **DONE** `sizeof` (subset) — `tests/test_sizeof.py`
 - **DONE** C-style cast (subset) — `tests/test_cast.py`
 - **DONE** `&&`/`||` short-circuit — `tests/test_short_circuit.py`
-- **PARTIAL** conditional operator (`?:`) usual arithmetic conversions — TODO (tests being added)
+- **TODO** conditional operator (`?:`) usual arithmetic conversions — TODO
 - **PARTIAL** integer promotions + usual arithmetic conversions — comparisons for `int` vs `unsigned int` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** usual arithmetic conversions involving `unsigned long` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** unsigned `unsigned long` division/modulo semantics (tests) — `tests/test_int_conversions.py`
