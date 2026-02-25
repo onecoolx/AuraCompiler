@@ -68,6 +68,21 @@ def _type_size(ty: Optional[object]) -> int:
 
     if ty is None:
         return 8
+    # Allow passing stringly-typed types like "int", "char", "unsigned int".
+    if isinstance(ty, str):
+        b = ty.strip()
+        if "*" in b:
+            return 8
+        if b in {"char", "unsigned char", "signed char"}:
+            return 1
+        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+            return 2
+        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
+            return 4
+        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
+            return 8
+        return 8
+
     # Type node
     base = getattr(ty, "base", None)
     if isinstance(base, str):
@@ -704,6 +719,24 @@ class IRGenerator:
                 PointerMemberAccess as ASTPointerMemberAccess,
             )
             if isinstance(op, ASTIdentifier):
+                # Best-effort: if identifier is a known local array, return its
+                # byte size (not pointer size).
+                if hasattr(self, "_local_arrays") and op.name in getattr(self, "_local_arrays"):
+                    ty = getattr(self, "_var_types", {}).get(f"@{op.name}")
+                    if isinstance(ty, str) and ty.strip().startswith("array("):
+                        inner = ty.strip()[len("array(") :]
+                        if inner.endswith(")"):
+                            inner = inner[:-1]
+                        base_part, cnt_part = (inner.split(",", 1) + [""])[:2]
+                        base_part = base_part.strip()
+                        cnt_part = cnt_part.strip()
+                        n = 1
+                        if cnt_part.startswith("$"):
+                            try:
+                                n = int(cnt_part[1:])
+                            except Exception:
+                                n = 1
+                        return f"${_type_size(base_part) * max(0, n)}"
                 # Without full typing in IR, assume int.
                 return "$4"
             if isinstance(op, ASTArrayAccess):

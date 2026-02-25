@@ -46,6 +46,16 @@ int main(){
     assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_local_char_array_fixed_size_string_initializer_truncate(tmp_path):
+        code = r"""
+int main(){
+    char s[2] = "hi";
+    return (s[0] == 'h' && s[1] == 'i') ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_local_int_array_zero_fill_brace_initializer(tmp_path):
     code = r"""
 int main(){
@@ -54,3 +64,13 @@ int main(){
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_char_array_infer_size_from_string_initializer(tmp_path):
+        code = r"""
+int main(){
+    char s[] = "hi";
+    return (sizeof(s) == 3 && s[0] == 'h' && s[1] == 'i' && s[2] == 0) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
