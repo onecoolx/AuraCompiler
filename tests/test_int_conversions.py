@@ -157,3 +157,40 @@ int main(){
 }
 """.lstrip()
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_right_shift_is_logical(tmp_path):
+                # Unsigned right shift should be logical (zero-fill).
+                code = r"""
+int main(){
+        unsigned int a = (unsigned int)-1; /* 0xFFFFFFFF */
+        unsigned int b = a >> 1;
+        return (b == (unsigned int)0x7FFFFFFFU) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_signed_right_shift_is_arithmetic(tmp_path):
+                # On typical targets (x86-64), signed right shift is arithmetic.
+                code = r"""
+int main(){
+        int a = -1;
+        int b = a >> 1;
+        return (b == -1) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_right_shift_of_int_variable(tmp_path):
+                # Ensure unsignedness is preserved through variables (loads) during shifts.
+                code = r"""
+int main(){
+        unsigned int a;
+        a = (unsigned int)-1;
+        a = a >> 1;
+        return (a == (unsigned int)0x7FFFFFFFU) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0

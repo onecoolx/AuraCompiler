@@ -414,7 +414,15 @@ class CodeGenerator:
                 self._emit("  shlq %cl, %rax")
             elif bop == ">>":
                 self._emit("  movb %cl, %cl")
-                self._emit("  sarq %cl, %rax")
+                # Best-effort: if the left operand is declared unsigned, use logical shift.
+                # Otherwise use arithmetic shift.
+                lty = self._var_types.get(ins.operand1, "")
+                if not lty and isinstance(ins.operand1, str) and ins.operand1.startswith("@") and self._sema_ctx is not None:
+                    lty = getattr(self._sema_ctx, "global_types", {}).get(ins.operand1[1:], "")
+                if isinstance(lty, str) and lty.strip().startswith("unsigned "):
+                    self._emit("  shrq %cl, %rax")
+                else:
+                    self._emit("  sarq %cl, %rax")
             else:
                 # unsupported operator
                 pass
