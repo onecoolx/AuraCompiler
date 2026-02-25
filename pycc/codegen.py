@@ -313,12 +313,34 @@ class CodeGenerator:
             self._load_operand(ins.operand2, "%rcx")
             bop = ins.label
 
+            # Best-effort usual arithmetic conversions for 32-bit unsigned ints:
+            # if either operand is an unsigned-32 value, perform arithmetic in
+            # 32-bit and zero-extend the result.
+            ty1 = self._var_types.get(ins.operand1, "")
+            ty2 = self._var_types.get(ins.operand2, "")
+            if not ty1 and isinstance(ins.operand1, str) and ins.operand1.startswith("@") and self._sema_ctx is not None:
+                ty1 = getattr(self._sema_ctx, "global_types", {}).get(ins.operand1[1:], "")
+            if not ty2 and isinstance(ins.operand2, str) and ins.operand2.startswith("@") and self._sema_ctx is not None:
+                ty2 = getattr(self._sema_ctx, "global_types", {}).get(ins.operand2[1:], "")
+            u32_arith = (isinstance(ty1, str) and ty1.strip().startswith("unsigned int")) or (
+                isinstance(ty2, str) and ty2.strip().startswith("unsigned int")
+            )
+
             if bop == "+":
-                self._emit("  addq %rcx, %rax")
+                if u32_arith:
+                    self._emit("  addl %ecx, %eax")
+                else:
+                    self._emit("  addq %rcx, %rax")
             elif bop == "-":
-                self._emit("  subq %rcx, %rax")
+                if u32_arith:
+                    self._emit("  subl %ecx, %eax")
+                else:
+                    self._emit("  subq %rcx, %rax")
             elif bop == "*":
-                self._emit("  imulq %rcx, %rax")
+                if u32_arith:
+                    self._emit("  imull %ecx, %eax")
+                else:
+                    self._emit("  imulq %rcx, %rax")
             elif bop == "/":
                 self._emit("  cqto")
                 self._emit("  idivq %rcx")

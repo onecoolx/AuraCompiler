@@ -858,6 +858,15 @@ class Parser:
             self.advance()
             # minimal integer-only parsing; float support later
             v = tok.value
+            # strip integer suffixes (uUlL). The lexer currently tokenizes e.g.
+            # "1U" as a NUMBER token with value "1" followed by IDENTIFIER "U"
+            # in some cases. Treat a trailing identifier consisting only of
+            # [uUlL]+ as part of the numeric literal.
+            if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
+                suf = self.current_token.value
+                if suf and all(c in "uUlL" for c in suf):
+                    v = v + suf
+                    self.advance()
             base = 10
             is_hex = False
             is_octal = False

@@ -30,6 +30,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **DONE** C-style cast (subset) — `tests/test_cast.py`
 - **DONE** `&&`/`||` short-circuit — `tests/test_short_circuit.py`
 - **PARTIAL** integer promotions + usual arithmetic conversions — comparisons for `int` vs `unsigned int` (best-effort) — `tests/test_int_conversions.py`
+- **PARTIAL** unsigned 32-bit arithmetic wrap for `+/-/*` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** pointer arithmetic completeness — `tests/test_pointer_arith.py` (more TODO)
 
 ### Statements / Control Flow

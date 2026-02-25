@@ -49,3 +49,28 @@ int main(){
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_addition_wrap32(tmp_path):
+        # unsigned int arithmetic is modulo 2^32: (0xFFFFFFFFu + 2u) == 1u
+        code = r"""
+int main(){
+    unsigned int a = (unsigned int)0xFFFFFFFFU;
+    unsigned int b = 2U;
+    unsigned int c = a + b;
+    return (c == 1U) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_multiplication_wrap32(tmp_path):
+        # 0x80000000u * 2u == 0u (wrap)
+        code = r"""
+int main(){
+    unsigned int a = (unsigned int)0x80000000U;
+    unsigned int c = a * 2U;
+    return (c == 0U) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
