@@ -706,6 +706,7 @@ class IRGenerator:
             # Logical operators must be short-circuiting in C.
             if expr.operator in {"&&", "||"}:
                 out = self._new_temp()
+
                 l = self._gen_expr(expr.left)
 
                 rhs_lbl = self._new_label(".Lsc_rhs")
@@ -759,13 +760,20 @@ class IRGenerator:
             t = self._new_temp()
             else_lbl = self._new_label(".Lternelse")
             end_lbl = self._new_label(".Lternend")
+
+            # Best-effort: apply usual arithmetic conversions to the conditional
+            # operator result for the limited unsigned-int tracking used by
+            # later comparisons.
+            tv = self._gen_expr(expr.true_expr)
+            fv = self._gen_expr(expr.false_expr)
+            if self._is_unsigned_operand(tv) or self._is_unsigned_operand(fv):
+                self._var_types[t] = "unsigned int"
+
             c = self._gen_expr(expr.condition)
             self.instructions.append(IRInstruction(op="jz", operand1=c, label=else_lbl))
-            tv = self._gen_expr(expr.true_expr)
             self.instructions.append(IRInstruction(op="mov", result=t, operand1=tv))
             self.instructions.append(IRInstruction(op="jmp", label=end_lbl))
             self.instructions.append(IRInstruction(op="label", label=else_lbl))
-            fv = self._gen_expr(expr.false_expr)
             self.instructions.append(IRInstruction(op="mov", result=t, operand1=fv))
             self.instructions.append(IRInstruction(op="label", label=end_lbl))
             return t
