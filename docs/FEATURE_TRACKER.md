@@ -36,6 +36,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** shift semantics: unsigned `>>` logical, signed `>>` arithmetic (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** compound assignment conversions for `unsigned int` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** integer promotions for `short`/`unsigned short` (tests) — `tests/test_int_conversions.py`
+- **PARTIAL** comparisons involving `short`/`unsigned short` after promotions (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** pointer arithmetic completeness — `tests/test_pointer_arith.py` (more TODO)
 
 ### Statements / Control Flow

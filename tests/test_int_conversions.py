@@ -268,6 +268,31 @@ int main(){
                 assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_compare_unsigned_short_with_zero(tmp_path):
+                # Both operands are not declared unsigned int, but the comparison should be
+                # unsigned because unsigned short promotes to int (non-negative) and then
+                # usual arithmetic conversions against 0 should still behave as expected.
+                # This test is a canary to ensure we don't accidentally treat it as signed
+                # 16-bit in comparisons.
+                code = r"""
+int main(){
+        unsigned short x = (unsigned short)65535;
+        return (x > 0) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_compare_signed_short_negative_with_zero(tmp_path):
+                code = r"""
+int main(){
+        short x = (short)65535; /* -1 */
+        return (x < 0) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):
         # NOTE: conditional operator usual arithmetic conversions are not yet
         # implemented; keep a placeholder to re-enable once conversions are wired.
