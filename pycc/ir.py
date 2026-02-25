@@ -289,6 +289,50 @@ class IRGenerator:
         self.label_counter += 1
         return l
 
+    def _is_struct_or_union_type(self, base: object) -> bool:
+        if not isinstance(base, str):
+            return False
+        b = base.strip()
+        return b.startswith("struct ") or b.startswith("union ")
+
+    def _lower_local_struct_initializer(self, decl: Declaration) -> bool:
+        """Lower `struct/union T x = { ... }` for local variables (subset).
+
+        Subset:
+        - non-designated initializer list
+        - direct fields only (no nested aggregates)
+        - remaining fields are zero-filled
+
+        Returns True if handled.
+        """
+
+        if decl.initializer is None:
+            return False
+        if not self._is_struct_or_union_type(decl.type.base):
+            return False
+        if not isinstance(decl.initializer, Initializer):
+            return False
+        if self._sema_ctx is None:
+            return False
+
+        layout = getattr(self._sema_ctx, "layouts", {}).get(str(decl.type.base))
+        if layout is None:
+            return False
+
+        # Preserve declared type on the symbol so codegen can resolve member offsets/sizes.
+        self._var_types[f"@{decl.name}"] = str(decl.type.base)
+
+        # Parse initializer list elements in order (designators unsupported here).
+        elems = [e for (_d, e) in (decl.initializer.elements or [])]
+        members = list(layout.member_offsets.keys())
+
+        for i, m in enumerate(members):
+            val_expr = elems[i] if i < len(elems) else IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
+            v = self._gen_expr(val_expr)
+            # Use store_member; codegen consults semantic layout for offset/size.
+            self.instructions.append(IRInstruction(op="store_member", result=v, operand1=f"@{decl.name}", operand2=m))
+        return True
+
     # -------------
     # Functions
     # -------------
@@ -329,38 +373,43 @@ class IRGenerator:
                                 s0 = inits0[0].value
                                 op1 = f"array(char,${len(s0) + 1})"
 
-                    if op1 is not None:
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
-                        self._local_arrays.add(item.name)
-                        self._var_types[f"@{item.name}"] = str(op1)
+                    # Emit decl and record type info.
+                    # Priority:
+                    # 1) struct/union
+                    # 2) arrays (known or inferred)
+                    # 3) scalars
+                    if self._is_struct_or_union_type(item.type.base):
+                        decl_op1 = str(item.type.base)
+                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
+                        self._var_types[f"@{item.name}"] = decl_op1
                     else:
                         # Infer `T[]` element count from brace initializer.
                         # e.g. `int a[] = {1,2,3};`
-                        if getattr(item, "array_size", None) is None and item.initializer is not None:
+                        if op1 is None and getattr(item, "array_size", None) is None and item.initializer is not None:
                             inits0 = self._const_initializer_list(item.initializer)
                             if inits0 is not None and isinstance(item.type.base, str) and item.type.base in {"int", "char", "unsigned char"}:
-                                # Only support a flat initializer list of scalar constants here.
-                                # Only scalar constant expressions (int/char +/- unary) for now.
                                 if all(isinstance(e, (IntLiteral, CharLiteral, UnaryOp)) for e in inits0):
                                     n0 = len(inits0)
                                     op1 = f"array({item.type.base},${n0})"
-                                    self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
-                                    self._local_arrays.add(item.name)
-                                    self._var_types[f"@{item.name}"] = str(op1)
-                                    # Populate so later store_index lowering knows N.
                                     try:
                                         item.array_size = n0
                                     except Exception:
                                         pass
-                                else:
-                                    op1 = None
-                        if op1 is None:
-                            # scalar local
-                            op1 = item.type.base
-                            if getattr(item.type, "is_pointer", False):
-                                op1 = f"{op1}*"
+
+                        if op1 is not None:
                             self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
+                            self._local_arrays.add(item.name)
                             self._var_types[f"@{item.name}"] = str(op1)
+                        else:
+                            decl_op1 = item.type.base
+                            if getattr(item.type, "is_pointer", False):
+                                decl_op1 = f"{decl_op1}*"
+                            self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
+                            self._var_types[f"@{item.name}"] = str(decl_op1)
+
+                    # Local struct/union brace init (subset)
+                    if self._lower_local_struct_initializer(item):
+                        continue
                     if item.initializer is not None:
                         # Fixed-size char array string initializer: `char s[N] = "hi";`
                         # Must be lowered as byte stores, not via generic int-array init.
@@ -562,11 +611,12 @@ class IRGenerator:
                 if isinstance(it, CaseStmt):
                     case_entries.append((it, self._new_label(".Lcase")))
                 elif isinstance(it, DefaultStmt):
-                    default_lbl = self._new_label(".Ldefault")
+                    if default_lbl is None:
+                        default_lbl = self._new_label(".Ldefault")
 
             dispatch_default = default_lbl if default_lbl is not None else end
 
-            # Dispatch chain.
+            # Dispatch chain: if (sw == cv) goto case_label
             for c, lbl in case_entries:
                 cv = self._gen_expr(c.value)
                 t = self._new_temp()
@@ -577,53 +627,9 @@ class IRGenerator:
             # Emit the linear body stream.
             # - Declarations inside the switch compound allocate locals as usual.
             # - `case`/`default` emit labels, then continue emitting subsequent statements.
-            # Pre-compute identity-based mapping for labels.
             case_label_by_id = {id(c): lbl for (c, lbl) in case_entries}
 
             for it in flat:
-                if isinstance(it, Declaration):
-                    # IMPORTANT: locals in IR use the "@" prefix for codegen.
-                    if getattr(it, "array_size", None) is not None:
-                        self.instructions.append(
-                            IRInstruction(op="decl", result=f"@{it.name}", operand1=f"array({it.type.base},${it.array_size})")
-                        )
-                        self._local_arrays.add(it.name)
-                    else:
-                        op1 = it.type.base
-                        if getattr(it.type, "is_pointer", False):
-                            op1 = f"{op1}*"
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{it.name}", operand1=op1))
-                    if it.initializer is not None:
-                        # Special-case: char s[N] = "..." must be lowered as byte stores.
-                        # Do this before the generic `int a[N] = {...}` path.
-                        if item.type.base in {"char", "unsigned char"} and getattr(item, "array_size", None) is not None:
-                            inits = self._const_initializer_list(item.initializer)
-                            if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
-                                s = inits[0].value
-                                n = int(item.array_size)
-                                bytes_vals = [ord(c) for c in s]
-                                if len(bytes_vals) < n:
-                                    bytes_vals.append(0)
-                                if len(bytes_vals) > n:
-                                    bytes_vals = bytes_vals[:n]
-                                else:
-                                    bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
-                                for idx, b in enumerate(bytes_vals):
-                                    self.instructions.append(
-                                        IRInstruction(
-                                            op="store_index",
-                                            result=f"${b}",
-                                            operand1=f"@{item.name}",
-                                            operand2=f"${idx}",
-                                            label="char",
-                                        )
-                                    )
-                                continue
-
-                        v = self._gen_expr(it.initializer)
-                        self.instructions.append(IRInstruction(op="mov", result=f"@{it.name}", operand1=v))
-                    continue
-
                 if isinstance(it, CaseStmt):
                     lbl = case_label_by_id.get(id(it))
                     if lbl is None:
