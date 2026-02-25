@@ -293,6 +293,32 @@ int main(){
                 assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_unsigned_long_comparison_with_int(tmp_path):
+                # Usual arithmetic conversions: unsigned long vs int -> unsigned long.
+                code = r"""
+int main(){
+        unsigned long u = 1UL;
+        int s = -1;
+        return (s < u) ? 0 : 1; /* -1 converts to huge unsigned, so comparison is false */
+}
+""".lstrip()
+                # Expected: false -> return 1
+                assert _compile_and_run(tmp_path, code) == 1
+
+
+def test_unsigned_long_add_wrap64(tmp_path):
+                # 64-bit wrap: ULONG_MAX + 1 == 0
+                code = r"""
+int main(){
+        unsigned long x = (unsigned long)0;
+        x = x - 1;
+        x = x + 1;
+        return x == 0UL ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):
         # NOTE: conditional operator usual arithmetic conversions are not yet
         # implemented; keep a placeholder to re-enable once conversions are wired.
