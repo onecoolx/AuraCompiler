@@ -92,7 +92,7 @@ class Compiler:
         
         # Phase 4: IR Generation
         try:
-            ir = self.get_ir(ast)
+            ir = self.get_ir(ast, sema_ctx=sema_ctx)
         except Exception as e:
             return CompilationResult(success=False, errors=[f"IR generation failed: {e}"])
         
@@ -323,9 +323,13 @@ class Compiler:
         analyzer = SemanticAnalyzer()
         return analyzer.analyze(ast)
     
-    def get_ir(self, ast):
+    def get_ir(self, ast, sema_ctx=None):
         """Generate IR from AST"""
         generator = IRGenerator()
+        # Optional semantic context enables better lowering decisions
+        # (e.g. signed/unsigned comparisons).
+        if sema_ctx is not None:
+            setattr(generator, "_sema_ctx", sema_ctx)
         return generator.generate(ast)
     
     def optimize_ir(self, ir):

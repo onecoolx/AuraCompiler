@@ -176,6 +176,34 @@ class IRGenerator:
                     )
         return self.instructions
 
+    def _is_unsigned_operand(self, op: str) -> bool:
+        """Best-effort check whether an operand is unsigned.
+
+        We only use this for comparison lowering in the current milestone.
+        Operands are IR strings like:
+        - locals: "@x"
+        - immediates: "$5"
+        - temps: "%t0"
+
+        We conservatively treat immediates as signed.
+        """
+
+        if not isinstance(op, str):
+            return False
+        if op.startswith("@"):  # locals / globals
+            # local type table (populated from decl/param operand1)
+            ty = getattr(self, "_var_types", {}).get(op)
+            if isinstance(ty, str) and ty.strip().startswith("unsigned "):
+                return True
+            # global type table (from semantic pass)
+            if self._sema_ctx is not None:
+                g = getattr(self._sema_ctx, "global_types", {})
+                # stored without '@'
+                ty2 = g.get(op[1:])
+                if isinstance(ty2, str) and ty2.strip().startswith("unsigned "):
+                    return True
+        return False
+
     def _const_initializer_imm(self, init: Any) -> Optional[str]:
         """Return an immediate like "$42" for supported constant initializers."""
         from pycc.ast_nodes import IntLiteral, CharLiteral, UnaryOp
@@ -240,8 +268,11 @@ class IRGenerator:
         self.instructions.append(IRInstruction(op="func_begin", label=fn.name))
         # reset per-function array set
         self._local_arrays = set()
+        # Track declared types of locals/params for signedness decisions.
+        self._var_types: dict[str, str] = {}
         # params are treated as locals; codegen will map them from ABI regs
         for p in fn.parameters:
+            self._var_types[f"@{p.name}"] = str(p.type.base)
             self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=p.type.base))
         self._gen_stmt(fn.body)
         # Ensure a return exists
@@ -262,12 +293,14 @@ class IRGenerator:
                             IRInstruction(op="decl", result=f"@{item.name}", operand1=f"array({item.type.base},${item.array_size})")
                         )
                         self._local_arrays.add(item.name)
+                        self._var_types[f"@{item.name}"] = f"array({item.type.base},${item.array_size})"
                     else:
                         # encode declared base type for later codegen (struct/union)
                         op1 = item.type.base
                         if getattr(item.type, "is_pointer", False):
                             op1 = f"{op1}*"
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
+                        self._var_types[f"@{item.name}"] = str(op1)
                     if item.initializer is not None:
                         # Local aggregate initialization for arrays.
                         if getattr(item, "array_size", None) is not None:
@@ -706,7 +739,15 @@ class IRGenerator:
             l = self._gen_expr(expr.left)
             r = self._gen_expr(expr.right)
             t = self._new_temp()
-            self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator))
+            if expr.operator in {"==", "!=", "<", "<=", ">", ">="}:
+                # Preserve comparison signedness in IR (best-effort) so codegen
+                # doesn't need full typing. If either operand is unsigned, use
+                # unsigned condition codes.
+                unsigned = self._is_unsigned_operand(l) or self._is_unsigned_operand(r)
+                cmp_op = f"u{expr.operator}" if unsigned else expr.operator
+                self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=cmp_op))
+            else:
+                self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator))
             return t
         if isinstance(expr, FunctionCall):
             fn = self._gen_expr(expr.function)

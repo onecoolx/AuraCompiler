@@ -326,13 +326,11 @@ class CodeGenerator:
                 self._emit("  cqto")
                 self._emit("  idivq %rcx")
                 self._emit("  movq %rdx, %rax")
-            elif bop in {"==", "!=", "<", "<=", ">", ">="}:
+            elif bop in {"==", "!=", "<", "<=", ">", ">=", "u<", "u<=", "u>", "u>=", "u==", "u!="}:
                 self._emit("  cmpq %rcx, %rax")
-                # Best-effort usual arithmetic conversion: if either operand is unsigned,
-                # emit unsigned comparison condition codes.
-                unsigned = self._as_unsigned_type(self._var_types.get(ins.operand1, "")) or self._as_unsigned_type(
-                    self._var_types.get(ins.operand2, "")
-                )
+                # Signedness is decided in IR for the current milestone.
+                unsigned = bop.startswith("u")
+                core = bop[1:] if unsigned else bop
                 if unsigned:
                     cc = {
                         "==": "sete",
@@ -341,7 +339,7 @@ class CodeGenerator:
                         "<=": "setbe",
                         ">": "seta",
                         ">=": "setae",
-                    }[bop]
+                    }[core]
                 else:
                     cc = {
                         "==": "sete",
@@ -350,7 +348,7 @@ class CodeGenerator:
                         "<=": "setle",
                         ">": "setg",
                         ">=": "setge",
-                    }[bop]
+                    }[core]
                 self._emit(f"  {cc} %al")
                 self._emit("  movzbq %al, %rax")
             elif bop == "&&":
