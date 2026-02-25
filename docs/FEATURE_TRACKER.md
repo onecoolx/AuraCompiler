@@ -65,6 +65,8 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** `sizeof` on local arrays returns byte size (best-effort) — `tests/test_initializers.py`
 - **PARTIAL** character literals (`'a'`) in expressions (lowered as `int`, best-effort escapes TBD) — covered across `tests/test_initializers.py` and others
 - **PARTIAL** local array size inference from brace initializer: `int a[] = {..}` (scalar-only subset) — `tests/test_initializers.py`
+- **PARTIAL** inferred-size array edge cases: singleton initializer `{1}` infers length 1 — `tests/test_initializers.py`
+- **PARTIAL** fixed-size array brace init truncates extra elements (best-effort) — `tests/test_initializers.py`
 - **PARTIAL** local array size inference from brace initializer: `char s[] = {...}` (scalar-only subset) — `tests/test_initializers.py`
 - **TODO** struct initializers (`struct S x = { ... }`) and nested aggregate init
 - **TODO** global aggregate initializers (emit `.data` bytes/relocations)

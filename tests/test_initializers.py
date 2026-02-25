@@ -66,6 +66,16 @@ int main(){
     assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_local_int_array_brace_initializer_truncate(tmp_path):
+                code = r"""
+int main(){
+        int a[2] = {1, 2, 3, 4};
+        return (a[0] == 1 && a[1] == 2) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_local_char_array_infer_size_from_string_initializer(tmp_path):
         code = r"""
 int main(){
@@ -101,6 +111,36 @@ def test_local_char_array_brace_initializer_zero_fill(tmp_path):
 int main(){
     char s[5] = {'h', 'i'};
     return (s[0] == 'h' && s[1] == 'i' && s[2] == 0 && s[3] == 0 && s[4] == 0) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_int_array_infer_size_singleton_initializer(tmp_path):
+        code = r"""
+int main(){
+    int a[] = {1};
+    return (sizeof(a) == 4 && a[0] == 1) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_int_array_infer_size_multi_element_initializer(tmp_path):
+        code = r"""
+int main(){
+    int a[] = {1, 2, 3};
+    return (sizeof(a) == 12 && a[2] == 3) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_char_array_infer_size_singleton_initializer(tmp_path):
+        code = r"""
+int main(){
+    char s[] = {'h'};
+    return (sizeof(s) == 1 && s[0] == 'h') ? 0 : 1;
 }
 """.lstrip()
         assert _compile_and_run(tmp_path, code) == 0
