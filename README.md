@@ -1,22 +1,32 @@
-# Aura Compiler Collection
+# AuraCompiler
 
-## Overview
+Practical **C89/ANSI C** compiler in **Python**.
 
-AuraCompiler is a complete implementation of a C89 compiler written in pure **Python**, following the classic three-stage compiler architecture: **frontend (lexer/parser)**, **middle-end (optimization)**, and **backend (code generation)**.
+Generates **x86-64 SysV** assembly and uses **binutils `as`/`ld`** to produce ELF executables.
 
-## Features
+## Features (current)
 
-- **C89 Standard Support**: Comprehensive support for C89 language features
+- **C89 subset** with growing coverage, validated by `pytest`
 - **Classic Compiler Architecture**: 
   - Lexical Analysis (Tokenization)
   - Syntax Analysis (AST Construction)
   - Semantic Analysis (Type Checking & Symbol Resolution)
-  - Intermediate Code Generation (3-Address Code)
-  - Optimization Pass (Constant Folding, Dead Code Elimination, etc.)
+  - IR Generation (minimal TAC-like instruction list)
+  - Optimizer (currently minimal)
   - Code Generation (x86-64 Assembly)
-  - Assembly to Object Code Conversion
+  - Assemble/link via `as`/`ld`
 - **Pure Python Implementation**: No external compiler dependencies (except for final linking)
 - **Comprehensive Error Reporting**: Detailed error messages with line/column information
+
+### Implemented language features (high level)
+
+- Declarations: globals/locals, `static`/`extern`, function prototypes + definitions
+- Types: `int`, `char`, pointers, arrays (int arrays), `typedef`
+- Aggregates: `struct`/`union` (basic layout + member access `.` / `->`)
+- Control flow: `if/else`, `for`, `while`, `do/while`, `switch/case/default`, `break/continue`, `goto`/labels
+- Expressions: arithmetic/bitwise/compare, assignment, calls, `?:`, `&` (address-of), member access
+- Operators: `sizeof`, C-style cast `(type)expr`
+- Enums: `enum` definitions + enumerator constants
 
 ## Project Structure
 
@@ -61,15 +71,20 @@ pip install -r requirements.txt
 ## Usage
 
 ```bash
-# Compile a C file
-python -m pycc.compiler -o output.s input.c
+# Compile to assembly
+python pycc.py -o output.s input.c
 
-# Compile to object file (requires gas and gcc linker)
-python -m pycc.compiler -o output.o input.c
+# Compile to object
+python pycc.py -o output.o input.c
 
-# Compile and link
-python -m pycc.compiler -o executable input.c
+# Compile + link to executable
+python pycc.py -o a.out input.c
 ```
+
+Toolchain overrides:
+
+- `PYCC_AS=...` override assembler (default: `as`)
+- `PYCC_LD=...` override linker (default: `ld`)
 
 ## Quick Start
 
@@ -106,34 +121,17 @@ else:
 - Stack frame management
 - Function prologue/epilogue
 
-## Supported C89 Features
+## Notes / current limitations
 
-- [ ] Basic data types (int, float, char, double, etc.)
-- [ ] Arrays and pointers
-- [ ] Structures and unions
-- [ ] Functions and recursion
-- [ ] Control flow (if, for, while, do-while, switch)
-- [ ] Operators (arithmetic, logical, bitwise, comparison)
-- [ ] Type casting
-- [ ] Standard library function calls (limited)
-- [ ] Preprocessor directives (basic support)
-- [ ] Variable-length arrays (VLA)
-- [ ] Inline functions
+- Not a full C89 implementation yet (work in progress).
+- No preprocessor (`#include`, macros).
+- Type system is partial (integer promotions/usual arithmetic conversions not fully modeled).
+- `&&`/`||` are short-circuiting.
+- No floating point.
 
-## Development Status
+## Development status
 
-- [x] Project structure setup
-- [x] Architecture design
-- [ ] Lexer implementation
-- [ ] Parser implementation
-- [ ] AST and symbol table
-- [ ] Semantic analysis
-- [ ] IR generation
-- [ ] Optimizer
-- [ ] Code generator
-- [ ] Assembler integration
-- [ ] Comprehensive testing
-- [ ] Documentation
+See `docs/C89_ROADMAP.md`.
 
 ## Contributing
 

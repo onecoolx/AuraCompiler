@@ -42,6 +42,8 @@ from pycc.ast_nodes import (
     BreakStmt,
     ContinueStmt,
     ReturnStmt,
+    GotoStmt,
+    LabelStmt,
     DeclStmt,
     Identifier,
     IntLiteral,
@@ -49,12 +51,15 @@ from pycc.ast_nodes import (
     CharLiteral,
     BinaryOp,
     UnaryOp,
+    SizeOf,
     Assignment,
     FunctionCall,
     ArrayAccess,
     MemberAccess,
     PointerMemberAccess,
     TernaryOp,
+    Cast,
+    EnumDecl,
 )
 
 
@@ -86,12 +91,19 @@ class Parser:
         """Parse entire program"""
         decls: List[Union[Declaration, FunctionDecl]] = []
 
+        # Some type specifiers (like enum definitions) enqueue extra top-level decls.
+        self._pending_enum_decls: List[EnumDecl] = []
+
         while not self._at(TokenType.EOF):
             # Skip stray semicolons
             if self._match(TokenType.SEMICOLON):
                 continue
 
-            decls.append(self._parse_external_declaration())
+            d = self._parse_external_declaration()
+            if self._pending_enum_decls:
+                decls.extend(self._pending_enum_decls)
+                self._pending_enum_decls = []
+            decls.append(d)
 
         # Use first token position for program location, default to 1:1
         if self.tokens:
@@ -146,7 +158,21 @@ class Parser:
         # allow storage-class specifier to appear before the type in top-level decls
         if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"extern", "static"}:
             return True
-        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "struct", "union"}:
+        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {
+            "int",
+            "void",
+            "char",
+            "struct",
+            "union",
+            "enum",
+            # integer/qualifier specifiers
+            "short",
+            "long",
+            "signed",
+            "unsigned",
+            "const",
+            "volatile",
+        }:
             return True
         # typedef names may appear as identifiers serving as type specifiers
         if self.current_token.type == TokenType.IDENTIFIER and self.current_token.value in self._typedefs:
@@ -234,10 +260,133 @@ class Parser:
         tok = self.current_token
         if not self._is_type_specifier():
             raise ParserError("Expected type specifier", tok)
-        # builtin
-        if tok.type == TokenType.KEYWORD and tok.value in {"int", "void", "char"}:
+        # qualifiers and integer-size/sign specifiers (C89 subset)
+        # We support combinations like:
+        #   unsigned int
+        #   unsigned
+        #   signed char
+        #   short
+        #   long int
+        #   const volatile unsigned long
+        is_const = False
+        is_volatile = False
+        is_unsigned = False
+        is_signed = False
+        size_kw: Optional[str] = None  # 'short'|'long' (single long for now)
+        saw_any = False
+        while self.current_token and self.current_token.type == TokenType.KEYWORD:
+            v = self.current_token.value
+            if v == "const":
+                is_const = True
+                saw_any = True
+                self.advance()
+                continue
+            if v == "volatile":
+                is_volatile = True
+                saw_any = True
+                self.advance()
+                continue
+            if v == "unsigned":
+                is_unsigned = True
+                saw_any = True
+                self.advance()
+                continue
+            if v == "signed":
+                is_signed = True
+                saw_any = True
+                self.advance()
+                continue
+            if v in {"short", "long"}:
+                size_kw = v
+                saw_any = True
+                self.advance()
+                continue
+            break
+
+        # builtin + sized integer forms
+        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char"}:
+            base_tok = self.current_token
             self.advance()
-            return Type(base=tok.value, line=tok.line, column=tok.column)
+            t = Type(base=base_tok.value, line=base_tok.line, column=base_tok.column)
+            t.is_const = is_const
+            t.is_volatile = is_volatile
+            t.is_unsigned = is_unsigned
+            t.is_signed = is_signed
+            # Encode short/long in base string for now (type system is stringly-typed elsewhere)
+            if base_tok.value == "int" and size_kw in {"short", "long"}:
+                t.base = f"{size_kw} int"
+            # Normalize unsigned/signed base strings for downstream string checks.
+            if t.base == "int":
+                if is_unsigned:
+                    t.base = "unsigned int"
+                elif is_signed:
+                    t.base = "int"
+            if t.base == "char":
+                if is_unsigned:
+                    t.base = "unsigned char"
+                elif is_signed:
+                    t.base = "char"
+            if t.base == "short int":
+                if is_unsigned:
+                    t.base = "unsigned short"
+            return t
+
+        # forms like: 'unsigned' (=> unsigned int), 'long' (=> long int), etc.
+        if saw_any:
+            if tok is None:
+                raise ParserError("Expected type specifier", tok)
+            t = Type(base="int", line=tok.line, column=tok.column)
+            t.is_const = is_const
+            t.is_volatile = is_volatile
+            t.is_unsigned = is_unsigned
+            t.is_signed = is_signed
+            if size_kw in {"short", "long"}:
+                t.base = f"{size_kw} int"
+            # Normalize for downstream string checks.
+            if t.base == "int" and is_unsigned:
+                t.base = "unsigned int"
+            if t.base == "short int" and is_unsigned:
+                t.base = "unsigned short"
+            if t.base == "long int" and is_unsigned:
+                t.base = "unsigned long"
+            return t
+
+        # enum type specifier: `enum Tag { A=1, B, ... }` / `enum Tag` / `enum { ... }`
+        if tok.type == TokenType.KEYWORD and tok.value == "enum":
+            self.advance()
+            tag_tok = None
+            if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
+                tag_tok = self.current_token
+                self.advance()
+
+            if self._match(TokenType.LBRACE):
+                members: List[tuple[str, Optional[object]]] = []
+                while not self._at(TokenType.RBRACE):
+                    if self._at(TokenType.EOF):
+                        raise ParserError("Unterminated enum list", self.current_token)
+                    name_tok = self._expect(TokenType.IDENTIFIER, "Expected enumerator name")
+                    value_expr = None
+                    if self._match(TokenType.ASSIGN):
+                        value_expr = self._parse_expression()
+                    members.append((name_tok.value, value_expr))
+                    if not self._match(TokenType.COMMA):
+                        break
+                # allow trailing comma
+                self._match(TokenType.COMMA)
+                self._expect(TokenType.RBRACE, "Expected '}' after enum list")
+
+                # queue a top-level EnumDecl so semantics can register constants
+                self._pending_enum_decls.append(
+                    EnumDecl(
+                        name=None if tag_tok is None else tag_tok.value,
+                        enumerators=members,
+                        line=tok.line,
+                        column=tok.column,
+                    )
+                )
+
+            tag_name = tag_tok.value if tag_tok else "<anonymous>"
+            return Type(base=f"enum {tag_name}", line=tok.line, column=tok.column)
 
         # struct/union type specifier: `struct Tag { ... }` / `struct Tag` / `struct { ... }`
         if tok.type == TokenType.KEYWORD and tok.value in {"struct", "union"}:
@@ -295,6 +444,8 @@ class Parser:
         else:
             while True:
                 base_type = self._parse_type_specifier()
+                while self._match(TokenType.STAR):
+                    base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
                 name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
                 params.append(Declaration(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column))
                 if not self._match(TokenType.COMMA):
@@ -372,6 +523,14 @@ class Parser:
         if tok is None:
             raise ParserError("Unexpected end of input")
 
+        # label: statement
+        if tok.type == TokenType.IDENTIFIER and self.peek() and self.peek().type == TokenType.COLON:
+            name_tok = tok
+            self.advance()  # ident
+            self._expect(TokenType.COLON, "Expected ':' after label")
+            stmt = self._parse_statement()
+            return LabelStmt(name=name_tok.value, statement=stmt, line=name_tok.line, column=name_tok.column)
+
         # compound
         if self._at(TokenType.LBRACE):
             return self._parse_compound_statement()
@@ -440,10 +599,33 @@ class Parser:
                 self.advance()
                 self._expect(TokenType.SEMICOLON, "Expected ';' after break")
                 return BreakStmt(line=tok.line, column=tok.column)
+            if kw == "goto":
+                self.advance()
+                lab = self._expect(TokenType.IDENTIFIER, "Expected label name after goto")
+                self._expect(TokenType.SEMICOLON, "Expected ';' after goto")
+                return GotoStmt(label=lab.value, line=tok.line, column=tok.column)
             if kw == "continue":
                 self.advance()
                 self._expect(TokenType.SEMICOLON, "Expected ';' after continue")
                 return ContinueStmt(line=tok.line, column=tok.column)
+            if kw == "switch":
+                self.advance()
+                self._expect(TokenType.LPAREN, "Expected '(' after switch")
+                expr = self._parse_expression()
+                self._expect(TokenType.RPAREN, "Expected ')' after switch expression")
+                body = self._parse_statement()
+                return SwitchStmt(expression=expr, body=body, line=tok.line, column=tok.column)
+            if kw == "case":
+                self.advance()
+                val = self._parse_expression()
+                self._expect(TokenType.COLON, "Expected ':' after case expression")
+                stmt = self._parse_statement()
+                return CaseStmt(value=val, statement=stmt, line=tok.line, column=tok.column)
+            if kw == "default":
+                self.advance()
+                self._expect(TokenType.COLON, "Expected ':' after default")
+                stmt = self._parse_statement()
+                return DefaultStmt(statement=stmt, line=tok.line, column=tok.column)
 
         # expression statement
         if self._match(TokenType.SEMICOLON):
@@ -581,6 +763,21 @@ class Parser:
 
     def _parse_unary(self):
         tok = self.current_token
+        if tok and tok.type == TokenType.KEYWORD and tok.value == "sizeof":
+            self.advance()
+            # sizeof(type-name) or sizeof unary-expression
+            if self._match(TokenType.LPAREN):
+                if self._is_type_specifier():
+                    ty = self._parse_type_specifier()
+                    while self._match(TokenType.STAR):
+                        ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
+                    self._expect(TokenType.RPAREN, "Expected ')' after sizeof(type)")
+                    return SizeOf(operand=None, type=ty, line=tok.line, column=tok.column)
+                expr = self._parse_expression()
+                self._expect(TokenType.RPAREN, "Expected ')' after sizeof expression")
+                return SizeOf(operand=expr, type=None, line=tok.line, column=tok.column)
+            operand = self._parse_unary()
+            return SizeOf(operand=operand, type=None, line=tok.line, column=tok.column)
         if tok and tok.type in {TokenType.PLUS, TokenType.MINUS, TokenType.BANG, TokenType.TILDE, TokenType.AMPERSAND, TokenType.STAR}:
             self.advance()
             operand = self._parse_unary()
@@ -649,6 +846,14 @@ class Parser:
             self.advance()
             return CharLiteral(value=tok.value, line=tok.line, column=tok.column)
         if self._match(TokenType.LPAREN):
+            # Either (expression) or (type-name) cast.
+            if self._is_type_specifier():
+                ty = self._parse_type_specifier()
+                while self._match(TokenType.STAR):
+                    ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
+                self._expect(TokenType.RPAREN, "Expected ')' after cast type")
+                expr = self._parse_unary()
+                return Cast(type=ty, expression=expr, line=tok.line, column=tok.column)
             expr = self._parse_expression()
             self._expect(TokenType.RPAREN, "Expected ')' ")
             return expr

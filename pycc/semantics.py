@@ -24,6 +24,7 @@ from pycc.ast_nodes import (
     TypedefDecl,
     StructDecl,
     UnionDecl,
+    EnumDecl,
         CompoundStmt,
         Statement,
         ExpressionStmt,
@@ -34,6 +35,8 @@ from pycc.ast_nodes import (
         ReturnStmt,
         BreakStmt,
         ContinueStmt,
+        GotoStmt,
+        LabelStmt,
         Identifier,
         IntLiteral,
         StringLiteral,
@@ -99,6 +102,7 @@ class SemanticAnalyzer:
         self._global_linkage: Dict[str, str] = {}
 
         self._global_types: Dict[str, str] = {}
+        self._enum_constants: Dict[str, int] = {}
 
         seen_globals: Dict[str, str] = {}
 
@@ -106,6 +110,8 @@ class SemanticAnalyzer:
             if isinstance(decl, FunctionDecl):
                 self._declare_global(decl.name, "function")
                 self._functions.add(decl.name)
+            elif isinstance(decl, EnumDecl):
+                self._register_enum_decl(decl)
             elif isinstance(decl, TypedefDecl):
                 # register typedef in global typedefs
                 self._declare_typedef_global(decl.name, decl.type)
@@ -149,6 +155,9 @@ class SemanticAnalyzer:
             elif isinstance(decl, TypedefDecl):
                 # typedef has no further analysis
                 pass
+            elif isinstance(decl, EnumDecl):
+                # already processed
+                pass
 
         if self.errors:
             raise SemanticError("\n".join(self.errors))
@@ -159,6 +168,56 @@ class SemanticAnalyzer:
             global_types=dict(self._global_types),
             global_linkage=dict(self._global_linkage),
         )
+
+    def _register_enum_decl(self, decl: EnumDecl) -> None:
+        cur = -1
+        for name, val_expr in (decl.enumerators or []):
+            if val_expr is None:
+                cur += 1
+            else:
+                cur = self._eval_const_int(val_expr)
+            self._enum_constants[name] = cur
+            # Treat enum constants as declared names in the global scope.
+            self._scopes[0].setdefault(name, "enum_const")
+
+    def _eval_const_int(self, expr: Expression) -> int:
+        # Minimal constant expression evaluator for enum values (C89 subset)
+        if isinstance(expr, IntLiteral):
+            return int(expr.value)
+        if isinstance(expr, CharLiteral):
+            return ord(expr.value)
+        if isinstance(expr, UnaryOp) and expr.operator in {"+", "-", "~"}:
+            v = self._eval_const_int(expr.operand)
+            if expr.operator == "+":
+                return v
+            if expr.operator == "-":
+                return -v
+            return ~v
+        if isinstance(expr, BinaryOp) and expr.operator in {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>"}:
+            l = self._eval_const_int(expr.left)
+            r = self._eval_const_int(expr.right)
+            if expr.operator == "+":
+                return l + r
+            if expr.operator == "-":
+                return l - r
+            if expr.operator == "*":
+                return l * r
+            if expr.operator == "/":
+                return int(l / r)
+            if expr.operator == "%":
+                return l % r
+            if expr.operator == "|":
+                return l | r
+            if expr.operator == "&":
+                return l & r
+            if expr.operator == "^":
+                return l ^ r
+            if expr.operator == "<<":
+                return l << r
+            return l >> r
+        if isinstance(expr, Identifier) and expr.name in self._enum_constants:
+            return self._enum_constants[expr.name]
+        raise SemanticError("enum value must be an integer constant expression")
 
     def _register_layout_decl(self, decl: Union[StructDecl, UnionDecl]) -> None:
         kind = "struct" if isinstance(decl, StructDecl) else "union"
@@ -280,6 +339,9 @@ class SemanticAnalyzer:
 
     def _analyze_function(self, fn: FunctionDecl) -> None:
         self._push_scope()
+        # function-scoped labels (C89)
+        self._labels_defined: Set[str] = set()
+        self._labels_gotoed: Set[str] = set()
         # best-effort map of identifier -> declared Type
         if not hasattr(self, "_decl_types"):
             self._decl_types = {}
@@ -287,6 +349,9 @@ class SemanticAnalyzer:
             self._declare_local(p.name, "param")
             self._decl_types[p.name] = p.type
         self._analyze_stmt(fn.body)
+        missing = sorted(self._labels_gotoed - self._labels_defined)
+        for m in missing:
+            self.errors.append(f"Undefined label '{m}'")
         self._pop_scope()
 
     def _analyze_stmt(self, stmt: Statement) -> None:
@@ -351,6 +416,15 @@ class SemanticAnalyzer:
         if isinstance(stmt, (BreakStmt, ContinueStmt)):
             return
 
+        if isinstance(stmt, LabelStmt):
+            self._labels_defined.add(stmt.name)
+            self._analyze_stmt(stmt.statement)
+            return
+
+        if isinstance(stmt, GotoStmt):
+            self._labels_gotoed.add(stmt.label)
+            return
+
         # Unknown statement types are ignored for now
 
     def _analyze_expr(self, expr: Expression) -> None:
@@ -358,6 +432,9 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, Identifier):
+            # enum constants are always in-scope as integer constants
+            if expr.name in getattr(self, "_enum_constants", {}):
+                return
             if not self._is_declared(expr.name):
                 # C89 implicit extern/implicit int isn't desired for variables.
                 # But allow unknown names if they are used as function identifiers.

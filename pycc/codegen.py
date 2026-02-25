@@ -122,6 +122,15 @@ class CodeGenerator:
                 continue
 
             # within function body
+            # Some IR lowerings may emit `decl` after the initial prologue scan.
+            # Ensure such locals are registered so later loads/stores don't
+            # mistakenly treat them as globals.
+            if ins.op == "decl" and ins.result:
+                if ins.result not in self._locals:
+                    # Allocate a slot now.
+                    self._ensure_local(ins.result)
+                i += 1
+                continue
             self._emit_ins(ins)
             i += 1
 
@@ -134,6 +143,12 @@ class CodeGenerator:
 
         return "\n".join(self.assembly_lines) + "\n"
 
+    def _is_local(self, sym: str) -> bool:
+        # Treat IR locals ("@x") as local even if they weren't part of the
+        # initial decl list, because IR lowering may introduce decls after
+        # the prologue scan.
+        return sym in self._locals
+
     # -----------------
     # Function framing
     # -----------------
@@ -144,7 +159,10 @@ class CodeGenerator:
         self._member_offsets = {}
         self._var_types: Dict[str, str] = {}
 
-        # Assign stack slots. Default: 8 bytes each.
+        # Assign stack slots.
+        # IMPORTANT: even if a variable's logical type is smaller (char/short/int),
+        # we must keep each stack slot at least 8 bytes to avoid overlapping
+        # locals when using simple "one offset per symbol" addressing.
         offset = 0
         for d in decls:
             if not d.result:
@@ -166,10 +184,11 @@ class CodeGenerator:
                 if elems > 1:
                     self._arrays[sym] = size_bytes
             else:
+                # Scalar locals: reserve a full 8-byte slot (simplifies addressing).
                 offset += 8
                 self._locals[sym] = offset
                 if d.operand1:
-                    # remember declared type base for member access
+                    # remember declared type base for load/store width decisions
                     self._var_types[sym] = str(d.operand1)
 
         # align stack to 16 bytes at call sites (after push %rbp)
@@ -194,11 +213,26 @@ class CodeGenerator:
             if reg_idx < len(arg_regs):
                 off = self._locals.get(d.result)
                 if off is not None:
-                    self._emit(f"  movq {arg_regs[reg_idx]}, -{off}(%rbp)")
+                    ty = str(d.operand1 or self._var_types.get(d.result, "")).strip()
+                    if ty == "char" or ty.startswith("char ") or ty == "unsigned char" or ty.startswith("unsigned char"):
+                        r = arg_regs[reg_idx]
+                        breg = {"%rdi": "%dil", "%rsi": "%sil", "%rdx": "%dl", "%rcx": "%cl", "%r8": "%r8b", "%r9": "%r9b"}.get(r, "%dil")
+                        self._emit(f"  movb {breg}, -{off}(%rbp)")
+                    elif ty == "short" or ty == "short int" or ty.startswith("short") or ty == "unsigned short" or ty.startswith("unsigned short"):
+                        # use 16-bit register name: di/si/dx/cx/r8w/r9w
+                        r = arg_regs[reg_idx]
+                        w = {"%rdi": "%di", "%rsi": "%si", "%rdx": "%dx", "%rcx": "%cx", "%r8": "%r8w", "%r9": "%r9w"}.get(r, "%di")
+                        self._emit(f"  movw {w}, -{off}(%rbp)")
+                    elif ty == "int" or ty.startswith("int ") or ty.startswith("enum ") or ty == "unsigned int" or ty.startswith("unsigned int"):
+                        r = arg_regs[reg_idx]
+                        l = {"%rdi": "%edi", "%rsi": "%esi", "%rdx": "%edx", "%rcx": "%ecx", "%r8": "%r8d", "%r9": "%r9d"}.get(r, "%edi")
+                        self._emit(f"  movl {l}, -{off}(%rbp)")
+                    else:
+                        self._emit(f"  movq {arg_regs[reg_idx]}, -{off}(%rbp)")
             if d.operand1:
                 self._var_types[d.result] = str(d.operand1)
             reg_idx += 1
-
+        
     # -----------------
     # Instruction emission
     # -----------------
@@ -491,14 +525,41 @@ class CodeGenerator:
             return
         if operand.startswith("@"):
             # local variable if it already has a stack slot; otherwise treat as global
-            if operand in self._locals:
+            if self._is_local(operand):
                 off = self._ensure_local(operand)
+                ty = self._var_types.get(operand, "")
+                b = ty.strip()
+                # signed/unsigned char
+                if b == "char" or b.startswith("char "):
+                    self._emit(f"  movsbq -{off}(%rbp), {reg}")
+                    return
+                if b == "unsigned char" or b.startswith("unsigned char"):
+                    self._emit(f"  movzbq -{off}(%rbp), {reg}")
+                    return
+                # signed/unsigned short
+                if b == "short" or b == "short int" or b.startswith("short"):
+                    self._emit(f"  movswq -{off}(%rbp), {reg}")
+                    return
+                if b == "unsigned short" or b == "unsigned short int" or b.startswith("unsigned short"):
+                    self._emit(f"  movzwq -{off}(%rbp), {reg}")
+                    return
+                # signed int / enum
+                if b == "int" or b.startswith("int ") or b.startswith("enum "):
+                    self._emit(f"  movslq -{off}(%rbp), {reg}")
+                    return
+                # unsigned int: load 32-bit and zero-extend
+                if b == "unsigned int" or b.startswith("unsigned int"):
+                    self._emit(f"  movl -{off}(%rbp), %eax")
+                    if reg != "%rax":
+                        self._emit(f"  movq %rax, {reg}")
+                    return
+                # long/pointers/default
                 self._emit(f"  movq -{off}(%rbp), {reg}")
                 return
             sym = operand[1:]
             # Global objects: load based on what was declared in this TU.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-            if isinstance(ty, str) and ty.endswith("*"):
+            if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
                 self._emit(f"  movq {sym}(%rip), {reg}")
             else:
                 # MVP default: 32-bit signed int
@@ -520,13 +581,27 @@ class CodeGenerator:
             return
         if result.startswith("@"):
             # local if it has a slot; otherwise global
-            if result in self._locals:
+            if self._is_local(result):
                 off = self._ensure_local(result)
+                ty = self._var_types.get(result, "")
+                b = ty.strip()
+                if b == "char" or b.startswith("char ") or b == "unsigned char" or b.startswith("unsigned char"):
+                    src = "%al" if reg == "%rax" else reg
+                    self._emit(f"  movb {src}, -{off}(%rbp)")
+                    return
+                if b == "short" or b == "short int" or b.startswith("short") or b == "unsigned short" or b.startswith("unsigned short"):
+                    src = "%ax" if reg == "%rax" else reg
+                    self._emit(f"  movw {src}, -{off}(%rbp)")
+                    return
+                if b == "int" or b.startswith("int ") or b.startswith("enum ") or b == "unsigned int" or b.startswith("unsigned int"):
+                    src = "%eax" if reg == "%rax" else reg
+                    self._emit(f"  movl {src}, -{off}(%rbp)")
+                    return
                 self._emit(f"  movq {reg}, -{off}(%rbp)")
                 return
             sym = result[1:]
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-            if isinstance(ty, str) and ty.endswith("*"):
+            if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
                 self._emit(f"  movq {reg}, {sym}(%rip)")
             else:
                 # MVP: store 32-bit int

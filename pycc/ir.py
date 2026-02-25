@@ -31,9 +31,14 @@ from pycc.ast_nodes import (
     WhileStmt,
     DoWhileStmt,
     ForStmt,
+    SwitchStmt,
+    CaseStmt,
+    DefaultStmt,
     ReturnStmt,
     BreakStmt,
     ContinueStmt,
+    GotoStmt,
+    LabelStmt,
     Identifier,
     IntLiteral,
     StringLiteral,
@@ -45,9 +50,41 @@ from pycc.ast_nodes import (
     MemberAccess,
     PointerMemberAccess,
     TernaryOp,
+    SizeOf,
+    Cast,
     Statement,
     Expression,
 )
+
+
+def _type_size(ty: Optional[object]) -> int:
+    """Best-effort sizeof for the current project stage.
+
+    Returns byte size for builtin integers/pointers and for the stringly-typed
+    forms used by the rest of the compiler (e.g. "long int").
+    """
+
+    if ty is None:
+        return 8
+    # Type node
+    base = getattr(ty, "base", None)
+    if isinstance(base, str):
+        if getattr(ty, "is_pointer", False):
+            return 8
+        b = base.strip()
+        if b == "char" or b == "unsigned char" or b == "signed char":
+            return 1
+        if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+            return 2
+        if b == "int" or b == "unsigned int" or b == "signed int":
+            return 4
+        if b in {"long int", "long", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
+            return 8
+        # treat enums as int
+        if b.startswith("enum "):
+            return 4
+    # fallback
+    return 8
 
 
 @dataclass
@@ -81,6 +118,25 @@ class IRGenerator:
         self.label_counter = 0
         self._break_stack = []
         self._continue_stack = []
+
+        # Enum constants are compile-time integers; record them so Identifier
+        # lowering can replace them with immediates.
+        self._enum_constants: dict[str, int] = {}
+        for decl in ast.declarations:
+            from pycc.ast_nodes import EnumDecl
+            if isinstance(decl, EnumDecl):
+                cur = -1
+                for name, val_expr in (decl.enumerators or []):
+                    if val_expr is None:
+                        cur += 1
+                    else:
+                        # Reuse the semantics evaluator if available later; for now
+                        # support simple integer literals only.
+                        if hasattr(val_expr, "value"):
+                            cur = int(getattr(val_expr, "value"))
+                        else:
+                            cur = cur + 1
+                    self._enum_constants[name] = cur
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl) and decl.body is not None:
@@ -271,6 +327,121 @@ class IRGenerator:
             self._continue_stack.pop()
             return
 
+        if isinstance(stmt, SwitchStmt):
+            # Lower as a chain of compares/jumps (no jump table).
+            #
+            # Key property: fallthrough must work. That means the *body* of the switch
+            # must be emitted as one linear statement stream where `case`/`default`
+            # are just labels, not isolated sub-statements.
+            end = self._new_label(".Lendswitch")
+            self._break_stack.append(end)
+
+            sw = self._gen_expr(stmt.expression)
+
+            # Flatten the switch body into a linear list of items.
+            # The parser currently models `case ...: stmt` as `CaseStmt(value, statement)`.
+            # We treat that as: [case-label, ...flatten(stmt)...].
+            flat: List[Union[Statement, Declaration]] = []
+
+            def _flatten(s: Statement) -> None:
+                if isinstance(s, CompoundStmt):
+                    for it in s.statements:
+                        flat.append(it)
+                    return
+                flat.append(s)
+
+            _flatten(stmt.body)
+
+            # Switch bodies are normally a CompoundStmt. If it's not, we still want
+            # local declarations like `switch(x) int r=0;` to work via normal lowering.
+            # (This is also the place to ensure we don't treat local decls as globals.)
+            if not isinstance(stmt.body, CompoundStmt):
+                # Emit the body as-is after dispatch (rare in well-formed C).
+                pass
+
+            # Map labels for each case/default in the flattened stream.
+            case_entries: List[tuple[CaseStmt, str]] = []
+            default_lbl: Optional[str] = None
+            for it in flat:
+                if isinstance(it, CaseStmt):
+                    case_entries.append((it, self._new_label(".Lcase")))
+                elif isinstance(it, DefaultStmt):
+                    default_lbl = self._new_label(".Ldefault")
+
+            dispatch_default = default_lbl if default_lbl is not None else end
+
+            # Dispatch chain.
+            for c, lbl in case_entries:
+                cv = self._gen_expr(c.value)
+                t = self._new_temp()
+                self.instructions.append(IRInstruction(op="binop", result=t, operand1=sw, operand2=cv, label="=="))
+                self.instructions.append(IRInstruction(op="jnz", operand1=t, label=lbl))
+            self.instructions.append(IRInstruction(op="jmp", label=dispatch_default))
+
+            # Emit the linear body stream.
+            # - Declarations inside the switch compound allocate locals as usual.
+            # - `case`/`default` emit labels, then continue emitting subsequent statements.
+            # Pre-compute identity-based mapping for labels.
+            case_label_by_id = {id(c): lbl for (c, lbl) in case_entries}
+
+            for it in flat:
+                if isinstance(it, Declaration):
+                    # IMPORTANT: locals in IR use the "@" prefix for codegen.
+                    if getattr(it, "array_size", None) is not None:
+                        self.instructions.append(
+                            IRInstruction(op="decl", result=f"@{it.name}", operand1=f"${it.array_size}")
+                        )
+                    else:
+                        self.instructions.append(IRInstruction(op="decl", result=f"@{it.name}", operand1=it.type.base))
+                    if it.initializer is not None:
+                        v = self._gen_expr(it.initializer)
+                        self.instructions.append(IRInstruction(op="mov", result=f"@{it.name}", operand1=v))
+                    continue
+
+                if isinstance(it, CaseStmt):
+                    lbl = case_label_by_id.get(id(it))
+                    if lbl is None:
+                        # Shouldn't happen, but keep lowering robust.
+                        lbl = self._new_label(".Lcase")
+                    self.instructions.append(IRInstruction(op="label", label=lbl))
+                    # Emit the statement that syntactically follows the label.
+                    self._gen_stmt(it.statement)
+                    continue
+
+                if isinstance(it, DefaultStmt):
+                    # default label
+                    if default_lbl is None:
+                        default_lbl = self._new_label(".Ldefault")
+                    self.instructions.append(IRInstruction(op="label", label=default_lbl))
+                    self._gen_stmt(it.statement)
+                    continue
+
+                self._gen_stmt(it)
+
+            self.instructions.append(IRInstruction(op="label", label=end))
+            self._break_stack.pop()
+            return
+
+        if isinstance(stmt, CaseStmt):
+            # Normally handled inside SwitchStmt lowering.
+            self._gen_stmt(stmt.statement)
+            return
+
+        if isinstance(stmt, DefaultStmt):
+            # Normally handled inside SwitchStmt lowering.
+            self._gen_stmt(stmt.statement)
+            return
+
+        if isinstance(stmt, LabelStmt):
+            # C labels are function-scoped. Lower to a plain IR label.
+            self.instructions.append(IRInstruction(op="label", label=f".Luser_{stmt.name}"))
+            self._gen_stmt(stmt.statement)
+            return
+
+        if isinstance(stmt, GotoStmt):
+            self.instructions.append(IRInstruction(op="jmp", label=f".Luser_{stmt.label}"))
+            return
+
         if isinstance(stmt, BreakStmt):
             if self._break_stack:
                 self.instructions.append(IRInstruction(op="jmp", label=self._break_stack[-1]))
@@ -303,19 +474,55 @@ class IRGenerator:
             # encode string in IR as str_const with result temp
             self.instructions.append(IRInstruction(op="str_const", result=t, operand1=expr.value))
             return t
+        if isinstance(expr, SizeOf):
+            # For now, lower sizeof to an immediate constant as best-effort.
+            # Semantics/type-checking will be extended later; this supports core C89 tests.
+            if expr.type is not None:
+                return f"${_type_size(expr.type)}"
+            # sizeof(expression): handle a few common expression shapes.
+            op = expr.operand
+            if op is None:
+                return "$8"
+            from pycc.ast_nodes import (
+                Identifier as ASTIdentifier,
+                ArrayAccess as ASTArrayAccess,
+                MemberAccess as ASTMemberAccess,
+                PointerMemberAccess as ASTPointerMemberAccess,
+            )
+            if isinstance(op, ASTIdentifier):
+                # Without full typing in IR, assume int.
+                return "$4"
+            if isinstance(op, ASTArrayAccess):
+                # element size: int arrays are 4, char* indexing is 1. Default to 4.
+                return "$4"
+            if isinstance(op, (ASTMemberAccess, ASTPointerMemberAccess)):
+                return "$4"
+            # fallback
+            return "$4"
+
+        if isinstance(expr, Cast):
+            # MVP: keep casts as value-preserving for ints/pointers.
+            # This is enough for common C89 patterns like `(int*)0`, `(char)65`.
+            v = self._gen_expr(expr.expression)
+            # If casting to pointer, allow integer literal 0 to stay 0; otherwise passthrough.
+            return v
         if isinstance(expr, Identifier):
+            # enum constants lower to immediates
+            if hasattr(self, "_enum_constants") and expr.name in self._enum_constants:
+                return f"${self._enum_constants[expr.name]}"
             return f"@{expr.name}"
+        if isinstance(expr, MemberAccess):
+            base = self._gen_expr(expr.object)
+            t = self._new_temp()
+            self.instructions.append(
+                IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member)
+            )
+            return t
         if isinstance(expr, ArrayAccess):
             base = self._gen_expr(expr.array)
             idx = self._gen_expr(expr.index)
             t = self._new_temp()
             self.instructions.append(IRInstruction(op="load_index", result=t, operand1=base, operand2=idx))
-            return t
-        if isinstance(expr, MemberAccess):
-            base = self._gen_expr(expr.object)
-            t = self._new_temp()
-            # layout is resolved in codegen using struct tag + member name in operand2
-            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member))
             return t
         if isinstance(expr, PointerMemberAccess):
             base = self._gen_expr(expr.pointer)
@@ -369,6 +576,39 @@ class IRGenerator:
                 self.instructions.append(IRInstruction(op="unop", result=t, operand1=v, label=expr.operator))
             return t
         if isinstance(expr, BinaryOp):
+            # Logical operators must be short-circuiting in C.
+            if expr.operator in {"&&", "||"}:
+                out = self._new_temp()
+                l = self._gen_expr(expr.left)
+
+                rhs_lbl = self._new_label(".Lsc_rhs")
+                true_lbl = self._new_label(".Lsc_true")
+                false_lbl = self._new_label(".Lsc_false")
+                end_lbl = self._new_label(".Lsc_end")
+
+                if expr.operator == "&&":
+                    # if (!l) goto false; else eval r; if (!r) goto false; else goto true
+                    self.instructions.append(IRInstruction(op="jz", operand1=l, label=false_lbl))
+                    self.instructions.append(IRInstruction(op="label", label=rhs_lbl))
+                    r = self._gen_expr(expr.right)
+                    self.instructions.append(IRInstruction(op="jz", operand1=r, label=false_lbl))
+                    self.instructions.append(IRInstruction(op="jmp", label=true_lbl))
+                else:
+                    # if (l) goto true; else eval r; if (r) goto true; else goto false
+                    self.instructions.append(IRInstruction(op="jnz", operand1=l, label=true_lbl))
+                    self.instructions.append(IRInstruction(op="label", label=rhs_lbl))
+                    r = self._gen_expr(expr.right)
+                    self.instructions.append(IRInstruction(op="jnz", operand1=r, label=true_lbl))
+                    self.instructions.append(IRInstruction(op="jmp", label=false_lbl))
+
+                self.instructions.append(IRInstruction(op="label", label=true_lbl))
+                self.instructions.append(IRInstruction(op="mov", result=out, operand1="$1"))
+                self.instructions.append(IRInstruction(op="jmp", label=end_lbl))
+                self.instructions.append(IRInstruction(op="label", label=false_lbl))
+                self.instructions.append(IRInstruction(op="mov", result=out, operand1="$0"))
+                self.instructions.append(IRInstruction(op="label", label=end_lbl))
+                return out
+
             l = self._gen_expr(expr.left)
             r = self._gen_expr(expr.right)
             t = self._new_temp()

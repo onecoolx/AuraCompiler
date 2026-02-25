@@ -143,6 +143,13 @@ class Compiler:
                         link_cmd = self._default_link_cmd(o_path=o_path, out_path=out)
                         self._run(link_cmd, "link")
                     except (IOError, subprocess.CalledProcessError) as e:
+                        if isinstance(e, subprocess.CalledProcessError):
+                            detail = getattr(e, "stderr", None) or getattr(e, "output", None)
+                            if detail:
+                                return CompilationResult(
+                                    success=False,
+                                    errors=[f"Linking failed: {e}\n{detail}"],
+                                )
                         return CompilationResult(success=False, errors=[f"Linking failed: {e}"])
         
         return CompilationResult(
