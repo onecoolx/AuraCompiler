@@ -90,3 +90,15 @@ int main(){
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_function_pointer_local_prototype_then_assign(tmp_path):
+    code = r"""
+int inc(int x){ return x + 1; }
+int main(){
+  int (*fp)(int);
+  fp = inc;
+  return fp(3) == 4 ? 0 : 1;
+}
+""".lstrip()
+    assert _compile_and_run(tmp_path, code) == 0
