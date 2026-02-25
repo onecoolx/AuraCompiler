@@ -398,6 +398,47 @@ int main(){
                 assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_signed_char_load_sign_extend(tmp_path):
+                code = r"""
+int main(){
+        signed char x = -1;
+        /* must remain negative after load */
+        return (x < 0) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_char_load_zero_extend(tmp_path):
+                code = r"""
+int main(){
+        unsigned char x = 255;
+        return (x > 0) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_short_load_sign_extend(tmp_path):
+                code = r"""
+int main(){
+        short x = -1;
+        return (x < 0) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_short_load_zero_extend(tmp_path):
+                code = r"""
+int main(){
+        unsigned short x = 65535;
+        return (x > 0) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):
         # NOTE: conditional operator usual arithmetic conversions are not yet
         # implemented; keep a placeholder to re-enable once conversions are wired.
