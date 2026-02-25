@@ -193,15 +193,19 @@ class IRGenerator:
         if op.startswith("@"):  # locals / globals
             # local type table (populated from decl/param operand1)
             ty = getattr(self, "_var_types", {}).get(op)
-            if isinstance(ty, str) and ty.strip().startswith("unsigned "):
-                return True
+            if isinstance(ty, str):
+                ty_norm = ty.strip().lower()
+                if ty_norm.startswith("unsigned "):
+                    return True
             # global type table (from semantic pass)
             if self._sema_ctx is not None:
                 g = getattr(self._sema_ctx, "global_types", {})
                 # stored without '@'
                 ty2 = g.get(op[1:])
-                if isinstance(ty2, str) and ty2.strip().startswith("unsigned "):
-                    return True
+                if isinstance(ty2, str):
+                    ty2_norm = ty2.strip().lower()
+                    if ty2_norm.startswith("unsigned "):
+                        return True
         return False
 
     def _const_initializer_imm(self, init: Any) -> Optional[str]:

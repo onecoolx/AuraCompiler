@@ -322,9 +322,10 @@ class CodeGenerator:
                 ty1 = getattr(self._sema_ctx, "global_types", {}).get(ins.operand1[1:], "")
             if not ty2 and isinstance(ins.operand2, str) and ins.operand2.startswith("@") and self._sema_ctx is not None:
                 ty2 = getattr(self._sema_ctx, "global_types", {}).get(ins.operand2[1:], "")
-            u32_arith = (isinstance(ty1, str) and ty1.strip().startswith("unsigned int")) or (
-                isinstance(ty2, str) and ty2.strip().startswith("unsigned int")
-            )
+            ty1n = ty1.strip().lower() if isinstance(ty1, str) else ""
+            ty2n = ty2.strip().lower() if isinstance(ty2, str) else ""
+            u32_arith = ty1n.startswith("unsigned int") or ty2n.startswith("unsigned int")
+            u64_arith = ty1n.startswith("unsigned long") or ty2n.startswith("unsigned long")
 
             if bop == "+":
                 if u32_arith:
@@ -346,6 +347,10 @@ class CodeGenerator:
                     # unsigned 32-bit division: edx:eax / ecx
                     self._emit("  xorl %edx, %edx")
                     self._emit("  divl %ecx")
+                elif u64_arith:
+                    # unsigned 64-bit division: rdx:rax / rcx
+                    self._emit("  xorq %rdx, %rdx")
+                    self._emit("  divq %rcx")
                 else:
                     self._emit("  cqto")
                     self._emit("  idivq %rcx")
@@ -354,6 +359,10 @@ class CodeGenerator:
                     self._emit("  xorl %edx, %edx")
                     self._emit("  divl %ecx")
                     self._emit("  movl %edx, %eax")
+                elif u64_arith:
+                    self._emit("  xorq %rdx, %rdx")
+                    self._emit("  divq %rcx")
+                    self._emit("  movq %rdx, %rax")
                 else:
                     self._emit("  cqto")
                     self._emit("  idivq %rcx")
