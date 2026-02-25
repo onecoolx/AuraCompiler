@@ -74,3 +74,13 @@ int main(){
 }
 """.lstrip()
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_int_array_infer_size_from_brace_initializer(tmp_path):
+        code = r"""
+int main(){
+    int a[] = {1, 2, 3, 4};
+    return (sizeof(a) == 16 && (a[0] + a[1] + a[2] + a[3]) == 10) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
