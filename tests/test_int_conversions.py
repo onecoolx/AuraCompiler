@@ -194,3 +194,38 @@ int main(){
 }
 """.lstrip()
                 assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_compound_add_assign_wrap32(tmp_path):
+                # a += b should follow unsigned int arithmetic (wrap modulo 2^32)
+                code = r"""
+int main(){
+        unsigned int a = (unsigned int)-1;
+        a += 2U;
+        return (a == 1U) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_compound_div_assign(tmp_path):
+                # a /= 2U should use unsigned division
+                code = r"""
+int main(){
+        unsigned int a = (unsigned int)-1;
+        a /= 2U;
+        return (a == (unsigned int)0x7FFFFFFFU) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_compound_mod_assign(tmp_path):
+                code = r"""
+int main(){
+        unsigned int a = 5U;
+        a %= 2U;
+        return (a == 1U) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
