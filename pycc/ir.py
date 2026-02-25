@@ -346,6 +346,32 @@ class IRGenerator:
                             self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
                             self._var_types[f"@{item.name}"] = str(op1)
                     if item.initializer is not None:
+                        # Fixed-size char array string initializer: `char s[N] = "hi";`
+                        # Must be lowered as byte stores, not via generic int-array init.
+                        if item.type.base in {"char", "unsigned char"} and getattr(item, "array_size", None) is not None:
+                            inits = self._const_initializer_list(item.initializer)
+                            if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
+                                s = inits[0].value
+                                n = int(item.array_size)
+                                bytes_vals = [ord(c) for c in s]
+                                if len(bytes_vals) < n:
+                                    bytes_vals.append(0)
+                                if len(bytes_vals) > n:
+                                    bytes_vals = bytes_vals[:n]
+                                else:
+                                    bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
+                                for idx, b in enumerate(bytes_vals):
+                                    self.instructions.append(
+                                        IRInstruction(
+                                            op="store_index",
+                                            result=f"${b}",
+                                            operand1=f"@{item.name}",
+                                            operand2=f"${idx}",
+                                            label="char",
+                                        )
+                                    )
+                                continue
+
                         # Local aggregate initialization for arrays.
                         if getattr(item, "array_size", None) is not None:
                             inits = self._const_initializer_list(item.initializer)
@@ -391,6 +417,13 @@ class IRGenerator:
                                         )
                                     )
                                 continue
+
+                        # int a[N] = {...} (or any array base we don't support specially)
+                        # already handled above when `array_size` is known.
+                        # If we reached here and this is an array, it means we don't
+                        # support the given initializer form for arrays yet.
+                        if getattr(item, "array_size", None) is not None:
+                            raise Exception("unsupported array initializer")
 
                         # Scalar init (existing path)
                         v = self._gen_expr(item.initializer)
@@ -545,6 +578,32 @@ class IRGenerator:
                             op1 = f"{op1}*"
                         self.instructions.append(IRInstruction(op="decl", result=f"@{it.name}", operand1=op1))
                     if it.initializer is not None:
+                        # Special-case: char s[N] = "..." must be lowered as byte stores.
+                        # Do this before the generic `int a[N] = {...}` path.
+                        if item.type.base in {"char", "unsigned char"} and getattr(item, "array_size", None) is not None:
+                            inits = self._const_initializer_list(item.initializer)
+                            if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
+                                s = inits[0].value
+                                n = int(item.array_size)
+                                bytes_vals = [ord(c) for c in s]
+                                if len(bytes_vals) < n:
+                                    bytes_vals.append(0)
+                                if len(bytes_vals) > n:
+                                    bytes_vals = bytes_vals[:n]
+                                else:
+                                    bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
+                                for idx, b in enumerate(bytes_vals):
+                                    self.instructions.append(
+                                        IRInstruction(
+                                            op="store_index",
+                                            result=f"${b}",
+                                            operand1=f"@{item.name}",
+                                            operand2=f"${idx}",
+                                            label="char",
+                                        )
+                                    )
+                                continue
+
                         v = self._gen_expr(it.initializer)
                         self.instructions.append(IRInstruction(op="mov", result=f"@{it.name}", operand1=v))
                     continue
