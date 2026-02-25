@@ -252,6 +252,10 @@ class IRGenerator:
 
         if isinstance(init, Initializer):
             return [e for (_d, e) in (init.elements or [])]
+        # Allow `char s[] = "..."` to be treated like an initializer-list with one element.
+        # The parser currently represents this as a plain StringLiteral expression.
+        if isinstance(init, StringLiteral):
+            return [init]
         return None
 
     # -------------
@@ -295,15 +299,25 @@ class IRGenerator:
         if isinstance(stmt, CompoundStmt):
             for item in stmt.statements:
                 if isinstance(item, Declaration):
-                    # If this is an array with known size, encode element count in operand1
+                    # If this is an array with known size, encode element count in operand1.
+                    # Also support C89: `char s[] = "..."` (size inferred from string literal).
+                    op1 = None
                     if getattr(item, "array_size", None) is not None:
-                        self.instructions.append(
-                            IRInstruction(op="decl", result=f"@{item.name}", operand1=f"array({item.type.base},${item.array_size})")
-                        )
-                        self._local_arrays.add(item.name)
-                        self._var_types[f"@{item.name}"] = f"array({item.type.base},${item.array_size})"
+                        op1 = f"array({item.type.base},${item.array_size})"
                     else:
-                        # encode declared base type for later codegen (struct/union)
+                        # Infer `char[]` size from string-literal initializer.
+                        if item.type.base in {"char", "unsigned char"} and item.initializer is not None:
+                            inits0 = self._const_initializer_list(item.initializer)
+                            if inits0 is not None and len(inits0) == 1 and isinstance(inits0[0], StringLiteral):
+                                s0 = inits0[0].value
+                                op1 = f"array(char,${len(s0) + 1})"
+
+                    if op1 is not None:
+                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
+                        self._local_arrays.add(item.name)
+                        self._var_types[f"@{item.name}"] = str(op1)
+                    else:
+                        # scalar local
                         op1 = item.type.base
                         if getattr(item.type, "is_pointer", False):
                             op1 = f"{op1}*"
@@ -330,8 +344,8 @@ class IRGenerator:
                                 self.instructions.append(
                                     IRInstruction(
                                         op="store_index",
-                                        result=f"@{item.name}",
-                                        operand1=v,
+                                        result=v,
+                                        operand1=f"@{item.name}",
                                         operand2=f"${idx}",
                                         label="int",
                                     )
@@ -344,22 +358,12 @@ class IRGenerator:
                             if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
                                 s = inits[0].value
                                 bytes_vals = [ord(c) for c in s] + [0]
-                                count = len(bytes_vals)
-                                # Override earlier scalar decl with an array decl so codegen allocates storage.
-                                self.instructions.append(
-                                    IRInstruction(
-                                        op="decl",
-                                        result=f"@{item.name}",
-                                        operand1=f"array(char,${count})",
-                                    )
-                                )
-                                self._local_arrays.add(item.name)
                                 for idx, b in enumerate(bytes_vals):
                                     self.instructions.append(
                                         IRInstruction(
                                             op="store_index",
-                                            result=f"@{item.name}",
-                                            operand1=f"${b}",
+                                            result=f"${b}",
+                                            operand1=f"@{item.name}",
                                             operand2=f"${idx}",
                                             label="char",
                                         )
@@ -649,9 +653,22 @@ class IRGenerator:
             # a declared array_size on the declaration node (recorded earlier by decl).
             # Since IR is stringly-typed, we conservatively treat any symbol that was
             # declared as an array in this function as decaying to its address.
+            # NOTE: `self._local_arrays` stores plain names (without '@').
             if hasattr(self, "_local_arrays") and expr.name in getattr(self, "_local_arrays"):
                 t = self._new_temp()
                 self.instructions.append(IRInstruction(op="mov_addr", result=t, operand1=sym))
+                # Preserve array element type info on the decayed pointer temp
+                # so `load_index/store_index` can compute correct element size.
+                try:
+                    ty = self._var_types.get(sym)
+                    if isinstance(ty, str) and ty.strip().startswith("array("):
+                        inner = ty.strip()[len("array(") :]
+                        if inner.endswith(")"):
+                            inner = inner[:-1]
+                        base_part = inner.split(",", 1)[0].strip()
+                        self._var_types[t] = f"{base_part}*"
+                except Exception:
+                    pass
                 return t
             return sym
         if isinstance(expr, FunctionDecl):

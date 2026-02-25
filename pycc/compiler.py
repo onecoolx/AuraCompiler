@@ -340,7 +340,8 @@ class Compiler:
     def get_assembly(self, ir, sema_ctx=None):
         """Generate assembly from IR"""
         generator = CodeGenerator(self.optimize, sema_ctx=sema_ctx)
-        return generator.generate(ir)
+        asm = generator.generate(ir)
+        return asm
 
 
 if __name__ == "__main__":

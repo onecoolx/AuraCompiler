@@ -131,6 +131,29 @@ class CodeGenerator:
                 if ins.result not in self._locals:
                     # Allocate a slot now.
                     self._ensure_local(ins.result)
+                # Keep type info in sync for decls emitted after prologue scan
+                # (e.g. local `char s[] = "..."` lowers by overriding decl).
+                if ins.operand1:
+                    self._var_types[ins.result] = str(ins.operand1)
+                    # If an array decl is introduced late, remember its size so
+                    # later stack addressing and array decay behaves consistently.
+                    op1 = str(ins.operand1)
+                    if op1.strip().startswith("array("):
+                        enc = op1.strip()
+                        inner = enc[len("array(") :]
+                        if inner.endswith(")"):
+                            inner = inner[:-1]
+                        base_part, cnt_part = (inner.split(",", 1) + [""])[:2]
+                        base_part = base_part.strip()
+                        cnt_part = cnt_part.strip()
+                        elems = 1
+                        if cnt_part.startswith("$"):
+                            try:
+                                elems = int(cnt_part[1:])
+                            except Exception:
+                                elems = 1
+                        elem_sz = self._type_size_bytes(base_part)
+                        self._arrays[ins.result] = max(0, elems) * elem_sz
                 i += 1
                 continue
             self._emit_ins(ins)
@@ -289,6 +312,17 @@ class CodeGenerator:
             src = ins.operand1 or ""
             self._addr_of_symbol(src, "%rax")
             self._store_result(ins.result, "%rax")
+            # Preserve best-effort type info for address temps. IR may annotate
+            # such temps in `sema_ctx.var_types` (or rely on generator-side tables),
+            # but codegen needs it to choose correct element size in load_index.
+            if ins.result and isinstance(src, str):
+                ty = self._var_types.get(src)
+                if isinstance(ty, str) and ty.strip().startswith("array("):
+                    inner = ty.strip()[len("array(") :]
+                    if inner.endswith(")"):
+                        inner = inner[:-1]
+                    base_part = inner.split(",", 1)[0].strip()
+                    self._var_types[ins.result] = f"{base_part}*"
             return
 
         if op == "unop":
@@ -346,16 +380,21 @@ class CodeGenerator:
             if bop == "+":
                 if u32_arith:
                     self._emit("  addl %ecx, %eax")
+                    # 32-bit unsigned arithmetic wraps modulo 2^32; ensure the
+                    # computed value in %rax is zero-extended for subsequent 64-bit uses.
+                    self._emit("  movl %eax, %eax")
                 else:
                     self._emit("  addq %rcx, %rax")
             elif bop == "-":
                 if u32_arith:
                     self._emit("  subl %ecx, %eax")
+                    self._emit("  movl %eax, %eax")
                 else:
                     self._emit("  subq %rcx, %rax")
             elif bop == "*":
                 if u32_arith:
                     self._emit("  imull %ecx, %eax")
+                    self._emit("  movl %eax, %eax")
                 else:
                     self._emit("  imulq %rcx, %rax")
             elif bop == "/":
@@ -509,30 +548,38 @@ class CodeGenerator:
                 elem_sz = self._type_size_bytes(base_part)
             elif isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
+            elif isinstance(base, str) and base.startswith("%t"):
+                # For temps used as addresses, consult `_var_types` to infer pointee size.
+                tyt = self._var_types.get(base)
+                if isinstance(tyt, str) and "*" in tyt:
+                    elem_sz = self._pointee_size_bytes(tyt)
+                else:
+                    # Fall back: if the base temp comes from an address-of array,
+                    # its pointee is typically an int-sized element in our MVP.
+                    # Keep elem_sz as-is.
+                    pass
+
+            # A temp base is always treated as a pointer/address value.
+            is_ptr_base = (isinstance(base_ty, str) and "*" in base_ty) or (isinstance(base, str) and base.startswith("%t"))
             # compute address: base + idx*elem_sz
             # - if base is a pointer value, load the pointer value
             # - else treat it as an array object and take its address
-            if isinstance(base_ty, str) and "*" in base_ty:
+            if is_ptr_base:
                 self._load_operand(base, "%rax")
             else:
                 # base is an array object or a raw address temp
-                if isinstance(base, str) and base.startswith("%t"):
-                    self._load_operand(base, "%rax")
-                else:
-                    self._addr_of_symbol(base, "%rax")
+                self._addr_of_symbol(base, "%rax")
             self._load_operand(idx, "%rcx")
-            if elem_sz == 1:
-                pass
-            else:
+            if elem_sz != 1:
                 self._emit(f"  imulq ${elem_sz}, %rcx")
             self._emit("  addq %rcx, %rax")
+            # load with width based on element size
             if elem_sz == 1:
                 self._emit("  movsbl (%rax), %eax")
                 self._emit("  movslq %eax, %rax")
             elif elem_sz == 2:
                 self._emit("  movswq (%rax), %rax")
             elif elem_sz == 4:
-                # load 32-bit signed int and sign-extend to %rax
                 self._emit("  movslq (%rax), %rax")
             else:
                 self._emit("  movq (%rax), %rax")
@@ -713,8 +760,32 @@ class CodeGenerator:
                     return
                 # unsigned int: load 32-bit and zero-extend
                 if b == "unsigned int" or b.startswith("unsigned int"):
-                    self._emit(f"  movl -{off}(%rbp), %eax")
-                    if reg != "%rax":
+                    # IMPORTANT: load into the requested destination register.
+                    # Using %eax unconditionally can clobber a live value in
+                    # %rax (e.g. binop operand1) when loading operand2.
+                    if reg == "%rax":
+                        self._emit(f"  movl -{off}(%rbp), %eax")
+                    elif reg == "%rcx":
+                        self._emit(f"  movl -{off}(%rbp), %ecx")
+                    elif reg == "%rbx":
+                        self._emit(f"  movl -{off}(%rbp), %ebx")
+                    elif reg == "%rdx":
+                        self._emit(f"  movl -{off}(%rbp), %edx")
+                    elif reg == "%rsi":
+                        self._emit(f"  movl -{off}(%rbp), %esi")
+                    elif reg == "%rdi":
+                        self._emit(f"  movl -{off}(%rbp), %edi")
+                    elif reg == "%r8":
+                        self._emit(f"  movl -{off}(%rbp), %r8d")
+                    elif reg == "%r9":
+                        self._emit(f"  movl -{off}(%rbp), %r9d")
+                    elif reg == "%r10":
+                        self._emit(f"  movl -{off}(%rbp), %r10d")
+                    elif reg == "%r11":
+                        self._emit(f"  movl -{off}(%rbp), %r11d")
+                    else:
+                        # Fallback: use %eax and copy.
+                        self._emit(f"  movl -{off}(%rbp), %eax")
                         self._emit(f"  movq %rax, {reg}")
                     return
                 # long/pointers/default

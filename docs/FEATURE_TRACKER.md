@@ -37,7 +37,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** integer promotions + usual arithmetic conversions — comparisons for `int` vs `unsigned int` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** usual arithmetic conversions involving `unsigned long` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** unsigned `unsigned long` division/modulo semantics (tests) — `tests/test_int_conversions.py`
-- **PARTIAL** unsigned 32-bit arithmetic wrap for `+/-/*` (best-effort) — `tests/test_int_conversions.py`
+- **PARTIAL** unsigned 32-bit arithmetic wrap for `+/-/*` (best-effort; fixed reg-clobber in codegen) — `tests/test_int_conversions.py`
 - **PARTIAL** unsigned 32-bit division/modulo for `/` and `%` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** shift semantics: unsigned `>>` logical, signed `>>` arithmetic (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** compound assignment conversions for `unsigned int` (best-effort) — `tests/test_int_conversions.py`
@@ -58,7 +58,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 ### Initialization / Data
 
 - **PARTIAL** global string literal pointer init — `tests/test_global_string_ptr.py`
-- **PARTIAL** local array initializers (non-designated): `int a[N] = {..}` and zero-fill, plus `char s[] = "..."` — `tests/test_initializer_aggregate.py`
+- **PARTIAL** local array initializers (non-designated): `int a[N] = {..}` and zero-fill, plus `char s[] = "..."` — `tests/test_initializers.py`
 - **TODO** struct initializers (`struct S x = { ... }`) and nested aggregate init
 - **TODO** global aggregate initializers (emit `.data` bytes/relocations)
 
