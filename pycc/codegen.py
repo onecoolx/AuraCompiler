@@ -342,12 +342,22 @@ class CodeGenerator:
                 else:
                     self._emit("  imulq %rcx, %rax")
             elif bop == "/":
-                self._emit("  cqto")
-                self._emit("  idivq %rcx")
+                if u32_arith:
+                    # unsigned 32-bit division: edx:eax / ecx
+                    self._emit("  xorl %edx, %edx")
+                    self._emit("  divl %ecx")
+                else:
+                    self._emit("  cqto")
+                    self._emit("  idivq %rcx")
             elif bop == "%":
-                self._emit("  cqto")
-                self._emit("  idivq %rcx")
-                self._emit("  movq %rdx, %rax")
+                if u32_arith:
+                    self._emit("  xorl %edx, %edx")
+                    self._emit("  divl %ecx")
+                    self._emit("  movl %edx, %eax")
+                else:
+                    self._emit("  cqto")
+                    self._emit("  idivq %rcx")
+                    self._emit("  movq %rdx, %rax")
             elif bop in {"==", "!=", "<", "<=", ">", ">=", "u<", "u<=", "u>", "u>=", "u==", "u!="}:
                 self._emit("  cmpq %rcx, %rax")
                 # Signedness is decided in IR for the current milestone.
