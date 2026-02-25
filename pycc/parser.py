@@ -157,7 +157,7 @@ class Parser:
         if self.current_token is None:
             return False
         # allow storage-class specifier to appear before the type in top-level decls
-        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"extern", "static"}:
+        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"extern", "static", "auto", "register"}:
             return True
         if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {
             "int",
@@ -556,6 +556,17 @@ class Parser:
         return CompoundStmt(statements=items, line=lbrace.line, column=lbrace.column)
 
     def _parse_local_declaration(self) -> Declaration:
+        storage_class: Optional[str] = None
+
+        # storage-class-specifier (C89 subset): auto/register/static/extern
+        if (
+            self.current_token
+            and self.current_token.type == TokenType.KEYWORD
+            and self.current_token.value in {"auto", "register", "static", "extern"}
+        ):
+            storage_class = self.current_token.value
+            self.advance()
+
         # support local typedefs
         if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
             self.advance()
@@ -593,6 +604,7 @@ class Parser:
         else:
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
             decl = self._finish_declarator(base_type, name_tok)
+        decl.storage_class = storage_class
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
         return decl
 
