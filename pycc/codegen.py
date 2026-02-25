@@ -51,6 +51,8 @@ class CodeGenerator:
         self.assembly_lines = []
         self._string_pool = {}
         self._string_counter = 0
+        # function symbols in this translation unit (for function pointer decay)
+        self._functions = {ins.label for ins in instructions if ins.op == "func_begin" and ins.label}
 
         # First pass: emit global declarations/definitions.
         gdefs = [ins for ins in instructions if ins.op == "gdef"]
@@ -464,9 +466,22 @@ class CodeGenerator:
                 self._emit(f"  movq %rax, {arg_regs[idx]}")
 
             target = ins.operand1 or ""
-            if target.startswith("@"):  # function symbol
-                target = target[1:]
-            self._emit(f"  call {target}")
+            if target.startswith("@"):  # symbol
+                # If it's a known function in this TU, do a direct call.
+                sym = target[1:]
+                if sym in getattr(self, "_functions", set()):
+                    self._emit(f"  call {sym}")
+                else:
+                    # Otherwise treat it as a function pointer variable.
+                    self._load_operand(target, "%rax")
+                    self._emit("  call *%rax")
+            else:
+                # Indirect call via function pointer stored in a local/temp.
+                if not target.startswith("%t") and not target.startswith("@"):
+                    # Parser/IR may pass a bare identifier for local variables.
+                    target = f"@{target}"
+                self._load_operand(target, "%rax")
+                self._emit("  call *%rax")
             self._store_result(ins.result, "%rax")
             return
 
@@ -706,6 +721,10 @@ class CodeGenerator:
                 self._emit(f"  movq -{off}(%rbp), {reg}")
                 return
             sym = operand[1:]
+            # If operand refers to a known function symbol, load its address.
+            if sym in getattr(self, "_functions", set()):
+                self._emit(f"  leaq {sym}(%rip), {reg}")
+                return
             # Global objects: load based on what was declared in this TU.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
             if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):

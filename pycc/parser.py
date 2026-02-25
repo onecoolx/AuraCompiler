@@ -481,10 +481,22 @@ class Parser:
             return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
 
         base_type = self._parse_type_specifier()
+        # Support parentheses around declarators (e.g. function pointers):
+        #   int (*fp)(int);
         while self._match(TokenType.STAR):
             base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
-        name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
-        decl = self._finish_declarator(base_type, name_tok)
+
+        if self._match(TokenType.LPAREN):
+            # parse inner pointer part: (*name)
+            ptr_ty = base_type
+            while self._match(TokenType.STAR):
+                ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+            name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+            self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+            decl = self._finish_declarator(ptr_ty, name_tok)
+        else:
+            name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+            decl = self._finish_declarator(base_type, name_tok)
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
         return decl
 
@@ -493,6 +505,27 @@ class Parser:
         # pointers (limited: consume leading '*'s)
         while self._match(TokenType.STAR):
             ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
+
+        # function declarator: name(params)
+        # Minimal support for function pointer declarations where the type is a
+        # pointer, but the declarator has a trailing parameter list.
+        if self._match(TokenType.LPAREN):
+            # Parse and discard parameter types/names for now (signature typing
+            # is deferred); we only need to consume tokens and mark it as a
+            # function pointer in the type string.
+            depth = 1
+            while self.current_token and depth > 0:
+                if self._match(TokenType.LPAREN):
+                    depth += 1
+                    continue
+                if self._match(TokenType.RPAREN):
+                    depth -= 1
+                    continue
+                self.advance()
+            # Represent as pointer-to-function in a lightweight way.
+            if not ty.is_pointer:
+                ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
+            ty = Type(base=f"{ty.base} (*)()", is_pointer=True, line=ty.line, column=ty.column)
 
         initializer = None
 

@@ -654,6 +654,10 @@ class IRGenerator:
                 self.instructions.append(IRInstruction(op="mov_addr", result=t, operand1=sym))
                 return t
             return sym
+        if isinstance(expr, FunctionDecl):
+            # Function designator in expression context decays to a function
+            # pointer; represent it as a direct symbol reference.
+            return f"@{expr.name}"
         if isinstance(expr, MemberAccess):
             base = self._gen_expr(expr.object)
             t = self._new_temp()
