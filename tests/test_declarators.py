@@ -66,3 +66,27 @@ int main(){
 }
 """.lstrip()
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_function_returning_function_pointer_prototype(tmp_path):
+    code = r"""
+int inc(int x){ return x + 1; }
+int (*get(void))(int x);
+int (*get(void))(int x){ return inc; }
+int main(){
+    return get()(3) == 4 ? 0 : 1;
+}
+""".lstrip()
+    assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_function_returning_function_pointer_extern(tmp_path):
+    code = r"""
+int inc(int x){ return x + 1; }
+extern int (*get(void))(int x);
+int (*get(void))(int x){ return inc; }
+int main(){
+    return get()(3) == 4 ? 0 : 1;
+}
+""".lstrip()
+    assert _compile_and_run(tmp_path, code) == 0
