@@ -219,7 +219,9 @@ class IRGenerator:
         if isinstance(init, IntLiteral):
             return f"${int(init.value)}"
         if isinstance(init, CharLiteral):
-            return f"${int(init.value)}"
+            # CharLiteral.value is a single-character string (e.g. "h").
+            # Use its code point as the integer value.
+            return f"${ord(init.value)}"
         if isinstance(init, UnaryOp) and init.op in {"+", "-"}:
             inner = self._const_initializer_imm(init.operand)
             if inner is None:
@@ -598,6 +600,10 @@ class IRGenerator:
     def _gen_expr(self, expr: Expression) -> str:
         if isinstance(expr, IntLiteral):
             return f"${expr.value}"
+        if isinstance(expr, CharLiteral):
+            # In C, character constants have type int.
+            # Our AST stores the raw single-character string.
+            return f"${ord(expr.value)}"
         if isinstance(expr, StringLiteral):
             t = self._new_temp()
             # encode string in IR as str_const with result temp

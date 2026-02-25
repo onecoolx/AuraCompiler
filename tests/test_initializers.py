@@ -20,7 +20,7 @@ def test_local_char_array_string_initializer(tmp_path):
     code = r"""
 int main(){
   char s[] = "hi";
-    return (s[0] == 104 && s[1] == 105 && s[2] == 0) ? 0 : 1;
+    return (s[0] == 'h' && s[1] == 'i' && s[2] == 0) ? 0 : 1;
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
