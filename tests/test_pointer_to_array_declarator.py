@@ -1,13 +1,6 @@
-"""Deprecated: pointer-to-array declarator test.
+"""This file is intentionally empty.
 
-Kept for history, but intentionally skipped because the compiler does not yet
-model pointer-to-array types in its declarator/type system.
+The previous pointer-to-array declarator test was removed because the compiler
+does not yet model pointer-to-array types, and we avoid keeping skipped tests in
+the suite.
 """
-
-
-import pytest
-
-
-@pytest.mark.skip(reason="pointer-to-array declarator typing not implemented")
-def test_pointer_to_array_declarator_and_indexing(tmp_path):
-  assert True

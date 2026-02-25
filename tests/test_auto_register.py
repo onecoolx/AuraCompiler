@@ -36,3 +36,20 @@ int main(){
 }
 '''.lstrip()
     assert _compile_and_run(tmp_path, code) == 42
+
+
+def test_register_address_of_is_error(tmp_path):
+        code = r'''
+int main(){
+    register int x;
+    int *p;
+    p = &x;
+    return 0;
+}
+'''.lstrip()
+        comp = Compiler(optimize=False)
+        c_path = tmp_path / "t.c"
+        out_path = tmp_path / "t"
+        c_path.write_text(code)
+        res = comp.compile_file(str(c_path), str(out_path))
+        assert not res.success

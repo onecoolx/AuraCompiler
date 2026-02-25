@@ -20,7 +20,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **DONE** typedef — `tests/test_typedef.py`
 - **DONE** struct/union layout + member access — `tests/test_struct_union.py`, `tests/test_member_access.py`, `tests/test_member_semantics.py`
 - **DONE** enum constants (incl. auto increment) — `tests/test_enum.py`
-- **PARTIAL** storage class (`static`/`extern`/`auto`/`register` subset) — `tests/test_storage_class.py`, `tests/test_auto_register.py`
+- **PARTIAL** storage class (`static`/`extern`/`auto`/`register` subset + `&register` rejected) — `tests/test_storage_class.py`, `tests/test_auto_register.py`
 - **PARTIAL** full declarator grammar (function pointers etc.) — TODO
 - **PARTIAL** function pointer local declarations + indirect calls (subset) — `tests/test_declarators.py`
 - **PARTIAL** array of function pointers declarator (subset) — `tests/test_declarators.py`

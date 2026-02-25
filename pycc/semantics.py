@@ -348,6 +348,8 @@ class SemanticAnalyzer:
         for p in fn.parameters:
             self._declare_local(p.name, "param")
             self._decl_types[p.name] = p.type
+        # track register locals so we can reject `&register_var` (C89 rule)
+        self._register_locals: Set[str] = set()
         self._analyze_stmt(fn.body)
         missing = sorted(self._labels_gotoed - self._labels_defined)
         for m in missing:
@@ -361,6 +363,8 @@ class SemanticAnalyzer:
                 if isinstance(item, Declaration):
                     self._declare_local(item.name, "variable")
                     self._decl_types[item.name] = item.type
+                    if getattr(item, "storage_class", None) == "register":
+                        self._register_locals.add(item.name)
                     if item.initializer is not None:
                         self._analyze_expr(item.initializer)
                 else:
@@ -395,6 +399,8 @@ class SemanticAnalyzer:
             if isinstance(stmt.init, Declaration):
                 self._declare_local(stmt.init.name, "variable")
                 self._decl_types[stmt.init.name] = stmt.init.type
+                if getattr(stmt.init, "storage_class", None) == "register":
+                    self._register_locals.add(stmt.init.name)
                 if stmt.init.initializer is not None:
                     self._analyze_expr(stmt.init.initializer)
             elif stmt.init is not None:
@@ -447,6 +453,10 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, UnaryOp):
+            # C89: cannot take the address of a register object.
+            if expr.operator == "&" and isinstance(expr.operand, Identifier):
+                if expr.operand.name in getattr(self, "_register_locals", set()):
+                    self.errors.append(f"Cannot take address of register variable '{expr.operand.name}'")
             self._analyze_expr(expr.operand)
             return
 
