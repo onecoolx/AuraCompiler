@@ -447,8 +447,30 @@ class Parser:
                 base_type = self._parse_type_specifier()
                 while self._match(TokenType.STAR):
                     base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
-                name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
-                params.append(Declaration(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column))
+                # Support parenthesized pointer declarators in parameters:
+                #   int (*fp)(int)
+                if self._match(TokenType.LPAREN):
+                    ptr_ty = base_type
+                    while self._match(TokenType.STAR):
+                        ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                    name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
+                    self._expect(TokenType.RPAREN, "Expected ')' in parameter declarator")
+                    # consume trailing function parameter list
+                    if self._match(TokenType.LPAREN):
+                        depth = 1
+                        while self.current_token and depth > 0:
+                            if self._match(TokenType.LPAREN):
+                                depth += 1
+                                continue
+                            if self._match(TokenType.RPAREN):
+                                depth -= 1
+                                continue
+                            self.advance()
+                        ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                    params.append(Declaration(name=name_tok.value, type=ptr_ty, line=name_tok.line, column=name_tok.column))
+                else:
+                    name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
+                    params.append(Declaration(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column))
                 if not self._match(TokenType.COMMA):
                     break
         return params

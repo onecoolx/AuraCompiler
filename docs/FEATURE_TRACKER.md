@@ -24,6 +24,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** full declarator grammar (function pointers etc.) — TODO
 - **PARTIAL** function pointer local declarations + indirect calls (subset) — `tests/test_declarators.py`
 - **PARTIAL** array of function pointers declarator (subset) — `tests/test_declarators.py`
+- **PARTIAL** function pointer parameters (subset) — `tests/test_declarators.py`
 
 ### Expressions / Operators
 

@@ -40,3 +40,16 @@ int main(){
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_function_pointer_parameter_and_call(tmp_path):
+        code = r"""
+int inc(int x){ return x + 1; }
+int apply(int (*fp)(int), int x){
+    return fp(x);
+}
+int main(){
+    return apply(inc, 3) == 4 ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
