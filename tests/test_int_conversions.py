@@ -439,6 +439,50 @@ int main(){
                 assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_unsigned_char_compound_add_assign_trunc8(tmp_path):
+                code = r"""
+int main(){
+        unsigned char x = 250;
+        x += 10;
+        return x == 4 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_signed_char_compound_add_assign_trunc8(tmp_path):
+                code = r"""
+int main(){
+        signed char x = 120;
+        x += 20;
+        return x == (signed char)-116 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_short_compound_add_assign_trunc16(tmp_path):
+                code = r"""
+int main(){
+        unsigned short x = 65530;
+        x += 10;
+        return x == 4 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_short_compound_add_assign_trunc16(tmp_path):
+                code = r"""
+int main(){
+        short x = 32760;
+        x += 10;
+        return x == (short)-32766 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):
         # NOTE: conditional operator usual arithmetic conversions are not yet
         # implemented; keep a placeholder to re-enable once conversions are wired.

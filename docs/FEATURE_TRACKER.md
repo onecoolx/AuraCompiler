@@ -41,6 +41,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** comparisons involving `short`/`unsigned short` after promotions (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** assignment narrowing/truncation for `char`/`short` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** load sign/zero extension for `char`/`short` (tests) — `tests/test_int_conversions.py`
+- **PARTIAL** compound assignment truncation for `char`/`short` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** pointer arithmetic completeness — `tests/test_pointer_arith.py` (more TODO)
 
 ### Statements / Control Flow
