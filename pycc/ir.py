@@ -122,6 +122,8 @@ class IRGenerator:
         # Enum constants are compile-time integers; record them so Identifier
         # lowering can replace them with immediates.
         self._enum_constants: dict[str, int] = {}
+        # Track local array symbols per function to implement array-to-pointer decay.
+        self._local_arrays: set[str] = set()
         for decl in ast.declarations:
             from pycc.ast_nodes import EnumDecl
             if isinstance(decl, EnumDecl):
@@ -223,6 +225,8 @@ class IRGenerator:
 
     def _gen_function(self, fn: FunctionDecl) -> None:
         self.instructions.append(IRInstruction(op="func_begin", label=fn.name))
+        # reset per-function array set
+        self._local_arrays = set()
         # params are treated as locals; codegen will map them from ABI regs
         for p in fn.parameters:
             self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=p.type.base))
@@ -241,10 +245,16 @@ class IRGenerator:
                 if isinstance(item, Declaration):
                     # If this is an array with known size, encode element count in operand1
                     if getattr(item, "array_size", None) is not None:
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=f"${item.array_size}"))
+                        self.instructions.append(
+                            IRInstruction(op="decl", result=f"@{item.name}", operand1=f"array({item.type.base},${item.array_size})")
+                        )
+                        self._local_arrays.add(item.name)
                     else:
                         # encode declared base type for later codegen (struct/union)
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=item.type.base))
+                        op1 = item.type.base
+                        if getattr(item.type, "is_pointer", False):
+                            op1 = f"{op1}*"
+                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
                     if item.initializer is not None:
                         v = self._gen_expr(item.initializer)
                         self.instructions.append(IRInstruction(op="mov", result=f"@{item.name}", operand1=v))
@@ -389,10 +399,14 @@ class IRGenerator:
                     # IMPORTANT: locals in IR use the "@" prefix for codegen.
                     if getattr(it, "array_size", None) is not None:
                         self.instructions.append(
-                            IRInstruction(op="decl", result=f"@{it.name}", operand1=f"${it.array_size}")
+                            IRInstruction(op="decl", result=f"@{it.name}", operand1=f"array({it.type.base},${it.array_size})")
                         )
+                        self._local_arrays.add(it.name)
                     else:
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{it.name}", operand1=it.type.base))
+                        op1 = it.type.base
+                        if getattr(it.type, "is_pointer", False):
+                            op1 = f"{op1}*"
+                        self.instructions.append(IRInstruction(op="decl", result=f"@{it.name}", operand1=op1))
                     if it.initializer is not None:
                         v = self._gen_expr(it.initializer)
                         self.instructions.append(IRInstruction(op="mov", result=f"@{it.name}", operand1=v))
@@ -510,7 +524,17 @@ class IRGenerator:
             # enum constants lower to immediates
             if hasattr(self, "_enum_constants") and expr.name in self._enum_constants:
                 return f"${self._enum_constants[expr.name]}"
-            return f"@{expr.name}"
+            sym = f"@{expr.name}"
+            # Array-to-pointer decay in rvalue context: emit explicit addr-of.
+            # Our semantic/type system is minimal; detect arrays by the presence of
+            # a declared array_size on the declaration node (recorded earlier by decl).
+            # Since IR is stringly-typed, we conservatively treat any symbol that was
+            # declared as an array in this function as decaying to its address.
+            if hasattr(self, "_local_arrays") and expr.name in getattr(self, "_local_arrays"):
+                t = self._new_temp()
+                self.instructions.append(IRInstruction(op="mov_addr", result=t, operand1=sym))
+                return t
+            return sym
         if isinstance(expr, MemberAccess):
             base = self._gen_expr(expr.object)
             t = self._new_temp()

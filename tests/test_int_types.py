@@ -51,3 +51,27 @@ int main(){
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_int_vs_signed_zero_compare(tmp_path):
+        code = r'''
+int main(){
+    unsigned int u;
+    u = 0xffffffff; /* 4294967295 */
+    /* must be true as unsigned compare */
+    return (u > (int)0) ? 0 : 1;
+}
+'''.lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_long_compare(tmp_path):
+        code = r'''
+int main(){
+    unsigned long u;
+    u = 0xffffffffffffffff;
+    /* unsigned long max must be > 0 */
+    return (u > 0) ? 0 : 1;
+}
+'''.lstrip()
+        assert _compile_and_run(tmp_path, code) == 0

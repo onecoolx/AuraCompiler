@@ -170,18 +170,28 @@ class CodeGenerator:
             sym = d.result
             if sym in self._locals:
                 continue
-            # If decl carries an operand1 with element count like "$N", allocate N*8 bytes
-            if d.operand1 and isinstance(d.operand1, str) and d.operand1.startswith("$"):
-                try:
-                    elems = int(d.operand1.lstrip("$"))
-                    # C `int` is 4 bytes (C89); allocate elems * 4
-                    size_bytes = elems * 4
-                except Exception:
-                    size_bytes = 8
+            # Arrays: operand1 is encoded as "array(<base>,$N)".
+            if d.operand1 and isinstance(d.operand1, str) and d.operand1.strip().startswith("array("):
+                enc = d.operand1.strip()
+                # parse "array(T,$N)"
+                inner = enc[len("array(") :]
+                if inner.endswith(")"):
+                    inner = inner[:-1]
+                base_part, cnt_part = (inner.split(",", 1) + [""])[:2]
+                base_part = base_part.strip()
+                cnt_part = cnt_part.strip()
+                elems = 1
+                if cnt_part.startswith("$"):
+                    try:
+                        elems = int(cnt_part[1:])
+                    except Exception:
+                        elems = 1
+                elem_sz = self._type_size_bytes(base_part)
+                size_bytes = max(0, elems) * elem_sz
                 offset += size_bytes
                 self._locals[sym] = offset
-                # record arrays separately for clarity
-                if elems > 1:
+                self._var_types[sym] = f"array({base_part},${elems})"
+                if elems > 0:
                     self._arrays[sym] = size_bytes
             else:
                 # Scalar locals: reserve a full 8-byte slot (simplifies addressing).
@@ -271,6 +281,14 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "mov_addr":
+            # result = &operand1 (more explicit than addr_of in cases where operand1
+            # is an lvalue expression already resolved to a symbol)
+            src = ins.operand1 or ""
+            self._addr_of_symbol(src, "%rax")
+            self._store_result(ins.result, "%rax")
+            return
+
         if op == "unop":
             self._load_operand(ins.operand1, "%rax")
             u = ins.label
@@ -310,14 +328,29 @@ class CodeGenerator:
                 self._emit("  movq %rdx, %rax")
             elif bop in {"==", "!=", "<", "<=", ">", ">="}:
                 self._emit("  cmpq %rcx, %rax")
-                cc = {
-                    "==": "sete",
-                    "!=": "setne",
-                    "<": "setl",
-                    "<=": "setle",
-                    ">": "setg",
-                    ">=": "setge",
-                }[bop]
+                # Best-effort usual arithmetic conversion: if either operand is unsigned,
+                # emit unsigned comparison condition codes.
+                unsigned = self._as_unsigned_type(self._var_types.get(ins.operand1, "")) or self._as_unsigned_type(
+                    self._var_types.get(ins.operand2, "")
+                )
+                if unsigned:
+                    cc = {
+                        "==": "sete",
+                        "!=": "setne",
+                        "<": "setb",
+                        "<=": "setbe",
+                        ">": "seta",
+                        ">=": "setae",
+                    }[bop]
+                else:
+                    cc = {
+                        "==": "sete",
+                        "!=": "setne",
+                        "<": "setl",
+                        "<=": "setle",
+                        ">": "setg",
+                        ">=": "setge",
+                    }[bop]
                 self._emit(f"  {cc} %al")
                 self._emit("  movzbq %al, %rax")
             elif bop == "&&":
@@ -380,22 +413,37 @@ class CodeGenerator:
             # int array indexing: result = base[index]
             base = ins.operand1 or ""
             idx = ins.operand2
-            # load element: for char* treat as 1-byte element, else int (4 bytes)
+            # Determine element size using best-effort type info.
+            # - For pointer variables, use pointee size.
+            # - For arrays, use base element size.
             elem_sz = 4
-            is_char_ptr = False
-            if isinstance(base, str) and base.startswith("@"):
-                sym = base[1:]
-                ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-                if isinstance(ty, str) and ty.replace(" ", "").endswith("char*"):
-                    elem_sz = 1
-                    is_char_ptr = True
+            base_ty = None
+            if isinstance(base, str):
+                base_ty = self._var_types.get(base)
+                if base_ty is None and base.startswith("@"):
+                    sym = base[1:]
+                    base_ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+
+            if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
+                # array(T,$N)
+                inner = base_ty.strip()[len("array(") :]
+                if inner.endswith(")"):
+                    inner = inner[:-1]
+                base_part = inner.split(",", 1)[0].strip()
+                elem_sz = self._type_size_bytes(base_part)
+            elif isinstance(base_ty, str) and "*" in base_ty:
+                elem_sz = self._pointee_size_bytes(base_ty)
             # compute address: base + idx*elem_sz
-            # - if base is a pointer value (char*), load the pointer value
+            # - if base is a pointer value, load the pointer value
             # - else treat it as an array object and take its address
-            if is_char_ptr and isinstance(base, str) and base.startswith("@"):
+            if isinstance(base_ty, str) and "*" in base_ty:
                 self._load_operand(base, "%rax")
             else:
-                self._addr_of_symbol(base, "%rax")
+                # base is an array object or a raw address temp
+                if isinstance(base, str) and base.startswith("%t"):
+                    self._load_operand(base, "%rax")
+                else:
+                    self._addr_of_symbol(base, "%rax")
             self._load_operand(idx, "%rcx")
             if elem_sz == 1:
                 pass
@@ -405,9 +453,13 @@ class CodeGenerator:
             if elem_sz == 1:
                 self._emit("  movsbl (%rax), %eax")
                 self._emit("  movslq %eax, %rax")
-            else:
+            elif elem_sz == 2:
+                self._emit("  movswq (%rax), %rax")
+            elif elem_sz == 4:
                 # load 32-bit signed int and sign-extend to %rax
                 self._emit("  movslq (%rax), %rax")
+            else:
+                self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
             return
 
@@ -495,14 +547,46 @@ class CodeGenerator:
             base = ins.operand1 or ""
             idx = ins.operand2
             val = ins.result
+            # determine element size
+            elem_sz = 4
+            base_ty = None
+            if isinstance(base, str):
+                base_ty = self._var_types.get(base)
+                if base_ty is None and base.startswith("@"):
+                    sym = base[1:]
+                    base_ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+            if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
+                inner = base_ty.strip()[len("array(") :]
+                if inner.endswith(")"):
+                    inner = inner[:-1]
+                base_part = inner.split(",", 1)[0].strip()
+                elem_sz = self._type_size_bytes(base_part)
+            elif isinstance(base_ty, str) and "*" in base_ty:
+                elem_sz = self._pointee_size_bytes(base_ty)
+
             # compute address
-            self._addr_of_symbol(base, "%rax")
+            if isinstance(base_ty, str) and "*" in base_ty:
+                self._load_operand(base, "%rax")
+            else:
+                # base is an array object or a raw address temp
+                if isinstance(base, str) and base.startswith("%t"):
+                    self._load_operand(base, "%rax")
+                else:
+                    self._addr_of_symbol(base, "%rax")
             self._load_operand(idx, "%rcx")
-            self._emit("  imulq $4, %rcx")
+            if elem_sz != 1:
+                self._emit(f"  imulq ${elem_sz}, %rcx")
             self._emit("  addq %rcx, %rax")
-            # load value into %rdx and store 32-bit
+            # load value into %rdx and store
             self._load_operand(val, "%rdx")
-            self._emit("  movl %edx, (%rax)")
+            if elem_sz == 1:
+                self._emit("  movb %dl, (%rax)")
+            elif elem_sz == 2:
+                self._emit("  movw %dx, (%rax)")
+            elif elem_sz == 4:
+                self._emit("  movl %edx, (%rax)")
+            else:
+                self._emit("  movq %rdx, (%rax)")
             return
 
         # decl/param are handled in prologue
@@ -529,6 +613,10 @@ class CodeGenerator:
                 off = self._ensure_local(operand)
                 ty = self._var_types.get(operand, "")
                 b = ty.strip()
+                # array variables: in expressions, array decays to pointer to first element
+                if isinstance(b, str) and b.startswith("array("):
+                    self._emit(f"  leaq -{off}(%rbp), {reg}")
+                    return
                 # signed/unsigned char
                 if b == "char" or b.startswith("char "):
                     self._emit(f"  movsbq -{off}(%rbp), {reg}")
@@ -571,6 +659,73 @@ class CodeGenerator:
             return
         # fallback immediate 0
         self._emit(f"  movq $0, {reg}")
+
+    def _as_unsigned_type(self, ty: object) -> bool:
+        """Best-effort unsigned-ness check for the project's stringly-typed types."""
+        if ty is None:
+            return False
+        if isinstance(ty, str):
+            t = ty.strip()
+            return t.startswith("unsigned ")
+        base = getattr(ty, "base", None)
+        if isinstance(base, str):
+            b = base.strip()
+            return b.startswith("unsigned ")
+        return bool(getattr(ty, "is_unsigned", False))
+
+    def _type_size_bytes(self, ty: object) -> int:
+        """Best-effort sizeof for our stringly-typed scalar/pointer types."""
+        if ty is None:
+            return 8
+        if isinstance(ty, str):
+            b = ty.strip()
+        else:
+            base = getattr(ty, "base", None)
+            b = base.strip() if isinstance(base, str) else ""
+        if not b:
+            return 8
+        # pointers
+        if "*" in b:
+            return 8
+        # integers
+        if b in {"char", "unsigned char", "signed char"}:
+            return 1
+        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+            return 2
+        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
+            return 4
+        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
+            return 8
+        return 8
+
+    def _pointee_size_bytes(self, ptr_ty: object) -> int:
+        """Return element size for T* types when we can recognize T.
+
+        Note: current type strings are normalized like "unsigned long" / "int*" / "char*".
+        """
+        if ptr_ty is None:
+            return 8
+        if isinstance(ptr_ty, str):
+            s = ptr_ty.replace(" ", "")
+        else:
+            base = getattr(ptr_ty, "base", None)
+            s = base.replace(" ", "") if isinstance(base, str) else ""
+
+        if not s or "*" not in s:
+            return 8
+        # peel all trailing '*'
+        while s.endswith("*"):
+            s = s[:-1]
+        # handle common pointee bases
+        if s.endswith("char") or s.endswith("unsignedchar") or s.endswith("signedchar"):
+            return 1
+        if s.endswith("short") or s.endswith("shortint") or s.endswith("unsignedshort") or s.endswith("unsignedshortint"):
+            return 2
+        if s.endswith("int") or s.endswith("unsignedint") or s.endswith("signedint") or s.startswith("enum"):
+            return 4
+        if s.endswith("long") or s.endswith("longint") or s.endswith("unsignedlong") or s.endswith("unsignedlongint"):
+            return 8
+        return 8
 
     def _store_result(self, result: Optional[str], reg: str) -> None:
         if result is None:
@@ -622,8 +777,18 @@ class CodeGenerator:
 
     def _addr_of_symbol(self, sym: str, reg: str) -> None:
         if sym.startswith("@"):  # local if known; otherwise global
+            # If this is a local, take address of its stack slot.
+            # Special-case arrays: '@a' represents the whole array object, whose
+            # stack slot is a header; the actual elements live at (slot + sizeof(type)).
             if sym in self._locals:
                 off = self._ensure_local(sym)
+                ty = self._var_types.get(sym, "")
+                if isinstance(ty, str) and ty.strip().startswith("array("):
+                    # Local arrays live directly in their allocated region.
+                    # We store the array object at -off(%rbp) .. -(off-size+1)(%rbp).
+                    # The array's decay pointer should point to the first element, i.e. -off(%rbp).
+                    self._emit(f"  leaq -{off}(%rbp), {reg}")
+                    return
                 self._emit(f"  leaq -{off}(%rbp), {reg}")
                 return
             self._emit(f"  leaq {sym[1:]}(%rip), {reg}")
