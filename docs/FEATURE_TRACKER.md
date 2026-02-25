@@ -32,6 +32,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** conditional operator (`?:`) usual arithmetic conversions — TODO (tests being added)
 - **PARTIAL** integer promotions + usual arithmetic conversions — comparisons for `int` vs `unsigned int` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** usual arithmetic conversions involving `unsigned long` (tests) — `tests/test_int_conversions.py`
+- **PARTIAL** unsigned `unsigned long` division/modulo semantics (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** unsigned 32-bit arithmetic wrap for `+/-/*` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** unsigned 32-bit division/modulo for `/` and `%` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** shift semantics: unsigned `>>` logical, signed `>>` arithmetic (best-effort) — `tests/test_int_conversions.py`

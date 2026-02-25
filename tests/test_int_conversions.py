@@ -319,6 +319,20 @@ int main(){
                 assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_unsigned_long_div_mod(tmp_path):
+                # Requires 64-bit unsigned division/modulo semantics.
+                code = r"""
+int main(){
+        unsigned long x = 10000000000UL;
+        unsigned long y = 3UL;
+        unsigned long q = x / y;
+        unsigned long r = x % y;
+        return (q == 3333333333UL && r == 1UL) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):
         # NOTE: conditional operator usual arithmetic conversions are not yet
         # implemented; keep a placeholder to re-enable once conversions are wired.
