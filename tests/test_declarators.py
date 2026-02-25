@@ -29,5 +29,14 @@ int main(){
 
 
 def test_function_pointer_array_decl(tmp_path):
-    # TODO: array-of-function-pointers declarator parsing is not implemented yet.
-    pass
+    code = r"""
+int inc(int x){ return x + 1; }
+int dec(int x){ return x - 1; }
+int main(){
+  int (*a[2])(int);
+  a[0] = inc;
+  a[1] = dec;
+  return a[0](10) == 11 && a[1](10) == 9 ? 0 : 1;
+}
+""".lstrip()
+    assert _compile_and_run(tmp_path, code) == 0

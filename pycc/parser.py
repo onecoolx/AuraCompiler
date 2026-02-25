@@ -492,8 +492,20 @@ class Parser:
             while self._match(TokenType.STAR):
                 ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
-            self._expect(TokenType.RPAREN, "Expected ')' in declarator")
-            decl = self._finish_declarator(ptr_ty, name_tok)
+            # support array-of-function-pointer declarator: (*name[...])
+            if self._match(TokenType.LBRACKET):
+                size_expr = None
+                if not self._at(TokenType.RBRACKET):
+                    size_expr = self._parse_expression()
+                self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+                # Record array size for this name; keep element type as pointer.
+                array_size_val = size_expr.value if isinstance(size_expr, IntLiteral) else None
+                self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+                decl = self._finish_declarator(ptr_ty, name_tok)
+                decl.array_size = array_size_val
+            else:
+                self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+                decl = self._finish_declarator(ptr_ty, name_tok)
         else:
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
             decl = self._finish_declarator(base_type, name_tok)

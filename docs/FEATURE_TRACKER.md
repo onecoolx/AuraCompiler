@@ -23,6 +23,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** storage class (`static`/`extern`) — `tests/test_storage_class.py`
 - **PARTIAL** full declarator grammar (function pointers etc.) — TODO
 - **PARTIAL** function pointer local declarations + indirect calls (subset) — `tests/test_declarators.py`
+- **PARTIAL** array of function pointers declarator (subset) — `tests/test_declarators.py`
 
 ### Expressions / Operators
 
