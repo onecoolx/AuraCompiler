@@ -60,6 +60,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** global string literal pointer init — `tests/test_global_string_ptr.py`
 - **PARTIAL** local array initializers (non-designated): `int a[N] = {..}` and zero-fill, plus `char s[] = "..."` — `tests/test_initializers.py`
 - **PARTIAL** character literals (`'a'`) in expressions (lowered as `int`, best-effort escapes TBD) — covered across `tests/test_initializers.py` and others
+- **PARTIAL** local array size inference from brace initializer: `int a[] = {..}` (scalar-only subset) — `tests/test_initializer_infer_size.py`
 - **TODO** struct initializers (`struct S x = { ... }`) and nested aggregate init
 - **TODO** global aggregate initializers (emit `.data` bytes/relocations)
 

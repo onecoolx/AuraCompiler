@@ -319,12 +319,32 @@ class IRGenerator:
                         self._local_arrays.add(item.name)
                         self._var_types[f"@{item.name}"] = str(op1)
                     else:
-                        # scalar local
-                        op1 = item.type.base
-                        if getattr(item.type, "is_pointer", False):
-                            op1 = f"{op1}*"
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
-                        self._var_types[f"@{item.name}"] = str(op1)
+                        # Infer `T[]` element count from brace initializer.
+                        # e.g. `int a[] = {1,2,3};`
+                        if getattr(item, "array_size", None) is None and item.initializer is not None:
+                            inits0 = self._const_initializer_list(item.initializer)
+                            if inits0 is not None and isinstance(item.type.base, str) and item.type.base in {"int", "char", "unsigned char"}:
+                                # Only support a flat initializer list of scalar constants here.
+                                if all(isinstance(e, (IntLiteral, CharLiteral, UnaryOp)) for e in inits0):
+                                    n0 = len(inits0)
+                                    op1 = f"array({item.type.base},${n0})"
+                                    self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
+                                    self._local_arrays.add(item.name)
+                                    self._var_types[f"@{item.name}"] = str(op1)
+                                    # Populate so later store_index lowering knows N.
+                                    try:
+                                        item.array_size = n0
+                                    except Exception:
+                                        pass
+                                else:
+                                    op1 = None
+                        if op1 is None:
+                            # scalar local
+                            op1 = item.type.base
+                            if getattr(item.type, "is_pointer", False):
+                                op1 = f"{op1}*"
+                            self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
+                            self._var_types[f"@{item.name}"] = str(op1)
                     if item.initializer is not None:
                         # Local aggregate initialization for arrays.
                         if getattr(item, "array_size", None) is not None:
