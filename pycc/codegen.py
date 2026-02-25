@@ -56,6 +56,7 @@ class CodeGenerator:
 
         # First pass: emit global declarations/definitions.
         gdefs = [ins for ins in instructions if ins.op == "gdef"]
+        gblobs = [ins for ins in instructions if ins.op == "gdef_blob"]
         gdecls = [ins for ins in instructions if ins.op == "gdecl"]
 
         if gdecls:
@@ -74,8 +75,25 @@ class CodeGenerator:
                     sz = 8
                 self._emit(f"  .comm {name},{sz},{sz}")
 
-        if gdefs:
+        if gdefs or gblobs:
             self._emit(".data")
+            for gd in gblobs:
+                name = (gd.result or "").lstrip("@")
+                ty = gd.operand1 or "int"
+                blob = gd.operand2 or "blob:"
+                if gd.label != "static":
+                    self._emit(f".globl {name}")
+                self._emit(f"{name}:")
+                if isinstance(blob, str) and blob.startswith("blob:"):
+                    hexbytes = blob[len("blob:") :]
+                    # emit as raw bytes
+                    for i in range(0, len(hexbytes), 2):
+                        b = int(hexbytes[i : i + 2] or "00", 16)
+                        self._emit(f"  .byte {b}")
+                else:
+                    # fallback: zero
+                    self._emit("  .byte 0")
+
             for gd in gdefs:
                 name = (gd.result or "").lstrip("@")
                 ty = gd.operand1 or "int"
@@ -548,6 +566,11 @@ class CodeGenerator:
                 elem_sz = self._type_size_bytes(base_part)
             elif isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
+            elif isinstance(base_ty, str):
+                # Global fixed-size arrays are currently tracked as just their
+                # element type (e.g. "char"); use that to pick element size.
+                # This is best-effort until we add explicit global array types.
+                elem_sz = self._type_size_bytes(base_ty.strip())
             elif isinstance(base, str) and base.startswith("%t"):
                 # For temps used as addresses, consult `_var_types` to infer pointee size.
                 tyt = self._var_types.get(base)

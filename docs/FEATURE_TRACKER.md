@@ -69,7 +69,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** fixed-size array brace init truncates extra elements (best-effort) — `tests/test_initializers.py`
 - **PARTIAL** local array size inference from brace initializer: `char s[] = {...}` (scalar-only subset) — `tests/test_initializers.py`
 - **PARTIAL** local struct brace initializers (non-designated): `struct S x = { ... }` with member-order init + zero-fill — `tests/test_struct_initializers.py`
-- **TODO** global aggregate initializers (emit `.data` bytes/relocations)
+- **PARTIAL** global aggregate initializers (subset): fixed-size `int[]`/`char[]` (brace + string) and `struct` brace init (member-order + zero-fill) via `.data` blobs — `tests/test_global_aggregate_initializers.py`
 
 ---
 

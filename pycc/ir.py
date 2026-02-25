@@ -44,6 +44,7 @@ from pycc.ast_nodes import (
     StringLiteral,
     BinaryOp,
     UnaryOp,
+    ArrayType,
     Assignment,
     FunctionCall,
     ArrayAccess,
@@ -127,6 +128,7 @@ class IRGenerator:
         self.label_counter = 0
         self._break_stack: List[str] = []
         self._continue_stack: List[str] = []
+        self._sema_ctx = None
     
     def generate(self, ast: Program) -> List[IRInstruction]:
         """Generate IR from AST"""
@@ -174,22 +176,161 @@ class IRGenerator:
                     )
                 else:
                     init = getattr(decl, "initializer")
-                    imm = self._const_initializer_imm(init)
-                    ptr = self._const_initializer_ptr(init)
-                    if imm is None and ptr is None:
-                        raise Exception(
-                            f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
+                    # Subset: allow global aggregate initializers for fixed-size arrays
+                    # and structs/unions, provided the initializer is constant.
+                    blob = self._const_initializer_blob(decl)
+                    if blob is not None:
+                        self.instructions.append(
+                            IRInstruction(
+                                op="gdef_blob",
+                                result=f"@{decl.name}",
+                                operand1=decl.type.base,
+                                operand2=blob,
+                                label=sc,
+                            )
                         )
-                    self.instructions.append(
-                        IRInstruction(
-                            op="gdef",
-                            result=f"@{decl.name}",
-                            operand1=decl.type.base,
-                            operand2=imm if imm is not None else ptr,
-                            label=sc,
+                    else:
+                        imm = self._const_initializer_imm(init)
+                        ptr = self._const_initializer_ptr(init)
+                        if imm is None and ptr is None:
+                            raise Exception(
+                                f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
+                            )
+                        self.instructions.append(
+                            IRInstruction(
+                                op="gdef",
+                                result=f"@{decl.name}",
+                                operand1=decl.type.base,
+                                operand2=imm if imm is not None else ptr,
+                                label=sc,
+                            )
                         )
-                    )
         return self.instructions
+
+    def _const_initializer_blob(self, decl: Declaration) -> Optional[str]:
+        """Return a blob initializer string for a global aggregate, or None.
+
+        Encoding is: "blob:<hex bytes>".
+        Subset:
+        - fixed-size int/char arrays with brace init (int/char consts only)
+        - fixed-size char arrays with string literal init
+        - struct/union with brace init (member-order), scalar consts only
+        """
+
+        init = getattr(decl, "initializer", None)
+        if init is None:
+            return None
+
+        # decl.type is usually a Type (scalars) or an ArrayType (arrays)
+        base = getattr(decl.type, "base", None)
+        if isinstance(decl.type, ArrayType):
+            base = str(getattr(decl.type.element_type, "base", base))
+        # Arrays: represented by decl.array_size (parser doesn't always wrap type).
+        if getattr(decl, "array_size", None) is not None:
+            n = int(decl.array_size)
+            if isinstance(decl.type, ArrayType):
+                elem_ty = getattr(decl.type, "element_type", None)
+                elem_base = str(getattr(elem_ty, "base", base)).strip()
+            else:
+                elem_base = str(base).strip() if base is not None else ""
+            if elem_base in {"char", "unsigned char"}:
+                # string literal init
+                inits = self._const_initializer_list(init)
+                if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
+                    s = inits[0].value
+                    bytes_vals = [ord(c) for c in s]
+                    if len(bytes_vals) < n:
+                        bytes_vals.append(0)
+                    if len(bytes_vals) > n:
+                        bytes_vals = bytes_vals[:n]
+                    if len(bytes_vals) < n:
+                        bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
+                    return "blob:" + "".join(f"{b & 0xFF:02x}" for b in bytes_vals)
+
+                # brace list of scalar consts
+                inits = self._const_initializer_list(init)
+                if inits is None:
+                    return None
+                vals: list[int] = []
+                for e in inits[:n]:
+                    imm = self._const_expr_to_int(e)
+                    if imm is None:
+                        return None
+                    vals.append(imm & 0xFF)
+                if len(vals) < n:
+                    vals += [0] * (n - len(vals))
+                return "blob:" + "".join(f"{b:02x}" for b in vals)
+
+            if elem_base == "int" or elem_base == "unsigned int":
+                inits = self._const_initializer_list(init)
+                if inits is None:
+                    return None
+                vals: list[int] = []
+                for e in inits[:n]:
+                    imm = self._const_expr_to_int(e)
+                    if imm is None:
+                        return None
+                    # store as 32-bit little endian
+                    v = imm & 0xFFFFFFFF
+                    vals.extend([(v >> (8 * i)) & 0xFF for i in range(4)])
+                # zero-fill remaining
+                rem = n - min(n, len(inits))
+                if rem > 0:
+                    vals.extend([0] * (4 * rem))
+                return "blob:" + "".join(f"{b:02x}" for b in vals)
+
+            return None
+
+        # Struct/union
+        if self._is_struct_or_union_type(base):
+            inits = self._const_initializer_list(init)
+            if inits is None:
+                return None
+            if self._sema_ctx is None:
+                return None
+            layout = getattr(self._sema_ctx, "layouts", {}).get(str(base))
+            if layout is None:
+                return None
+
+            size = int(getattr(layout, "size", 0))
+            blob = bytearray([0] * size)
+
+            # member-order init
+            # Semantic layout stores offsets/sizes keyed by member name.
+            # Preserve declared member order by iterating the dict insertion order.
+            members = list(getattr(layout, "member_offsets", {}).keys())
+            offsets = getattr(layout, "member_offsets", {})
+            sizes = getattr(layout, "member_sizes", {})
+
+            for idx, m in enumerate(members):
+                if idx >= len(inits):
+                    break
+                imm = self._const_expr_to_int(inits[idx])
+                if imm is None:
+                    return None
+                off = int(offsets.get(m, 0))
+                sz = int(sizes.get(m, 4))
+                v = int(imm)
+                for i in range(min(sz, 8)):
+                    blob[off + i] = (v >> (8 * i)) & 0xFF
+            return "blob:" + blob.hex()
+
+        return None
+
+    def _const_expr_to_int(self, expr: Any) -> Optional[int]:
+        """Best-effort const int evaluator (subset)."""
+        if expr is None:
+            return None
+        if isinstance(expr, IntLiteral):
+            return int(expr.value)
+        if isinstance(expr, CharLiteral):
+            return ord(expr.value)
+        if isinstance(expr, UnaryOp) and expr.op in {"+", "-"}:
+            v = self._const_expr_to_int(expr.operand)
+            if v is None:
+                return None
+            return v if expr.op == "+" else -v
+        return None
 
     def _is_unsigned_operand(self, op: str) -> bool:
         """Best-effort check whether an operand is unsigned.
