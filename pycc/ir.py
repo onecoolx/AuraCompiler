@@ -997,6 +997,22 @@ class IRGenerator:
             self.instructions.append(IRInstruction(op="mov", result=t, operand1=rhs))
             return t
         if isinstance(expr, UnaryOp):
+            # Special-case: `&array` should yield a pointer to the first element in this MVP.
+            # This makes `int (*p)[N]; p = &a;` usable as a subset (we treat it as `p = a`).
+            if expr.operator == "&" and isinstance(expr.operand, Identifier):
+                sym = f"@{expr.operand.name}"
+                ty = getattr(self, "_var_types", {}).get(sym)
+                if isinstance(ty, str) and ty.strip().startswith("array("):
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(op="mov_addr", result=t, operand1=sym))
+                    # type: decay array(T,$N) -> T*
+                    inner = ty.strip()[len("array(") :]
+                    if inner.endswith(")"):
+                        inner = inner[:-1]
+                    base_part = inner.split(",", 1)[0].strip()
+                    getattr(self, "_var_types", {})[t] = f"{base_part}*"
+                    return t
+
             v = self._gen_expr(expr.operand)
             t = self._new_temp()
             if expr.operator == "&":
