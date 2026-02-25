@@ -221,6 +221,68 @@ class Parser:
             # fallback: ignore
             return Declaration(name="__tagdecl__", type=base_type, line=base_type.line, column=base_type.column)
 
+        # Support parenthesized declarators at top-level:
+        #   int (*get(void))(int) { ... }
+        if self._match(TokenType.LPAREN):
+            ptr_ty = base_type
+            # Inside the parentheses we expect `*name` (possibly multiple `*`).
+            while self._match(TokenType.STAR):
+                ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+            name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+
+            # optional parameter list inside the parentheses: `(*name(void))`
+            if self._match(TokenType.LPAREN):
+                depth = 1
+                while self.current_token and depth > 0:
+                    if self._match(TokenType.LPAREN):
+                        depth += 1
+                        continue
+                    if self._match(TokenType.RPAREN):
+                        depth -= 1
+                        continue
+                    self.advance()
+            self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+
+            # first parameter list belongs to the function itself
+            self._expect(TokenType.LPAREN, "Expected '(' after function name")
+            params = self._parse_parameter_list()
+            self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+
+            # optional second parameter list: function returns pointer-to-function
+            if self._match(TokenType.LPAREN):
+                depth = 1
+                while self.current_token and depth > 0:
+                    if self._match(TokenType.LPAREN):
+                        depth += 1
+                        continue
+                    if self._match(TokenType.RPAREN):
+                        depth -= 1
+                        continue
+                    self.advance()
+                ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+
+            # prototype or definition
+            if self._match(TokenType.SEMICOLON):
+                return FunctionDecl(
+                    name=name_tok.value,
+                    return_type=ptr_ty,
+                    parameters=params,
+                    body=None,
+                    storage_class=storage_class,
+                    line=name_tok.line,
+                    column=name_tok.column,
+                )
+            body = self._parse_compound_statement()
+            return FunctionDecl(
+                name=name_tok.value,
+                return_type=ptr_ty,
+                parameters=params,
+                body=body,
+                storage_class=storage_class,
+                line=name_tok.line,
+                column=name_tok.column,
+            )
+
         name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
 
         # function or variable?
