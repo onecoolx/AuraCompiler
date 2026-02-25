@@ -84,3 +84,13 @@ int main(){
 }
 """.lstrip()
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_char_array_infer_size_from_brace_initializer(tmp_path):
+        code = r"""
+int main(){
+    char s[] = {'h', 'i', 0};
+    return (sizeof(s) == 3 && s[0] == 'h' && s[1] == 'i' && s[2] == 0) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0

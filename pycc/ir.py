@@ -340,6 +340,7 @@ class IRGenerator:
                             inits0 = self._const_initializer_list(item.initializer)
                             if inits0 is not None and isinstance(item.type.base, str) and item.type.base in {"int", "char", "unsigned char"}:
                                 # Only support a flat initializer list of scalar constants here.
+                                # Only scalar constant expressions (int/char +/- unary) for now.
                                 if all(isinstance(e, (IntLiteral, CharLiteral, UnaryOp)) for e in inits0):
                                     n0 = len(inits0)
                                     op1 = f"array({item.type.base},${n0})"
