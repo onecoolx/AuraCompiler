@@ -358,6 +358,46 @@ int main(){
         assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_unsigned_char_assignment_trunc8(tmp_path):
+                code = r"""
+int main(){
+        unsigned char x = (unsigned char)300;
+        return x == 44 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_signed_char_assignment_trunc8(tmp_path):
+                code = r"""
+int main(){
+        signed char x = (signed char)255;
+        return x == -1 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_short_assignment_trunc16(tmp_path):
+                code = r"""
+int main(){
+        short x = (short)65535;
+        return x == -1 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_short_assignment_trunc16(tmp_path):
+                code = r"""
+int main(){
+        unsigned short x = (unsigned short)65536;
+        return x == 0 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):
         # NOTE: conditional operator usual arithmetic conversions are not yet
         # implemented; keep a placeholder to re-enable once conversions are wired.
