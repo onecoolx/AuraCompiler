@@ -229,3 +229,26 @@ int main(){
 }
 """.lstrip()
                 assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_short_promotion_add(tmp_path):
+                # unsigned short promotes to int on typical 32-bit int targets, but value remains positive.
+                code = r"""
+int main(){
+        unsigned short a = (unsigned short)65535;
+        int b = a + 2;
+        return (b == 65537) ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_signed_short_promotion_negative(tmp_path):
+                # signed short 0xFFFF == -1 after promotion.
+                code = r"""
+int main(){
+        short a = (short)65535;
+        return (a + 2) == 1 ? 0 : 1;
+}
+""".lstrip()
+                assert _compile_and_run(tmp_path, code) == 0
