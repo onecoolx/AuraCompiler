@@ -334,15 +334,28 @@ int main(){
 
 
 def test_ternary_usual_arithmetic_conversions_u32_select_signed(tmp_path):
-        # TODO: implement ?: usual arithmetic conversions (C89) and enable this.
-        # unsigned int vs int => unsigned int; selecting -1 should yield UINT_MAX.
-        pass
+        # In C89, ?: applies usual arithmetic conversions to operands 2 and 3.
+        # unsigned int vs int => unsigned int. Selecting -1 yields UINT_MAX.
+        code = r"""
+int main(){
+  unsigned int u = 1U;
+  int s = -1;
+  return ((0 ? u : s) > 0U) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
 
 
 def test_ternary_usual_arithmetic_conversions_u64_select_signed(tmp_path):
-        # TODO: implement ?: usual arithmetic conversions (C89) and enable this.
         # unsigned long vs long => unsigned long.
-        pass
+        code = r"""
+int main(){
+  unsigned long u = 1UL;
+  long s = -1L;
+  return ((0 ? u : s) > 0UL) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
 
 
 def test_ternary_usual_arithmetic_conversions_u32_neg(tmp_path):

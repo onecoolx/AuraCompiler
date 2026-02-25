@@ -308,6 +308,20 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "zext32":
+            # Zero-extend low 32 bits to 64 bits.
+            self._load_operand(ins.operand1, "%rax")
+            self._emit("  movl %eax, %eax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "sext32":
+            # Sign-extend low 32 bits to 64 bits.
+            self._load_operand(ins.operand1, "%rax")
+            self._emit("  movslq %eax, %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
         if op == "binop":
             self._load_operand(ins.operand1, "%rax")
             self._load_operand(ins.operand2, "%rcx")

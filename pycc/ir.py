@@ -190,6 +190,10 @@ class IRGenerator:
 
         if not isinstance(op, str):
             return False
+        if op.startswith("%"):
+            ty = getattr(self, "_var_types", {}).get(op)
+            if isinstance(ty, str) and ty.strip().lower().startswith("unsigned "):
+                return True
         if op.startswith("@"):  # locals / globals
             # local type table (populated from decl/param operand1)
             ty = getattr(self, "_var_types", {}).get(op)
@@ -774,21 +778,44 @@ class IRGenerator:
             end_lbl = self._new_label(".Lternend")
 
             # Best-effort: apply usual arithmetic conversions to the conditional
-            # operator result for the limited unsigned-int tracking used by
-            # later comparisons.
+            # operator result for the limited unsigned tracking used by later
+            # comparisons.
             tv = self._gen_expr(expr.true_expr)
             fv = self._gen_expr(expr.false_expr)
+            ty_tv = getattr(self, "_var_types", {}).get(tv, "")
+            ty_fv = getattr(self, "_var_types", {}).get(fv, "")
+            ty_tv_n = ty_tv.strip().lower() if isinstance(ty_tv, str) else ""
+            ty_fv_n = ty_fv.strip().lower() if isinstance(ty_fv, str) else ""
             if self._is_unsigned_operand(tv) or self._is_unsigned_operand(fv):
                 # Pick a representative unsigned type to help later comparisons.
                 # Prefer unsigned long if either side is unsigned long.
-                ty_tv = getattr(self, "_var_types", {}).get(tv, "")
-                ty_fv = getattr(self, "_var_types", {}).get(fv, "")
-                ty_tv_n = ty_tv.strip().lower() if isinstance(ty_tv, str) else ""
-                ty_fv_n = ty_fv.strip().lower() if isinstance(ty_fv, str) else ""
                 if ty_tv_n.startswith("unsigned long") or ty_fv_n.startswith("unsigned long"):
                     self._var_types[t] = "unsigned long"
                 else:
                     self._var_types[t] = "unsigned int"
+            elif (ty_tv_n.startswith("long") and ty_fv_n.startswith("unsigned long")) or (
+                ty_tv_n.startswith("unsigned long") and ty_fv_n.startswith("long")
+            ):
+                # Usual arithmetic conversions: long vs unsigned long -> unsigned long.
+                self._var_types[t] = "unsigned long"
+
+            # If the result is unsigned long, preserve unsignedness for later
+            # comparisons. (No width change on x86-64; this is just type info.)
+            res_ty = getattr(self, "_var_types", {}).get(t, "")
+            res_ty_n = res_ty.strip().lower() if isinstance(res_ty, str) else ""
+            if res_ty_n.startswith("unsigned long"):
+                self._var_types[t] = "unsigned long"
+
+            # If the result is unsigned int, ensure both arms are zero-extended
+            # to 64-bit so that negative int values behave like UINT_MAX, etc.
+            if res_ty_n.startswith("unsigned int"):
+                tv2 = self._new_temp()
+                fv2 = self._new_temp()
+                self._var_types[tv2] = "unsigned int"
+                self._var_types[fv2] = "unsigned int"
+                self.instructions.append(IRInstruction(op="zext32", result=tv2, operand1=tv))
+                self.instructions.append(IRInstruction(op="zext32", result=fv2, operand1=fv))
+                tv, fv = tv2, fv2
 
             c = self._gen_expr(expr.condition)
             self.instructions.append(IRInstruction(op="jz", operand1=c, label=else_lbl))
