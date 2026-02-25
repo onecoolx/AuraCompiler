@@ -52,6 +52,8 @@ from pycc.ast_nodes import (
     TernaryOp,
     SizeOf,
     Cast,
+    Initializer,
+    CharLiteral,
     Statement,
     Expression,
 )
@@ -205,6 +207,17 @@ class IRGenerator:
             return f"=str:{init.value}"
         return None
 
+    def _const_initializer_list(self, init: Any) -> Optional[list[Any]]:
+        """Decode a non-designated initializer-list into a flat list.
+
+        This is currently used only for *local* aggregate initialization.
+        Global aggregates are deferred to a later milestone.
+        """
+
+        if isinstance(init, Initializer):
+            return [e for (_d, e) in (init.elements or [])]
+        return None
+
     # -------------
     # Helpers
     # -------------
@@ -256,6 +269,63 @@ class IRGenerator:
                             op1 = f"{op1}*"
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
                     if item.initializer is not None:
+                        # Local aggregate initialization for arrays.
+                        if getattr(item, "array_size", None) is not None:
+                            inits = self._const_initializer_list(item.initializer)
+                            if inits is None:
+                                raise Exception("unsupported array initializer: expected initializer list")
+
+                            # int a[N] = {...}
+                            n = int(item.array_size)
+                            for idx in range(n):
+                                val_ast = inits[idx] if idx < len(inits) else IntLiteral(
+                                    value=0,
+                                    is_hex=False,
+                                    is_octal=False,
+                                    line=item.line,
+                                    column=item.column,
+                                )
+                                v = self._gen_expr(val_ast)
+                                self.instructions.append(
+                                    IRInstruction(
+                                        op="store_index",
+                                        result=f"@{item.name}",
+                                        operand1=v,
+                                        operand2=f"${idx}",
+                                        label="int",
+                                    )
+                                )
+                            continue
+
+                        # char s[] = "abc"; (C89)
+                        if item.type.base in {"char", "unsigned char"} and getattr(item, "array_size", None) is None:
+                            inits = self._const_initializer_list(item.initializer)
+                            if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
+                                s = inits[0].value
+                                bytes_vals = [ord(c) for c in s] + [0]
+                                count = len(bytes_vals)
+                                # Override earlier scalar decl with an array decl so codegen allocates storage.
+                                self.instructions.append(
+                                    IRInstruction(
+                                        op="decl",
+                                        result=f"@{item.name}",
+                                        operand1=f"array(char,${count})",
+                                    )
+                                )
+                                self._local_arrays.add(item.name)
+                                for idx, b in enumerate(bytes_vals):
+                                    self.instructions.append(
+                                        IRInstruction(
+                                            op="store_index",
+                                            result=f"@{item.name}",
+                                            operand1=f"${b}",
+                                            operand2=f"${idx}",
+                                            label="char",
+                                        )
+                                    )
+                                continue
+
+                        # Scalar init (existing path)
                         v = self._gen_expr(item.initializer)
                         self.instructions.append(IRInstruction(op="mov", result=f"@{item.name}", operand1=v))
                 else:

@@ -60,6 +60,7 @@ from pycc.ast_nodes import (
     TernaryOp,
     Cast,
     EnumDecl,
+    Initializer,
 )
 
 
@@ -507,7 +508,11 @@ class Parser:
                 array_size_val = size_expr.value
 
         if self._match(TokenType.ASSIGN):
-            initializer = self._parse_expression()
+            # Support brace initializer lists for C89 aggregates.
+            if self._at(TokenType.LBRACE):
+                initializer = self._parse_initializer()
+            else:
+                initializer = self._parse_expression()
 
         return Declaration(
             name=name_tok.value,
@@ -517,6 +522,35 @@ class Parser:
             column=name_tok.column,
             array_size=array_size_val,
         )
+
+    def _parse_initializer(self) -> Expression:
+        """Parse an initializer.
+
+        Supported now:
+        - assignment-expression
+        - initializer-list: '{' [initializer (',' initializer)*] [','] '}'
+
+        Designated initializers are intentionally deferred.
+        """
+
+        # initializer-list
+        if self._match(TokenType.LBRACE):
+            elements: List[tuple[Optional[object], object]] = []
+            # empty initializer list => zero-init
+            if not self._at(TokenType.RBRACE):
+                while True:
+                    # No designators in this milestone.
+                    val = self._parse_initializer()
+                    elements.append((None, val))
+                    if not self._match(TokenType.COMMA):
+                        break
+                    if self._at(TokenType.RBRACE):
+                        break
+            rbrace = self._expect(TokenType.RBRACE, "Expected '}' after initializer")
+            return Initializer(elements=elements, line=rbrace.line, column=rbrace.column)
+
+        # assignment-expression
+        return self._parse_expression()
 
     def _parse_statement(self):
         tok = self.current_token
