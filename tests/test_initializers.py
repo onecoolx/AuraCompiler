@@ -94,3 +94,13 @@ int main(){
 }
 """.lstrip()
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_char_array_brace_initializer_zero_fill(tmp_path):
+        code = r"""
+int main(){
+    char s[5] = {'h', 'i'};
+    return (s[0] == 'h' && s[1] == 'i' && s[2] == 0 && s[3] == 0 && s[4] == 0) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
