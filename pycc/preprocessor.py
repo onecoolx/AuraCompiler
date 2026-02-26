@@ -135,6 +135,7 @@ class Preprocessor:
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
         self._line_re = re.compile(r"^\s*#\s*line\b.*$")
+        self._pragma_once_re = re.compile(r"^\s*#\s*pragma\s+once\s*$")
         user_paths = [os.path.abspath(p) for p in (include_paths or [])]
         probed = [p for p in _probe_system_include_paths() if os.path.isdir(p)]
         # Fallback defaults if probing fails.
@@ -374,6 +375,10 @@ class Preprocessor:
         for line in raw:
             if self._include_next_re.match(line):
                 raise RuntimeError("unsupported directive: #include_next")
+
+            if self._pragma_once_re.match(line):
+                # Subset: accept and ignore.
+                continue
             # Line markers (subset): accept and strip.
             if self._line_re.match(line):
                 continue
