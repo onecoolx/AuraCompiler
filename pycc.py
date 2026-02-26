@@ -114,7 +114,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("Error: -o is required unless -E is used")
         return 1
 
-    compiler = Compiler(optimize=not args.no_opt)
+    compiler = Compiler(
+        optimize=not args.no_opt,
+        include_paths=args.include_dirs,
+        defines={},
+    )
 
     # Single input: preserve previous behavior.
     if len(args.source) == 1:

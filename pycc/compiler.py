@@ -12,6 +12,7 @@ import os
 import subprocess
 import tempfile
 import shutil
+from pycc.preprocessor import Preprocessor
 from pycc.lexer import Lexer, Token
 from pycc.parser import Parser
 from pycc.semantics import SemanticAnalyzer
@@ -39,8 +40,18 @@ class CompilationResult:
 class Compiler:
     """Main compiler class orchestrating all compilation stages"""
     
-    def __init__(self, optimize: bool = True):
+    def __init__(
+        self,
+        optimize: bool = True,
+        *,
+        include_paths: Optional[List[str]] = None,
+        defines: Optional[dict] = None,
+    ):
         self.optimize = optimize
+
+        # Preprocessor options (very small subset).
+        self._pp_include_paths = list(include_paths or [])
+        self._pp_defines = dict(defines or {})
 
         # Toolchain defaults (binutils).
         self.assembler = os.environ.get("PYCC_AS", "as")
@@ -57,6 +68,16 @@ class Compiler:
         try:
             with open(source_file, 'r') as f:
                 source_code = f.read()
+            # Preprocess (subset) before lex/parse.
+            try:
+                pp = Preprocessor(include_paths=self._pp_include_paths)
+                pres = pp.preprocess(source_file, initial_macros=self._pp_defines)
+                if not pres.success:
+                    return CompilationResult(success=False, errors=[f"Preprocess failed: {e}" for e in (pres.errors or [])])
+                source_code = pres.text
+            except Exception as e:
+                return CompilationResult(success=False, errors=[f"Preprocess failed: {e}"])
+
             return self.compile_code(source_code, output_file, source_path=source_file)
         except IOError as e:
             return CompilationResult(
