@@ -136,6 +136,7 @@ class Preprocessor:
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
         self._line_re = re.compile(r"^\s*#\s*line\b.*$")
         self._pragma_once_re = re.compile(r"^\s*#\s*pragma\s+once\s*$")
+        self._error_re = re.compile(r"^\s*#\s*error\b(.*)$")
         user_paths = [os.path.abspath(p) for p in (include_paths or [])]
         probed = [p for p in _probe_system_include_paths() if os.path.isdir(p)]
         # Fallback defaults if probing fails.
@@ -382,6 +383,13 @@ class Preprocessor:
 
             if self._pragma_once_re.match(line):
                 # Subset: accept and ignore.
+                continue
+
+            merr = self._error_re.match(line)
+            if merr:
+                if include_stack[-1]:
+                    msg = (merr.group(1) or "").strip()
+                    raise RuntimeError(f"#error {msg}".rstrip())
                 continue
             # Line markers (subset): accept and strip.
             if self._line_re.match(line):
