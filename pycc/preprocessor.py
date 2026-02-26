@@ -378,7 +378,32 @@ class Preprocessor:
 
         in_block_comment = False
 
-        for line in raw:
+        # Join physical lines with trailing backslash for directives (subset).
+        # This is needed for multi-line macros like:
+        #   #define A 1 \
+        #             + 2
+        def _logical_lines(lines: List[str]) -> List[str]:
+            out: List[str] = []
+            i = 0
+            while i < len(lines):
+                line = lines[i]
+                if line.lstrip().startswith("#"):
+                    joined = line
+                    while joined.rstrip("\n").endswith("\\") and i + 1 < len(lines):
+                        # Drop the trailing backslash and newline, then insert a single space.
+                        joined = joined.rstrip("\n")
+                        joined = joined[:-1]  # remove '\\'
+                        i += 1
+                        joined += " " + lines[i].lstrip(" \t").rstrip("\n")
+                        joined += "\n"
+                    out.append(joined)
+                    i += 1
+                    continue
+                out.append(line)
+                i += 1
+            return out
+
+        for line in _logical_lines(raw):
             line, in_block_comment = self._strip_comments(line, in_block_comment)
 
             if self._include_next_re.match(line):
