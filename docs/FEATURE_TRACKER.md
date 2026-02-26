@@ -87,6 +87,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Emit `.o` and link multiple translation units with system `gcc` (no-pie subset) — `tests/test_multi_tu.py`
 - **PARTIAL** Preprocessor wired into normal compilation (subset: `#include` + basic conditionals/macros) — `tests/test_compile_with_preprocessor.py`
 - **PARTIAL** `-D/-U` macros affect compilation preprocessing (subset) — `tests/test_compile_with_D_U.py`
+- **PARTIAL** `--use-system-cpp` forwards `-I/-D/-U` for normal compilation (subset) — `tests/test_driver_system_cpp_DIU_compile.py`
 - **PARTIAL** glibc smoke test via `<stdio.h>` (skips if system include dirs not configured) — `tests/test_glibc_smoke_stdio.py`
 - **PARTIAL** `--use-system-cpp`: preprocess with system `gcc -E -P` for better system header compatibility (passes `<stdio.h>` integration: `puts`/`printf`) — `tests/test_glibc_system_cpp_stdio.py`, `tests/test_glibc_system_cpp_printf.py`
 - **PARTIAL** system include path probing via `gcc -E -Wp,-v -` (best-effort) — `tests/test_preprocessor_gcc_include_probe.py`
