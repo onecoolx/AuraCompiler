@@ -37,6 +37,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         metavar="NAME[=VALUE]",
         help="Define a macro for preprocessing (subset; -E only)",
     )
+    ap.add_argument(
+        "-U",
+        dest="undefines",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Undefine a macro for preprocessing (subset; -E only)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -62,6 +70,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"Error: invalid -D argument: {item!r}")
                 return 1
             initial_macros[name] = val
+
+        for name in args.undefines:
+            if name is None:
+                continue
+            name = name.strip()
+            if not name:
+                print("Error: invalid -U argument")
+                return 1
+            initial_macros.pop(name, None)
 
         src = args.source[0]
         try:
