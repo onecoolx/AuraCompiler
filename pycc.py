@@ -114,10 +114,33 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("Error: -o is required unless -E is used")
         return 1
 
+    compile_defines: Dict[str, str] = {}
+    for item in args.defines:
+        if not item:
+            continue
+        if "=" in item:
+            name, val = item.split("=", 1)
+            name = name.strip()
+            val = val.strip()
+        else:
+            name, val = item.strip(), "1"
+        if not name:
+            print(f"Error: invalid -D argument: {item!r}")
+            return 1
+        compile_defines[name] = val
+    for name in args.undefines:
+        if name is None:
+            continue
+        name = name.strip()
+        if not name:
+            print("Error: invalid -U argument")
+            return 1
+        compile_defines.pop(name, None)
+
     compiler = Compiler(
         optimize=not args.no_opt,
         include_paths=args.include_dirs,
-        defines={},
+        defines=compile_defines,
     )
 
     # Single input: preserve previous behavior.
