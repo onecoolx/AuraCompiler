@@ -83,3 +83,37 @@ int x = 3;
     assert "int x = 1;" not in res.stdout
     assert "int x = 2;" in res.stdout
     assert "int x = 3;" not in res.stdout
+
+
+def test_E_if_defined_without_parentheses(tmp_path: Path):
+    res = _run_E(
+        tmp_path,
+        r"""
+#define X 1
+#if defined X
+int x = 1;
+#else
+int x = 2;
+#endif
+""".lstrip(),
+    )
+    assert res.returncode == 0, res.stderr
+    assert "int x = 1;" in res.stdout
+    assert "int x = 2;" not in res.stdout
+
+
+def test_E_if_not_defined_without_parentheses(tmp_path: Path):
+    res = _run_E(
+        tmp_path,
+        r"""
+#define X 1
+#if !defined X
+int x = 1;
+#else
+int x = 2;
+#endif
+""".lstrip(),
+    )
+    assert res.returncode == 0, res.stderr
+    assert "int x = 1;" not in res.stdout
+    assert "int x = 2;" in res.stdout
