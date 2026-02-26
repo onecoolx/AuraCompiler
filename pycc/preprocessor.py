@@ -403,7 +403,9 @@ class Preprocessor:
                 i += 1
             return out
 
+        logical_line_no = 0
         for line in _logical_lines(raw):
+            logical_line_no += 1
             line, in_block_comment = self._strip_comments(line, in_block_comment)
 
             if self._include_next_re.match(line):
@@ -639,7 +641,7 @@ class Preprocessor:
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
 
-            out_lines.append(self._expand_line(line, macros))
+            out_lines.append(self._expand_line(line, macros, filename=abspath, line_no=logical_line_no))
 
         stack.pop()
         return "".join(out_lines)
@@ -719,12 +721,82 @@ class Preprocessor:
 
         return "".join(out), in_block
 
-    def _expand_line(self, line: str, macros: Dict[str, str]) -> str:
+    def _expand_line(self, line: str, macros: Dict[str, str], *, filename: str, line_no: int) -> str:
         # Expand function-like invocations first (best-effort), then object-like macros.
         expanded = line
         expanded = self._expand_function_like_macros(expanded, macros)
+        if "__LINE__" in expanded or "__FILE__" in expanded:
+            expanded = self._expand_builtin_macros(expanded, filename=filename, line_no=line_no)
         expanded = self._expand_object_like_macros(expanded, macros)
         return expanded
+
+    def _expand_builtin_macros(self, line: str, *, filename: str, line_no: int) -> str:
+        # Subset: expand __LINE__ and __FILE__ outside of string/char literals.
+        # __FILE__ is emitted as a quoted C string with backslashes/quotes escaped.
+        file_str = os.path.basename(filename)
+        file_str = file_str.replace("\\", "\\\\").replace('"', '\\"')
+        file_lit = f'"{file_str}"'
+        line_lit = str(int(line_no))
+
+        out: List[str] = []
+        i = 0
+        n = len(line)
+
+        def is_ident_start(ch: str) -> bool:
+            return ch.isalpha() or ch == "_"
+
+        def is_ident_continue(ch: str) -> bool:
+            return ch.isalnum() or ch == "_"
+
+        while i < n:
+            ch = line[i]
+
+            if ch == '"':
+                start = i
+                i += 1
+                while i < n:
+                    if line[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if line[i] == '"':
+                        i += 1
+                        break
+                    i += 1
+                out.append(line[start:i])
+                continue
+
+            if ch == "'":
+                start = i
+                i += 1
+                while i < n:
+                    if line[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if line[i] == "'":
+                        i += 1
+                        break
+                    i += 1
+                out.append(line[start:i])
+                continue
+
+            if is_ident_start(ch):
+                start = i
+                i += 1
+                while i < n and is_ident_continue(line[i]):
+                    i += 1
+                ident = line[start:i]
+                if ident == "__LINE__":
+                    out.append(line_lit)
+                elif ident == "__FILE__":
+                    out.append(file_lit)
+                else:
+                    out.append(ident)
+                continue
+
+            out.append(ch)
+            i += 1
+
+        return "".join(out)
 
     def _expand_object_like_macros(self, line: str, macros: Dict[str, str]) -> str:
         # Best-effort object-like macro expansion that avoids touching
