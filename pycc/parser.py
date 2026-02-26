@@ -211,8 +211,15 @@ class Parser:
 
         base_type = self._parse_type_specifier()
         # handle pointer declarators like: `int *p;` or `struct S *p;`
-        while self._match(TokenType.STAR):
-            base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+        # Also ignore pointer-level qualifiers like: `char *const p`.
+        while True:
+            if self._match(TokenType.STAR):
+                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+                continue
+            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+                self.advance()
+                continue
+            break
         # Support standalone tag declarations like: `struct S { ... };`
         if self._match(TokenType.SEMICOLON):
             if isinstance(base_type, Type) and (base_type.base.startswith("struct ") or base_type.base.startswith("union ")):
@@ -288,10 +295,29 @@ class Parser:
 
         name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
 
+        # Allow multiple declarators for pointers, e.g. `char *const p` / `const char *const p`.
+        # We currently ignore pointer-level qualifiers like `const`.
+        if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+            self.advance()
+
         # function or variable?
         if self._match(TokenType.LPAREN):
             params = self._parse_parameter_list()
-            self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+            # Be permissive: if our parameter parser stopped early, fast-forward
+            # to the matching ')'. This allows us to accept many system-header
+            # prototypes we don't fully model yet.
+            if not self._match(TokenType.RPAREN):
+                depth = 1
+                while self.current_token and depth > 0:
+                    if self._match(TokenType.LPAREN):
+                        depth += 1
+                        continue
+                    if self._match(TokenType.RPAREN):
+                        depth -= 1
+                        continue
+                    self.advance()
+                if depth != 0:
+                    raise ParserError("Expected ')' after parameter list", self.current_token)
 
             # prototype
             if self._match(TokenType.SEMICOLON):
@@ -473,8 +499,41 @@ class Parser:
                     if self._at(TokenType.EOF):
                         raise ParserError("Unterminated struct/union member list", self.current_token)
                     mem_ty = self._parse_type_specifier()
+
+                    # Support pointer members in struct/union definitions, e.g.
+                    #   struct S { void *p; };
+                    while self._match(TokenType.STAR):
+                        mem_ty = Type(base=mem_ty.base, is_pointer=True, line=mem_ty.line, column=mem_ty.column)
+
                     mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
-                    # no bitfields/arrays in MVP members yet
+
+                    # Support simple fixed-size array members (subset):
+                    #   int a[2];
+                    # This is needed for many system headers (e.g. glibc's __fsid_t).
+                    if self._match(TokenType.LBRACKET):
+                        # Array members appear frequently in system headers.
+                        # We support a permissive subset:
+                        #   int a[2];
+                        #   char b[];            (unknown size)
+                        #   char c[EXPR];        (we ignore EXPR tokens)
+                        #
+                        # For now we discard the array extent in the AST/type.
+                        # This is a parsing-compatibility feature.
+                        depth = 1
+                        while self.current_token and depth > 0:
+                            if self._match(TokenType.RBRACKET):
+                                depth -= 1
+                                break
+                            # Be robust if an expression contains nested brackets (rare here).
+                            if self._match(TokenType.LBRACKET):
+                                depth += 1
+                                continue
+                            # Otherwise consume tokens until we reach ']'.
+                            self.advance()
+                        if depth != 0:
+                            raise ParserError("Expected ']' after array declarator", self.current_token)
+
+                    # no bitfields in MVP members yet
                     self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
                     members.append(Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column))
                 self._expect(TokenType.RBRACE, "Expected '}' after struct/union members")
@@ -499,48 +558,71 @@ class Parser:
         params: List[Declaration] = []
         if self._at(TokenType.RPAREN):
             return params
-        # handle (void)
-        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "void":
-            void_tok = self.current_token
-            self.advance()
-            if self._at(TokenType.RPAREN):
+        # Special-case `(void)` meaning no parameters.
+        if self._at_keyword("void"):
+            # Only treat as empty parameter list when the next token is ')'.
+            nxt = self._peek_token()
+            if nxt and nxt.type == TokenType.RPAREN:
+                self.advance()
                 return []
-            # otherwise treat as normal type
-            base_type = Type(base="void", line=void_tok.line, column=void_tok.column)
-            name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
-            params.append(Declaration(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column))
-        else:
-            while True:
-                base_type = self._parse_type_specifier()
+
+        while True:
+            # varargs: `...,` appears after a comma in prototypes.
+            if self.current_token and self.current_token.type == TokenType.ELLIPSIS:
+                self.advance()
+                break
+
+            base_type = self._parse_type_specifier()
+            while self._match(TokenType.STAR):
+                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+
+            # Support parenthesized pointer declarators in parameters:
+            #   int (*fp)(int)
+            if self._match(TokenType.LPAREN):
+                ptr_ty = base_type
                 while self._match(TokenType.STAR):
-                    base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
-                # Support parenthesized pointer declarators in parameters:
-                #   int (*fp)(int)
+                    ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
+                self._expect(TokenType.RPAREN, "Expected ')' in parameter declarator")
+                # consume trailing function parameter list
                 if self._match(TokenType.LPAREN):
-                    ptr_ty = base_type
-                    while self._match(TokenType.STAR):
-                        ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
-                    name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
-                    self._expect(TokenType.RPAREN, "Expected ')' in parameter declarator")
-                    # consume trailing function parameter list
-                    if self._match(TokenType.LPAREN):
-                        depth = 1
-                        while self.current_token and depth > 0:
-                            if self._match(TokenType.LPAREN):
-                                depth += 1
-                                continue
-                            if self._match(TokenType.RPAREN):
-                                depth -= 1
-                                continue
-                            self.advance()
-                        ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
-                    params.append(Declaration(name=name_tok.value, type=ptr_ty, line=name_tok.line, column=name_tok.column))
-                else:
-                    name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._match(TokenType.LPAREN):
+                            depth += 1
+                            continue
+                        if self._match(TokenType.RPAREN):
+                            depth -= 1
+                            continue
+                        self.advance()
+                    ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                params.append(Declaration(name=name_tok.value, type=ptr_ty, line=name_tok.line, column=name_tok.column))
+            else:
+                # Allow unnamed parameters in prototypes (common in system headers).
+                # Example: `int f(int);`
+                if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
+                    name_tok = self.current_token
+                    self.advance()
                     params.append(Declaration(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column))
-                if not self._match(TokenType.COMMA):
-                    break
+                else:
+                    params.append(Declaration(name=None, type=base_type, line=base_type.line, column=base_type.column))
+
+            if not self._match(TokenType.COMMA):
+                break
         return params
+
+    def _peek_token(self) -> Optional[Token]:
+        # Next token without consuming it.
+        if self.position + 1 < len(self.tokens):
+            return self.tokens[self.position + 1]
+        return None
+
+    def _at_keyword(self, kw: str) -> bool:
+        return bool(
+            self.current_token
+            and self.current_token.type == TokenType.KEYWORD
+            and self.current_token.value == kw
+        )
 
     # -----------------
     # Statements

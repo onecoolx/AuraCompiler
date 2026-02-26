@@ -135,6 +135,13 @@ class Compiler:
             "-D__has_cpp_attribute(x)=0",
             "-D__builtin_va_list=void *",
             "-D__extension__=",
+            # Drop gcc-style attributes from system headers.
+            "-D__attribute__(x)=",
+            # Remove common glibc qualifiers we don't model.
+            "-D__restrict=",
+            "-Drestrict=",
+            # Drop asm labels in system prototypes.
+            "-D__asm__(x)=",
         ]
         for d in self._pp_include_paths:
             cmd += ["-I", d]

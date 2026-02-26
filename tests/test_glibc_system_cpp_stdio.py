@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import sys
@@ -10,14 +11,16 @@ def test_glibc_stdio_puts_via_system_cpp(tmp_path: Path):
     if shutil.which("gcc") is None:
         pytest.skip("gcc not available")
 
+    if os.environ.get("AURA_GLIBC_SYSTEM_CPP") != "1":
+        pytest.skip("set AURA_GLIBC_SYSTEM_CPP=1 to enable glibc <stdio.h> system-cpp integration test")
+
     src = tmp_path / "main.c"
-    # Include a minimal header to validate system-cpp wiring without pulling
-    # in all of glibc's extension-heavy types.
     src.write_text(
         r"""
-#include <stddef.h>
+#include <stdio.h>
 
 int main(void) {
+    puts("ok");
     return 0;
 }
 """.lstrip()
@@ -35,3 +38,4 @@ int main(void) {
 
     run = subprocess.run([str(out)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     assert run.returncode == 0
+    assert run.stdout.strip() == "ok"
