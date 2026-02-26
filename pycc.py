@@ -45,6 +45,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         metavar="NAME",
         help="Undefine a macro for preprocessing (subset; -E only)",
     )
+    ap.add_argument(
+        "-I",
+        dest="include_dirs",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Add an include directory for preprocessing (subset; -E only)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -82,7 +90,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         src = args.source[0]
         try:
-            pp = Preprocessor()
+            pp = Preprocessor(include_paths=args.include_dirs)
             res = pp.preprocess(src, initial_macros=initial_macros)
             if not res.success:
                 for e in (res.errors or []):

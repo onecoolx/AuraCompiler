@@ -32,8 +32,9 @@ class Preprocessor:
     - expression evaluation in #if
     """
 
-    def __init__(self) -> None:
-        self._include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
+    def __init__(self, *, include_paths: Optional[List[str]] = None) -> None:
+        self._include_quote_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
+        self._include_angle_re = re.compile(r"^\s*#\s*include\s*<([^>]+)>\s*$")
         self._define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
         self._undef_re = re.compile(r"^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._ifdef_re = re.compile(r"^\s*#\s*ifdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
@@ -46,6 +47,7 @@ class Preprocessor:
         self._elif_name_re = re.compile(r"^\s*#\s*elif\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
+        self._include_paths = [os.path.abspath(p) for p in (include_paths or [])]
 
     def _eval_cond_01(self, name: str, macros: Dict[str, str]) -> bool:
         """Evaluate a very small #if/#elif condition.
@@ -187,11 +189,20 @@ class Preprocessor:
                 macros.pop(name, None)
                 continue
 
-            # Includes
-            mi = self._include_re.match(line)
-            if mi:
-                inc_name = mi.group(1)
-                inc_path = os.path.join(base_dir, inc_name)
+            # Includes (subset)
+            miq = self._include_quote_re.match(line)
+            if miq:
+                inc_name = miq.group(1)
+                search_paths = [base_dir, *self._include_paths]
+                inc_path = self._resolve_include(inc_name, search_paths)
+                out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                continue
+
+            mia = self._include_angle_re.match(line)
+            if mia:
+                inc_name = mia.group(1).strip()
+                search_paths = [*self._include_paths]
+                inc_path = self._resolve_include(inc_name, search_paths)
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
 
@@ -203,3 +214,10 @@ class Preprocessor:
 
         stack.pop()
         return "".join(out_lines)
+
+    def _resolve_include(self, inc_name: str, search_paths: List[str]) -> str:
+        for d in search_paths:
+            cand = os.path.abspath(os.path.join(d, inc_name))
+            if os.path.isfile(cand):
+                return cand
+        raise RuntimeError(f"cannot find include: {inc_name}")
