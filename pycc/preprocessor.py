@@ -662,9 +662,23 @@ class Preprocessor:
     def _expand_object_like_macros(self, line: str, macros: Dict[str, str]) -> str:
         # Best-effort object-like macro expansion that avoids touching
         # string/char literals and only substitutes identifier tokens.
+        #
+        # We also perform bounded rescanning to support chained expansions:
+        #   #define A B
+        #   #define B 1
+        #   A -> 1
         if not macros:
             return line
 
+        cur = line
+        for _ in range(20):
+            nxt = self._expand_object_like_macros_single_pass(cur, macros)
+            if nxt == cur:
+                return cur
+            cur = nxt
+        return cur
+
+    def _expand_object_like_macros_single_pass(self, line: str, macros: Dict[str, str]) -> str:
         out: List[str] = []
         i = 0
         n = len(line)
