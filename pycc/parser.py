@@ -200,6 +200,8 @@ class Parser:
         if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
             self.advance()
             base_type = self._parse_type_specifier()
+            while self._match(TokenType.STAR):
+                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
@@ -574,6 +576,8 @@ class Parser:
         if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
             self.advance()
             base_type = self._parse_type_specifier()
+            while self._match(TokenType.STAR):
+                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)

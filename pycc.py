@@ -30,6 +30,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("source", nargs="+", help="Input C source file(s)")
     ap.add_argument("-E", action="store_true", help="Preprocess only (subset: passthrough)")
     ap.add_argument(
+        "--use-system-cpp",
+        action="store_true",
+        help="Preprocess with system gcc -E before compiling (subset; for glibc headers)",
+    )
+    ap.add_argument(
         "-D",
         dest="defines",
         action="append",
@@ -141,6 +146,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         optimize=not args.no_opt,
         include_paths=args.include_dirs,
         defines=compile_defines,
+        use_system_cpp=args.use_system_cpp,
     )
 
     # Single input: preserve previous behavior.

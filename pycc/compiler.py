@@ -46,12 +46,14 @@ class Compiler:
         *,
         include_paths: Optional[List[str]] = None,
         defines: Optional[dict] = None,
+        use_system_cpp: bool = False,
     ):
         self.optimize = optimize
 
         # Preprocessor options (very small subset).
         self._pp_include_paths = list(include_paths or [])
         self._pp_defines = dict(defines or {})
+        self._use_system_cpp = use_system_cpp
 
         # Toolchain defaults (binutils).
         self.assembler = os.environ.get("PYCC_AS", "as")
@@ -68,15 +70,22 @@ class Compiler:
         try:
             with open(source_file, 'r') as f:
                 source_code = f.read()
-            # Preprocess (subset) before lex/parse.
-            try:
-                pp = Preprocessor(include_paths=self._pp_include_paths)
-                pres = pp.preprocess(source_file, initial_macros=self._pp_defines)
-                if not pres.success:
-                    return CompilationResult(success=False, errors=[f"Preprocess failed: {e}" for e in (pres.errors or [])])
-                source_code = pres.text
-            except Exception as e:
-                return CompilationResult(success=False, errors=[f"Preprocess failed: {e}"])
+            # Preprocess before lex/parse.
+            if self._use_system_cpp:
+                try:
+                    source_code = self._preprocess_with_system_cpp(source_file)
+                except Exception as e:
+                    return CompilationResult(success=False, errors=[f"Preprocess failed: {e}"])
+            else:
+                # Built-in preprocessor (subset).
+                try:
+                    pp = Preprocessor(include_paths=self._pp_include_paths)
+                    pres = pp.preprocess(source_file, initial_macros=self._pp_defines)
+                    if not pres.success:
+                        return CompilationResult(success=False, errors=[f"Preprocess failed: {e}" for e in (pres.errors or [])])
+                    source_code = pres.text
+                except Exception as e:
+                    return CompilationResult(success=False, errors=[f"Preprocess failed: {e}"])
 
             return self.compile_code(source_code, output_file, source_path=source_file)
         except IOError as e:
@@ -84,6 +93,41 @@ class Compiler:
                 success=False,
                 errors=[f"Failed to read source file: {e}"]
             )
+
+    def _preprocess_with_system_cpp(self, source_file: str) -> str:
+        gcc = shutil.which("gcc")
+        if not gcc:
+            raise RuntimeError("gcc not found")
+        # Use gnu89 mode: glibc headers rely on GNU extensions and builtin tokens.
+        cmd: List[str] = [
+            gcc,
+            "-std=gnu89",
+            "-E",
+            "-P",
+            # Reduce the complexity of glibc headers for our subset compiler.
+            # These avoid typedefs and builtins that we don't parse yet.
+            "-D__GNUG__=0",
+            "-D__GNUC_PREREQ(maj,min)=0",
+            "-D__glibc_clang_has_extension(x)=0",
+            "-D__has_extension(x)=0",
+            "-D__has_feature(x)=0",
+            "-D__has_builtin(x)=0",
+            "-D__has_attribute(x)=0",
+            "-D__has_declspec_attribute(x)=0",
+            "-D__has_cpp_attribute(x)=0",
+            "-D__builtin_va_list=void *",
+            "-D__extension__=",
+        ]
+        for d in self._pp_include_paths:
+            cmd += ["-I", d]
+        for k, v in self._pp_defines.items():
+            cmd += [f"-D{k}={v}"]
+        cmd += [source_file]
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if p.returncode != 0:
+            msg = p.stderr.strip() or p.stdout.strip() or "(no output)"
+            raise RuntimeError(f"system cpp failed: {msg}")
+        return p.stdout
     
     def compile_code(self, source_code: str, output_file: Optional[str] = None, source_path: str = "<input>") -> CompilationResult:
         """Compile source code"""
