@@ -125,6 +125,9 @@ class SemanticAnalyzer:
                     continue
                 # minimal duplicate/ABI checks for globals
                 sc = getattr(decl, "storage_class", None)
+                # C89: objects cannot have type void.
+                if getattr(decl, "type", None) is not None and getattr(decl.type, "base", None) == "void":
+                    self.errors.append(f"variable '{decl.name}' declared with type void")
                 # C89: `extern` is a declaration; it cannot have an initializer.
                 if sc == "extern" and getattr(decl, "initializer", None) is not None:
                     self.errors.append(f"extern declaration cannot have an initializer: '{decl.name}'")
@@ -353,6 +356,9 @@ class SemanticAnalyzer:
         if not hasattr(self, "_decl_types"):
             self._decl_types = {}
         for p in fn.parameters:
+            # C89: parameter of type void is invalid (except sole parameter list 'void').
+            if getattr(p, "type", None) is not None and getattr(p.type, "base", None) == "void":
+                self.errors.append(f"parameter '{p.name}' declared with type void")
             self._declare_local(p.name, "param")
             self._decl_types[p.name] = p.type
         # track register locals so we can reject `&register_var` (C89 rule)
