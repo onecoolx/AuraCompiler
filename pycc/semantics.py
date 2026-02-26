@@ -108,9 +108,29 @@ class SemanticAnalyzer:
         self._enum_constants: Dict[str, int] = {}
 
         seen_globals: Dict[str, str] = {}
+        # Minimal function redeclaration compatibility tracking (C89 subset).
+        # Map: function name -> (return_type_base, param_count or None if unspecified)
+        func_sigs: Dict[str, tuple[str, Optional[int]]] = {}
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
+                # C89 subset: if we have multiple prototypes/decls for the same
+                # function name, require return type base and parameter count to match
+                # (when parameters are specified).
+                ret_base = getattr(decl, "return_type", None)
+                ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
+                # Parser always provides a list; treat empty list as specified (0 params).
+                param_count: Optional[int] = len(getattr(decl, "parameters", []) or [])
+                prev = func_sigs.get(decl.name)
+                if prev is None:
+                    func_sigs[decl.name] = (str(ret_base_s), param_count)
+                else:
+                    prev_ret, prev_n = prev
+                    if str(ret_base_s) != prev_ret:
+                        self.errors.append(f"conflicting return type for function '{decl.name}'")
+                    # If both sides have an explicit parameter list, require same count.
+                    if prev_n is not None and param_count is not None and prev_n != param_count:
+                        self.errors.append(f"conflicting parameter count for function '{decl.name}'")
                 self._declare_global(decl.name, "function")
                 self._functions.add(decl.name)
             elif isinstance(decl, EnumDecl):
