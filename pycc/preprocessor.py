@@ -35,6 +35,7 @@ class Preprocessor:
     def __init__(self) -> None:
         self._include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
         self._define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
+        self._undef_re = re.compile(r"^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
         self._if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
         self._elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
@@ -113,6 +114,12 @@ class Preprocessor:
                 name = md.group(1)
                 val = md.group(2).rstrip("\n")
                 macros[name] = val.strip()
+                continue
+
+            mu = self._undef_re.match(line)
+            if mu:
+                name = mu.group(1)
+                macros.pop(name, None)
                 continue
 
             # Includes
