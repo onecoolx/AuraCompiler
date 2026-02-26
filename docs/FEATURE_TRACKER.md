@@ -86,6 +86,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#line` directive (subset): accept and strip from `-E` output — `tests/test_preprocessor_line_directive.py`
 - **PARTIAL** Preprocessor function-like macros (subset): `#define F(x) ...` + invocation expansion (incl. nested calls) — `tests/test_preprocessor_function_like_macros.py`
 - **PARTIAL** Preprocessor macro operators (subset): `#` (stringize) and `##` (token paste) — `tests/test_preprocessor_macro_operators.py`
+- **PARTIAL** Preprocessor macro expansion safety (subset): no expansion inside string/char literals; identifier-only substitution — `tests/test_preprocessor_macro_expansion_edges.py`
 - **PARTIAL** Driver supports multiple inputs (subset): `pycc.py file1.c file2.c -o a.out` — `tests/test_driver_multi_file_cli.py`
 - **PARTIAL** Multi-input + `--use-system-cpp` (glibc headers + multi-TU link) — `tests/test_driver_multi_file_system_cpp.py`
 - **PARTIAL** Emit `.o` and link multiple translation units with system `gcc` (no-pie subset) — `tests/test_multi_tu.py`

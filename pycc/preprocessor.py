@@ -329,9 +329,72 @@ class Preprocessor:
         # Expand function-like invocations first (best-effort), then object-like macros.
         expanded = line
         expanded = self._expand_function_like_macros(expanded, macros)
-        for k, v in macros.items():
-            expanded = re.sub(rf"\b{re.escape(k)}\b", lambda _m, _v=v: _v, expanded)
+        expanded = self._expand_object_like_macros(expanded, macros)
         return expanded
+
+    def _expand_object_like_macros(self, line: str, macros: Dict[str, str]) -> str:
+        # Best-effort object-like macro expansion that avoids touching
+        # string/char literals and only substitutes identifier tokens.
+        if not macros:
+            return line
+
+        out: List[str] = []
+        i = 0
+        n = len(line)
+
+        def is_ident_start(ch: str) -> bool:
+            return ch.isalpha() or ch == "_"
+
+        def is_ident_continue(ch: str) -> bool:
+            return ch.isalnum() or ch == "_"
+
+        while i < n:
+            ch = line[i]
+
+            # String literal
+            if ch == '"':
+                start = i
+                i += 1
+                while i < n:
+                    if line[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if line[i] == '"':
+                        i += 1
+                        break
+                    i += 1
+                out.append(line[start:i])
+                continue
+
+            # Char literal
+            if ch == "'":
+                start = i
+                i += 1
+                while i < n:
+                    if line[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if line[i] == "'":
+                        i += 1
+                        break
+                    i += 1
+                out.append(line[start:i])
+                continue
+
+            # Identifier token
+            if is_ident_start(ch):
+                start = i
+                i += 1
+                while i < n and is_ident_continue(line[i]):
+                    i += 1
+                ident = line[start:i]
+                out.append(macros.get(ident, ident))
+                continue
+
+            out.append(ch)
+            i += 1
+
+        return "".join(out)
 
     def _expand_function_like_macros(self, text: str, macros: Dict[str, str]) -> str:
         # Very small subset expansion:
