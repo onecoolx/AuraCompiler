@@ -82,6 +82,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 ## Milestone 2 — Preprocessor + Multi-file + glibc
 
 - **PARTIAL** Preprocessor stage (`-E`) (subset: passthrough + local `#include "file"` + object-like `#define` + `#undef` + `#ifdef/#ifndef` + `#if 0/1` and `#if NAME` (NAME expands to 0/1) with `#elif 0/1` and `#elif NAME` + `#else`) — `tests/test_preprocessor_E.py`, `tests/test_preprocessor_include.py`, `tests/test_preprocessor_define.py`, `tests/test_preprocessor_undef.py`, `tests/test_preprocessor_ifdef.py`, `tests/test_preprocessor_if0.py`, `tests/test_preprocessor_if_macro.py`, `tests/test_preprocessor_else.py`, `tests/test_preprocessor_elif.py`
+- (tests) nested conditional handling — `tests/test_preprocessor_nested_conditionals.py`
 - **PARTIAL** Preprocessor `#ifndef` directive (subset): conditional inclusion when macro is undefined — `tests/test_preprocessor_ifndef.py`
 - **PARTIAL** Preprocessor `defined` in `#if/#elif` (subset): `defined(X)` / `defined X` and negated forms — `tests/test_preprocessor_defined.py`
 - **PARTIAL** Preprocessor `#elifdef/#elifndef` directives (subset): `#elifdef X` and `#elifndef X` — `tests/test_preprocessor_elifdef_elifndef.py`
