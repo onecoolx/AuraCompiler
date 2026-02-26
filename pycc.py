@@ -95,13 +95,24 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         src = args.source[0]
         try:
-            pp = Preprocessor(include_paths=args.include_dirs)
-            res = pp.preprocess(src, initial_macros=initial_macros)
-            if not res.success:
-                for e in (res.errors or []):
-                    print(f"Error: {e}")
-                return 1
-            text = res.text
+            if args.use_system_cpp:
+                # Reuse the compiler's system-cpp preprocessing path so -E
+                # behaves consistently with normal compilation.
+                c = Compiler(
+                    optimize=False,
+                    include_paths=args.include_dirs,
+                    defines=initial_macros,
+                    use_system_cpp=True,
+                )
+                text = c._preprocess_with_system_cpp(src)
+            else:
+                pp = Preprocessor(include_paths=args.include_dirs)
+                res = pp.preprocess(src, initial_macros=initial_macros)
+                if not res.success:
+                    for e in (res.errors or []):
+                        print(f"Error: {e}")
+                    return 1
+                text = res.text
         except Exception as e:
             print(f"Error: {e}")
             return 1

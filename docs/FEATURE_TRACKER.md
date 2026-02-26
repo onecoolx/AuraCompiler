@@ -106,6 +106,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 ## Milestone 4 — gcc/clang-compatible driver
 
 - **PARTIAL** CLI parity (subset): `-c`, `-S`, `-E`, `-o`, `-I`, `-D`, `-U`, `-std=`, `-Wall/-Werror`, `-O0/-O1` (subset: `-D/-U/-I` for `-E`) — `tests/test_preprocessor_D.py`, `tests/test_preprocessor_U.py`, `tests/test_preprocessor_I.py`
+  - `--use-system-cpp -E` (preprocess-only via gcc) — `tests/test_driver_system_cpp_E.py`
 
 ---
 
