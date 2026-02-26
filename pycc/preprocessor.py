@@ -38,6 +38,19 @@ def _probe_system_include_paths() -> List[str]:
     gcc = shutil.which("gcc")
     if not gcc:
         return []
+    sysroot = ""
+    try:
+        p_sysroot = subprocess.run(
+            [gcc, "-print-sysroot"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        if p_sysroot.returncode == 0:
+            sysroot = (p_sysroot.stdout or "").strip()
+    except Exception:
+        sysroot = ""
+
     # Ask gcc for its include search list. This is more robust across distros than hardcoding.
     p = subprocess.run(
         [gcc, "-E", "-Wp,-v", "-"],
@@ -47,7 +60,29 @@ def _probe_system_include_paths() -> List[str]:
         text=True,
     )
     # gcc prints include search paths to stderr.
-    return _parse_gcc_include_paths(p.stderr)
+    paths = _parse_gcc_include_paths(p.stderr)
+
+    # If gcc reports a sysroot, expand relative include entries under it.
+    # Some toolchains print paths like "include" or "usr/include".
+    if sysroot and os.path.isdir(sysroot):
+        expanded: List[str] = []
+        for d in paths:
+            if d.startswith("/"):
+                expanded.append(d)
+                continue
+            cand = os.path.join(sysroot, d)
+            expanded.append(cand)
+        paths = expanded
+
+    # De-dup while preserving order.
+    seen = set()
+    out: List[str] = []
+    for d in paths:
+        if d in seen:
+            continue
+        seen.add(d)
+        out.append(d)
+    return out
 
 
 @dataclass
