@@ -1,4 +1,3 @@
-import os
 import shutil
 import subprocess
 import sys
@@ -10,9 +9,6 @@ import pytest
 def test_glibc_stdio_puts_via_system_cpp(tmp_path: Path):
     if shutil.which("gcc") is None:
         pytest.skip("gcc not available")
-
-    if os.environ.get("AURA_GLIBC_SYSTEM_CPP") != "1":
-        pytest.skip("set AURA_GLIBC_SYSTEM_CPP=1 to enable glibc <stdio.h> system-cpp integration test")
 
     src = tmp_path / "main.c"
     src.write_text(
