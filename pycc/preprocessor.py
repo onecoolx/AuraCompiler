@@ -106,9 +106,8 @@ class Preprocessor:
     - conditionals: #if 0/1, #elif 0/1, #else, #endif
 
     Not supported:
-    - angle-bracket includes, include paths
-    - function-like macros
-    - expression evaluation in #if
+    - expression evaluation in #if (beyond NAME expanding to 0/1)
+    - multiline macros, comments, full tokenization, variadics, etc.
     """
 
     def __init__(self, *, include_paths: Optional[List[str]] = None) -> None:
