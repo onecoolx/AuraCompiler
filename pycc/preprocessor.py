@@ -125,6 +125,7 @@ class Preprocessor:
         self._elif_name_re = re.compile(r"^\s*#\s*elif\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
+        self._line_re = re.compile(r"^\s*#\s*line\b.*$")
         user_paths = [os.path.abspath(p) for p in (include_paths or [])]
         probed = [p for p in _probe_system_include_paths() if os.path.isdir(p)]
         # Fallback defaults if probing fails.
@@ -190,6 +191,10 @@ class Preprocessor:
         taken_stack: List[bool] = []
 
         for line in raw:
+            # Line markers (subset): accept and strip.
+            if self._line_re.match(line):
+                continue
+
             # Conditionals
             if self._if0_re.match(line):
                 parent = include_stack[-1]
