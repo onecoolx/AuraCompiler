@@ -42,6 +42,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
         define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
+        if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
+        endif_re = re.compile(r"^\s*#\s*endif\s*$")
 
         def _preprocess_file(path: str, stack: List[str], macros: dict[str, str]) -> str:
             abspath = os.path.abspath(path)
@@ -55,7 +57,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             out_lines: List[str] = []
             base_dir = os.path.dirname(abspath)
+            skip_depth = 0
             for line in raw:
+                # Minimal conditional compilation subset: #if 0 ... #endif
+                if if0_re.match(line):
+                    skip_depth += 1
+                    continue
+                if endif_re.match(line) and skip_depth > 0:
+                    skip_depth -= 1
+                    continue
+                if skip_depth > 0:
+                    continue
+
                 md = define_re.match(line)
                 if md:
                     name = md.group(1)
