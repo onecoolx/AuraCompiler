@@ -46,6 +46,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** shift semantics: unsigned `>>` logical, signed `>>` arithmetic (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** compound assignment conversions for `unsigned int` (best-effort) — `tests/test_int_conversions.py`
 - **PARTIAL** integer promotions for `short`/`unsigned short` (tests) — `tests/test_int_conversions.py`
+- **PARTIAL** integer promotions: sign/zero extension for `char`/`short` and basic comparisons (tests) — `tests/test_integer_promotions_more.py`
 - **PARTIAL** comparisons involving `short`/`unsigned short` after promotions (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** assignment narrowing/truncation for `char`/`short` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** load sign/zero extension for `char`/`short` (tests) — `tests/test_int_conversions.py`
