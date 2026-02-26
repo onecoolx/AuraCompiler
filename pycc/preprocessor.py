@@ -36,6 +36,8 @@ class Preprocessor:
         self._include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
         self._define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
         self._undef_re = re.compile(r"^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+        self._ifdef_re = re.compile(r"^\s*#\s*ifdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+        self._ifndef_re = re.compile(r"^\s*#\s*ifndef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
         self._if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
         self._elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
@@ -78,6 +80,22 @@ class Preprocessor:
                 parent = include_stack[-1]
                 include_stack.append(parent and True)
                 taken_stack.append(parent and True)
+                continue
+            mifdef = self._ifdef_re.match(line)
+            if mifdef:
+                parent = include_stack[-1]
+                name = mifdef.group(1)
+                cond_true = name in macros
+                include_stack.append(parent and cond_true)
+                taken_stack.append(parent and cond_true)
+                continue
+            mifndef = self._ifndef_re.match(line)
+            if mifndef:
+                parent = include_stack[-1]
+                name = mifndef.group(1)
+                cond_true = name not in macros
+                include_stack.append(parent and cond_true)
+                taken_stack.append(parent and cond_true)
                 continue
             if self._elif0_re.match(line) or self._elif1_re.match(line):
                 if len(include_stack) <= 1:
