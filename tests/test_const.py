@@ -49,3 +49,36 @@ int main(){
     comp = Compiler(optimize=False)
     res = comp.compile_file(str(c_path), str(out_path))
     assert not res.success
+
+
+def test_const_global_assignment_is_error(tmp_path):
+    code = r'''
+const int g = 1;
+int main(){
+  g = 2;
+  return 0;
+}
+'''.lstrip()
+    c_path = tmp_path / "t.c"
+    out_path = tmp_path / "t"
+    c_path.write_text(code)
+
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(c_path), str(out_path))
+    assert not res.success
+
+
+def test_const_global_read_ok(tmp_path):
+    code = r'''
+const int g = 41;
+int main(){
+  return g + 1;
+}
+'''.lstrip()
+    c_path = tmp_path / "t.c"
+    out_path = tmp_path / "t"
+    c_path.write_text(code)
+
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(c_path), str(out_path))
+    assert res.success

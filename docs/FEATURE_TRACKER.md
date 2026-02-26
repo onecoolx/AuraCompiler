@@ -22,7 +22,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **DONE** enum constants (incl. auto increment) — `tests/test_enum.py`
 - **PARTIAL** storage class (`static`/`extern`/`auto`/`register` subset + `&register` rejected) — `tests/test_storage_class.py`, `tests/test_auto_register.py`
 - **PARTIAL** full declarator grammar (function pointers etc.) — TODO
-- **PARTIAL** `const` qualifier: reject assignment and compound assignment to const locals (subset) — `tests/test_const.py`
+- **PARTIAL** `const` qualifier: reject assignment and compound assignment to const locals/globals (subset) — `tests/test_const.py`
 - **PARTIAL** function pointer local declarations + indirect calls (subset) — `tests/test_declarators.py`
 - **PARTIAL** array of function pointers declarator (subset) — `tests/test_declarators.py`
 - **PARTIAL** function pointer parameters (subset) — `tests/test_declarators.py`

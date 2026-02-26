@@ -102,6 +102,8 @@ class SemanticAnalyzer:
         self._global_linkage: Dict[str, str] = {}
 
         self._global_types: Dict[str, str] = {}
+        # Preserve Type nodes for globals so we can check qualifiers like const.
+        self._global_decl_types: Dict[str, Type] = {}
         self._enum_constants: Dict[str, int] = {}
 
         seen_globals: Dict[str, str] = {}
@@ -144,6 +146,8 @@ class SemanticAnalyzer:
                         self._global_types[decl.name] = f"{decl.type.base}*"
                     else:
                         self._global_types[decl.name] = str(decl.type.base)
+                    # keep full Type node (incl. qualifiers)
+                    self._global_decl_types[decl.name] = decl.type
                 except Exception:
                     self._global_types[decl.name] = "int"
 
@@ -464,6 +468,8 @@ class SemanticAnalyzer:
             # C89 subset: reject assignment to const-qualified locals.
             if isinstance(expr.target, Identifier):
                 ty = getattr(self, "_decl_types", {}).get(expr.target.name)
+                if ty is None:
+                    ty = getattr(self, "_global_decl_types", {}).get(expr.target.name)
                 if getattr(ty, "is_const", False):
                     self.errors.append(f"Assignment to const-qualified variable '{expr.target.name}'")
 
