@@ -84,6 +84,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor stage (`-E`) (subset: passthrough + local `#include "file"` + object-like `#define` + `#undef` + `#ifdef/#ifndef` + `#if 0/1` and `#if NAME` (NAME expands to 0/1) with `#elif 0/1` and `#elif NAME` + `#else`) — `tests/test_preprocessor_E.py`, `tests/test_preprocessor_include.py`, `tests/test_preprocessor_define.py`, `tests/test_preprocessor_undef.py`, `tests/test_preprocessor_ifdef.py`, `tests/test_preprocessor_if0.py`, `tests/test_preprocessor_if_macro.py`, `tests/test_preprocessor_else.py`, `tests/test_preprocessor_elif.py`
 - **PARTIAL** Preprocessor `#ifndef` directive (subset): conditional inclusion when macro is undefined — `tests/test_preprocessor_ifndef.py`
 - **PARTIAL** Preprocessor `defined(NAME)` in `#if/#elif` (subset): `defined(X)` and `!defined(X)` — `tests/test_preprocessor_defined.py`
+- **PARTIAL** Preprocessor `#elifdef/#elifndef` directives (subset): `#elifdef X` and `#elifndef X` — `tests/test_preprocessor_elifdef_elifndef.py`
 - **PARTIAL** Preprocessor `#if` expression evaluation (subset): `!`, `&&`, `||`, `==`, `!=`, `+`, `-`, parentheses, integers, identifiers (best-effort) — `tests/test_preprocessor_if_expr.py`
 - **PARTIAL** Preprocessor rejects `#include_next` (subset): fail fast with explicit error — `tests/test_preprocessor_include_next.py`
 - **PARTIAL** Preprocessor accepts `#pragma once` (subset): strip from output — `tests/test_preprocessor_pragma_once.py`

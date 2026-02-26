@@ -131,6 +131,8 @@ class Preprocessor:
         self._elif_defined_re = re.compile(
             r"^\s*#\s*elif\s+(!\s*)?defined\s*(?:\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))\s*$"
         )
+        self._elifdef_re = re.compile(r"^\s*#\s*elifdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+        self._elifndef_re = re.compile(r"^\s*#\s*elifndef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._elif_expr_re = re.compile(r"^\s*#\s*elif\s+(.+?)\s*$")
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
@@ -476,6 +478,32 @@ class Preprocessor:
                 cond_true = (name in macros)
                 if neg:
                     cond_true = not cond_true
+                new_active = parent and (not already) and cond_true
+                include_stack[-1] = new_active
+                taken_stack[-1] = already or new_active
+                continue
+
+            melifdef2 = self._elifdef_re.match(line)
+            if melifdef2:
+                if len(include_stack) <= 1:
+                    continue
+                parent = include_stack[-2]
+                already = taken_stack[-1]
+                name = melifdef2.group(1)
+                cond_true = name in macros
+                new_active = parent and (not already) and cond_true
+                include_stack[-1] = new_active
+                taken_stack[-1] = already or new_active
+                continue
+
+            melifndef2 = self._elifndef_re.match(line)
+            if melifndef2:
+                if len(include_stack) <= 1:
+                    continue
+                parent = include_stack[-2]
+                already = taken_stack[-1]
+                name = melifndef2.group(1)
+                cond_true = name not in macros
                 new_active = parent and (not already) and cond_true
                 include_stack[-1] = new_active
                 taken_stack[-1] = already or new_active
