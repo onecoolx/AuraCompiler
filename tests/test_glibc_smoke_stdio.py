@@ -32,9 +32,8 @@ int main(void) {
         text=True,
     )
 
-    # If system headers aren't discoverable yet (no default include dirs), treat as skip.
     if res.returncode != 0 and "cannot find include" in (res.stderr + res.stdout).lower():
-        pytest.skip("system include paths not configured for preprocessor yet")
+        pytest.skip("system include paths not fully configured for preprocessor yet")
 
     assert res.returncode == 0, res.stderr
 

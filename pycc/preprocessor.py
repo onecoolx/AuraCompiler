@@ -47,7 +47,33 @@ class Preprocessor:
         self._elif_name_re = re.compile(r"^\s*#\s*elif\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
-        self._include_paths = [os.path.abspath(p) for p in (include_paths or [])]
+        user_paths = [os.path.abspath(p) for p in (include_paths or [])]
+        # Minimal system include defaults (Linux/glibc common). This is intentionally small
+        # and best-effort; it enables `<stdio.h>` without requiring explicit `-I`.
+        sys_defaults = [
+            "/usr/local/include",
+            "/usr/include",
+            "/usr/include/x86_64-linux-gnu",
+            "/usr/lib/gcc/x86_64-linux-gnu",
+        ]
+        sys_paths: List[str] = []
+        for p in sys_defaults:
+            if os.path.isdir(p):
+                sys_paths.append(p)
+
+        # Add GCC versioned include dir if present (for stddef.h and friends).
+        gcc_prefix = "/usr/lib/gcc/x86_64-linux-gnu"
+        if os.path.isdir(gcc_prefix):
+            try:
+                vers = sorted([d for d in os.listdir(gcc_prefix) if os.path.isdir(os.path.join(gcc_prefix, d))])
+            except Exception:
+                vers = []
+            for v in reversed(vers):
+                cand = os.path.join(gcc_prefix, v, "include")
+                if os.path.isdir(cand):
+                    sys_paths.append(cand)
+                    break
+        self._include_paths = user_paths + sys_paths
 
     def _eval_cond_01(self, name: str, macros: Dict[str, str]) -> bool:
         """Evaluate a very small #if/#elif condition.
@@ -209,7 +235,7 @@ class Preprocessor:
             # Macro expansion (very small subset): replace identifiers.
             expanded = line
             for k, v in macros.items():
-                expanded = re.sub(rf"\b{re.escape(k)}\b", v, expanded)
+                expanded = re.sub(rf"\b{re.escape(k)}\b", lambda _m, _v=v: _v, expanded)
             out_lines.append(expanded)
 
         stack.pop()
