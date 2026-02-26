@@ -41,8 +41,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
 
         include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
+        define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
 
-        def _preprocess_file(path: str, stack: List[str]) -> str:
+        def _preprocess_file(path: str, stack: List[str], macros: dict[str, str]) -> str:
             abspath = os.path.abspath(path)
             if abspath in stack:
                 raise RuntimeError(f"include cycle detected: {abspath}")
@@ -55,20 +56,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             out_lines: List[str] = []
             base_dir = os.path.dirname(abspath)
             for line in raw:
+                md = define_re.match(line)
+                if md:
+                    name = md.group(1)
+                    val = md.group(2).rstrip("\n")
+                    macros[name] = val.strip()
+                    # Do not emit #define lines.
+                    continue
                 m = include_re.match(line)
                 if m:
                     inc_name = m.group(1)
                     inc_path = os.path.join(base_dir, inc_name)
-                    out_lines.append(_preprocess_file(inc_path, stack))
+                    out_lines.append(_preprocess_file(inc_path, stack, macros))
                     continue
-                out_lines.append(line)
+
+                # Very small subset: object-like macro replacement on identifier boundaries.
+                expanded = line
+                for k, v in macros.items():
+                    expanded = re.sub(rf"\b{re.escape(k)}\b", v, expanded)
+                out_lines.append(expanded)
 
             stack.pop()
             return "".join(out_lines)
 
         src = args.source[0]
         try:
-            text = _preprocess_file(src, [])
+            text = _preprocess_file(src, [], {})
         except RuntimeError as e:
             print(f"Error: {e}")
             return 1
