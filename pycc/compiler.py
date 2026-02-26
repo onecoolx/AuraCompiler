@@ -12,7 +12,7 @@ import os
 import subprocess
 import tempfile
 import shutil
-from pycc.preprocessor import Preprocessor
+from pycc.preprocessor import Preprocessor, _probe_system_include_paths
 from pycc.lexer import Lexer, Token
 from pycc.parser import Parser
 from pycc.semantics import SemanticAnalyzer
@@ -104,6 +104,24 @@ class Compiler:
             "-std=gnu89",
             "-E",
             "-P",
+            # Let gcc use its default system include search. We only add user
+            # include paths (-I) below.
+            "-nostdinc",
+            # Re-add gcc's default system include dirs explicitly so behavior is
+            # stable even when we customize include paths.
+            # NOTE: we intentionally *do not* set -nostdinc++.
+        ]
+
+        # Prefer gcc's own default include dirs. This avoids depending on our
+        # built-in preprocessor's best-effort system probing.
+        # We compute these by running: gcc -E -Wp,-v -
+        sys_includes = _probe_system_include_paths()
+        for inc in sys_includes:
+            cmd += ["-isystem", inc]
+
+        # Reduce the complexity of glibc headers for our subset compiler.
+        # These avoid typedefs and builtins that we don't parse yet.
+        cmd += [
             # Reduce the complexity of glibc headers for our subset compiler.
             # These avoid typedefs and builtins that we don't parse yet.
             "-D__GNUG__=0",
