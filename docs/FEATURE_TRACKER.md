@@ -55,7 +55,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 ### Statements / Control Flow
 
 - **DONE** if/while/do/for — integration tests
-- **DONE** switch/case/default — `tests/test_switch.py`
+- **PARTIAL** switch/case/default (subset; duplicate `case`/multiple `default` rejected) — `tests/test_switch.py`, `tests/test_switch_semantics.py`
 - **DONE** break/continue — integration tests
 - **DONE** goto/labels — `tests/test_goto.py`
 

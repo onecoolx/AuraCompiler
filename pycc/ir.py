@@ -61,6 +61,56 @@ from pycc.ast_nodes import (
 )
 
 
+class IRGenError(Exception):
+    pass
+
+
+def _eval_const_int_expr(expr: Expression) -> int:
+    """Evaluate a minimal integer constant expression (C89 subset).
+
+    Used for switch case labels (and similar contexts) at IR-generation time.
+    """
+
+    if isinstance(expr, IntLiteral):
+        return int(expr.value)
+    if isinstance(expr, CharLiteral):
+        return ord(expr.value)
+    if isinstance(expr, UnaryOp) and expr.operator in {"+", "-", "~"}:
+        v = _eval_const_int_expr(expr.operand)
+        if expr.operator == "+":
+            return v
+        if expr.operator == "-":
+            return -v
+        return ~v
+    if isinstance(expr, BinaryOp) and expr.operator in {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>"}:
+        l = _eval_const_int_expr(expr.left)
+        r = _eval_const_int_expr(expr.right)
+        if expr.operator == "+":
+            return l + r
+        if expr.operator == "-":
+            return l - r
+        if expr.operator == "*":
+            return l * r
+        if expr.operator == "/":
+            return int(l / r)
+        if expr.operator == "%":
+            return l % r
+        if expr.operator == "|":
+            return l | r
+        if expr.operator == "&":
+            return l & r
+        if expr.operator == "^":
+            return l ^ r
+        if expr.operator == "<<":
+            return l << r
+        return l >> r
+    if isinstance(expr, CommaOp):
+        _eval_const_int_expr(expr.left)
+        return _eval_const_int_expr(expr.right)
+
+    raise IRGenError("not an integer constant expression")
+
+
 def _type_size(ty: Optional[object]) -> int:
     """Best-effort sizeof for the current project stage.
 
@@ -749,12 +799,23 @@ class IRGenerator:
             # Map labels for each case/default in the flattened stream.
             case_entries: List[tuple[CaseStmt, str]] = []
             default_lbl: Optional[str] = None
+            seen_case_values: set[int] = set()
             for it in flat:
                 if isinstance(it, CaseStmt):
+                    # C89 subset: case labels must be integer constant expressions.
+                    try:
+                        cvi = _eval_const_int_expr(it.value)
+                    except IRGenError:
+                        raise IRGenError("switch case value must be an integer constant expression")
+                    if cvi in seen_case_values:
+                        raise IRGenError(f"duplicate case value in switch: {cvi}")
+                    seen_case_values.add(cvi)
                     case_entries.append((it, self._new_label(".Lcase")))
                 elif isinstance(it, DefaultStmt):
                     if default_lbl is None:
                         default_lbl = self._new_label(".Ldefault")
+                    else:
+                        raise IRGenError("multiple default labels in switch")
 
             dispatch_default = default_lbl if default_lbl is not None else end
 
