@@ -461,6 +461,12 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, Assignment):
+            # C89 subset: reject assignment to const-qualified locals.
+            if isinstance(expr.target, Identifier):
+                ty = getattr(self, "_decl_types", {}).get(expr.target.name)
+                if getattr(ty, "is_const", False):
+                    self.errors.append(f"Assignment to const-qualified variable '{expr.target.name}'")
+
             self._analyze_expr(expr.target)
             self._analyze_expr(expr.value)
             return
