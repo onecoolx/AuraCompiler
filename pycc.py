@@ -43,6 +43,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
         define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
         if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
+        if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
+        else_re = re.compile(r"^\s*#\s*else\s*$")
         endif_re = re.compile(r"^\s*#\s*endif\s*$")
 
         def _preprocess_file(path: str, stack: List[str], macros: dict[str, str]) -> str:
@@ -57,16 +59,28 @@ def main(argv: Optional[List[str]] = None) -> int:
 
             out_lines: List[str] = []
             base_dir = os.path.dirname(abspath)
-            skip_depth = 0
+            # Track conditional inclusion state.
+            # include_stack entries are booleans: whether the current level is active.
+            include_stack: List[bool] = [True]
             for line in raw:
                 # Minimal conditional compilation subset: #if 0 ... #endif
                 if if0_re.match(line):
-                    skip_depth += 1
+                    include_stack.append(False and include_stack[-1])
                     continue
-                if endif_re.match(line) and skip_depth > 0:
-                    skip_depth -= 1
+                if if1_re.match(line):
+                    include_stack.append(True and include_stack[-1])
                     continue
-                if skip_depth > 0:
+                if else_re.match(line):
+                    if len(include_stack) > 1:
+                        parent = include_stack[-2]
+                        cur = include_stack[-1]
+                        include_stack[-1] = parent and (not cur)
+                    continue
+                if endif_re.match(line):
+                    if len(include_stack) > 1:
+                        include_stack.pop()
+                    continue
+                if not include_stack[-1]:
                     continue
 
                 md = define_re.match(line)
