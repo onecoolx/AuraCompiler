@@ -137,6 +137,7 @@ class Preprocessor:
         self._line_re = re.compile(r"^\s*#\s*line\b.*$")
         self._pragma_once_re = re.compile(r"^\s*#\s*pragma\s+once\s*$")
         self._error_re = re.compile(r"^\s*#\s*error\b(.*)$")
+        self._warning_re = re.compile(r"^\s*#\s*warning\b(.*)$")
         user_paths = [os.path.abspath(p) for p in (include_paths or [])]
         probed = [p for p in _probe_system_include_paths() if os.path.isdir(p)]
         # Fallback defaults if probing fails.
@@ -390,6 +391,11 @@ class Preprocessor:
                 if include_stack[-1]:
                     msg = (merr.group(1) or "").strip()
                     raise RuntimeError(f"#error {msg}".rstrip())
+                continue
+
+            mwarn = self._warning_re.match(line)
+            if mwarn:
+                # Subset: accept and ignore (do not fail, do not emit).
                 continue
             # Line markers (subset): accept and strip.
             if self._line_re.match(line):
