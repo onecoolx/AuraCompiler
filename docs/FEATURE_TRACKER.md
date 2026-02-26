@@ -85,6 +85,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Driver supports multiple inputs (subset): `pycc.py file1.c file2.c -o a.out` — `tests/test_driver_multi_file_cli.py`
 - **PARTIAL** Emit `.o` and link multiple translation units with system `gcc` (no-pie subset) — `tests/test_multi_tu.py`
 - **PARTIAL** Preprocessor wired into normal compilation (subset: `#include` + basic conditionals/macros) — `tests/test_compile_with_preprocessor.py`
+- **PARTIAL** glibc smoke test via `<stdio.h>` (skips if system include dirs not configured) — `tests/test_glibc_smoke_stdio.py`
 - Tests:
   - `tests/test_preprocessor_*.py`
   - `tests/test_multi_tu.py`
