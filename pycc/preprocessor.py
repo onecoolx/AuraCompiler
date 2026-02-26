@@ -38,12 +38,38 @@ class Preprocessor:
         self._undef_re = re.compile(r"^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._ifdef_re = re.compile(r"^\s*#\s*ifdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._ifndef_re = re.compile(r"^\s*#\s*ifndef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+        self._if_name_re = re.compile(r"^\s*#\s*if\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
         self._if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
         self._elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
         self._elif1_re = re.compile(r"^\s*#\s*elif\s+1\s*$")
+        self._elif_name_re = re.compile(r"^\s*#\s*elif\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
+
+    def _eval_cond_01(self, name: str, macros: Dict[str, str]) -> bool:
+        """Evaluate a very small #if/#elif condition.
+
+        Supported subset:
+        - literal 0/1
+        - single identifier NAME, treated as:
+          - false if undefined
+          - true/false if defined and expands to exactly 0/1
+          - error otherwise
+        """
+
+        if name == "0":
+            return False
+        if name == "1":
+            return True
+        if name not in macros:
+            return False
+        repl = macros[name].strip()
+        if repl == "0":
+            return False
+        if repl == "1":
+            return True
+        raise RuntimeError(f"unsupported #if expression: {name} expands to {repl!r}")
 
     def preprocess(self, path: str) -> PreprocessResult:
         try:
@@ -81,6 +107,14 @@ class Preprocessor:
                 include_stack.append(parent and True)
                 taken_stack.append(parent and True)
                 continue
+            mifname = self._if_name_re.match(line)
+            if mifname:
+                parent = include_stack[-1]
+                name = mifname.group(1)
+                cond_true = self._eval_cond_01(name, macros)
+                include_stack.append(parent and cond_true)
+                taken_stack.append(parent and cond_true)
+                continue
             mifdef = self._ifdef_re.match(line)
             if mifdef:
                 parent = include_stack[-1]
@@ -103,6 +137,18 @@ class Preprocessor:
                 parent = include_stack[-2]
                 already = taken_stack[-1]
                 cond_true = bool(self._elif1_re.match(line))
+                new_active = parent and (not already) and cond_true
+                include_stack[-1] = new_active
+                taken_stack[-1] = already or new_active
+                continue
+            melifname = self._elif_name_re.match(line)
+            if melifname:
+                if len(include_stack) <= 1:
+                    continue
+                parent = include_stack[-2]
+                already = taken_stack[-1]
+                name = melifname.group(1)
+                cond_true = self._eval_cond_01(name, macros)
                 new_active = parent and (not already) and cond_true
                 include_stack[-1] = new_active
                 taken_stack[-1] = already or new_active
