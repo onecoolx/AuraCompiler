@@ -125,6 +125,9 @@ class SemanticAnalyzer:
                     continue
                 # minimal duplicate/ABI checks for globals
                 sc = getattr(decl, "storage_class", None)
+                # C89: `extern` is a declaration; it cannot have an initializer.
+                if sc == "extern" and getattr(decl, "initializer", None) is not None:
+                    self.errors.append(f"extern declaration cannot have an initializer: '{decl.name}'")
                 kind = "static" if sc == "static" else "nonstatic"
                 prev = seen_globals.get(decl.name)
                 if prev is not None and prev != kind:
@@ -369,6 +372,9 @@ class SemanticAnalyzer:
                     self._decl_types[item.name] = item.type
                     if getattr(item, "storage_class", None) == "register":
                         self._register_locals.add(item.name)
+                    # C89: `extern` is a declaration; it cannot have an initializer.
+                    if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:
+                        self.errors.append(f"extern declaration cannot have an initializer: '{item.name}'")
                     if item.initializer is not None:
                         self._analyze_expr(item.initializer)
                 else:
@@ -405,6 +411,9 @@ class SemanticAnalyzer:
                 self._decl_types[stmt.init.name] = stmt.init.type
                 if getattr(stmt.init, "storage_class", None) == "register":
                     self._register_locals.add(stmt.init.name)
+                # C89: `extern` is a declaration; it cannot have an initializer.
+                if getattr(stmt.init, "storage_class", None) == "extern" and stmt.init.initializer is not None:
+                    self.errors.append(f"extern declaration cannot have an initializer: '{stmt.init.name}'")
                 if stmt.init.initializer is not None:
                     self._analyze_expr(stmt.init.initializer)
             elif stmt.init is not None:
