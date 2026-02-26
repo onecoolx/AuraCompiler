@@ -17,6 +17,8 @@ import os
 import tempfile
 import subprocess
 
+import re
+
 from pycc.compiler import Compiler
 
 
@@ -37,11 +39,38 @@ def main(argv: Optional[List[str]] = None) -> int:
         if len(args.source) != 1:
             print("Error: -E currently supports exactly one input file")
             return 1
+
+        include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
+
+        def _preprocess_file(path: str, stack: List[str]) -> str:
+            abspath = os.path.abspath(path)
+            if abspath in stack:
+                raise RuntimeError(f"include cycle detected: {abspath}")
+            stack.append(abspath)
+            try:
+                raw = open(abspath, "r", encoding="utf-8").read().splitlines(True)
+            except OSError as e:
+                raise RuntimeError(f"cannot read {path}: {e}")
+
+            out_lines: List[str] = []
+            base_dir = os.path.dirname(abspath)
+            for line in raw:
+                m = include_re.match(line)
+                if m:
+                    inc_name = m.group(1)
+                    inc_path = os.path.join(base_dir, inc_name)
+                    out_lines.append(_preprocess_file(inc_path, stack))
+                    continue
+                out_lines.append(line)
+
+            stack.pop()
+            return "".join(out_lines)
+
         src = args.source[0]
         try:
-            text = open(src, "r", encoding="utf-8").read()
-        except OSError as e:
-            print(f"Error: cannot read {src}: {e}")
+            text = _preprocess_file(src, [])
+        except RuntimeError as e:
+            print(f"Error: {e}")
             return 1
         if args.output:
             try:
