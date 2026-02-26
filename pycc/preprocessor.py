@@ -2,8 +2,49 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import shutil
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
+
+def _parse_gcc_include_paths(gcc_stderr: str) -> List[str]:
+    paths: List[str] = []
+    in_block = False
+    for raw in gcc_stderr.splitlines():
+        line = raw.rstrip("\n")
+        if "#include <...> search starts here:" in line:
+            in_block = True
+            continue
+        if in_block and "End of search list." in line:
+            break
+        if not in_block:
+            continue
+
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("(") and s.endswith(")"):
+            # e.g. "(framework directory)"
+            continue
+        paths.append(s)
+    return paths
+
+
+def _probe_system_include_paths() -> List[str]:
+    gcc = shutil.which("gcc")
+    if not gcc:
+        return []
+    # Ask gcc for its include search list. This is more robust across distros than hardcoding.
+    p = subprocess.run(
+        [gcc, "-E", "-Wp,-v", "-"],
+        input="\n",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    # gcc prints include search paths to stderr.
+    return _parse_gcc_include_paths(p.stderr)
 
 
 @dataclass
@@ -48,31 +89,15 @@ class Preprocessor:
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
         user_paths = [os.path.abspath(p) for p in (include_paths or [])]
-        # Minimal system include defaults (Linux/glibc common). This is intentionally small
-        # and best-effort; it enables `<stdio.h>` without requiring explicit `-I`.
-        sys_defaults = [
+        probed = [p for p in _probe_system_include_paths() if os.path.isdir(p)]
+        # Fallback defaults if probing fails.
+        fallback_defaults = [
             "/usr/local/include",
             "/usr/include",
             "/usr/include/x86_64-linux-gnu",
-            "/usr/lib/gcc/x86_64-linux-gnu",
         ]
-        sys_paths: List[str] = []
-        for p in sys_defaults:
-            if os.path.isdir(p):
-                sys_paths.append(p)
-
-        # Add GCC versioned include dir if present (for stddef.h and friends).
-        gcc_prefix = "/usr/lib/gcc/x86_64-linux-gnu"
-        if os.path.isdir(gcc_prefix):
-            try:
-                vers = sorted([d for d in os.listdir(gcc_prefix) if os.path.isdir(os.path.join(gcc_prefix, d))])
-            except Exception:
-                vers = []
-            for v in reversed(vers):
-                cand = os.path.join(gcc_prefix, v, "include")
-                if os.path.isdir(cand):
-                    sys_paths.append(cand)
-                    break
+        fallback = [p for p in fallback_defaults if os.path.isdir(p)]
+        sys_paths = probed or fallback
         self._include_paths = user_paths + sys_paths
 
     def _eval_cond_01(self, name: str, macros: Dict[str, str]) -> bool:
