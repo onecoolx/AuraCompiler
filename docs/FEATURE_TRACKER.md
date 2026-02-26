@@ -80,9 +80,10 @@ Rule: every new feature must add/extend tests under `tests/`.
 
 - **TODO** Preprocessor stage (`-E`): includes, macros, conditional compilation, line control
 - **TODO** Driver supports multiple inputs: `pycc file1.c file2.c -o a.out`
-- **TODO** Emit `.o` and link with system glibc reliably
+- **PARTIAL** Emit `.o` and link multiple translation units with system `gcc` (no-pie subset) — `tests/test_multi_tu.py`
 - Tests:
   - `tests/test_preprocessor_*.py`
+  - `tests/test_multi_tu.py`
   - `tests/test_multifile_linking.py`
 
 ---

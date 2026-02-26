@@ -524,9 +524,23 @@ class CodeGenerator:
 
             target = ins.operand1 or ""
             if target.startswith("@"):  # symbol
-                # If it's a known function in this TU, do a direct call.
+                # If it names a function symbol, do a direct call. This must
+                # work across translation units (extern prototypes).
                 sym = target[1:]
-                if sym in getattr(self, "_functions", set()):
+                # If it's a local variable/temp, it's not a function symbol.
+                if self._is_local(target):
+                    self._load_operand(target, "%rax")
+                    self._emit("  call *%rax")
+                    self._store_result(ins.result, "%rax")
+                    return
+                # Heuristic: if it's defined in this TU, it's definitely a function.
+                # Otherwise, if semantics says it's externally linked, also treat as function.
+                is_func = sym in getattr(self, "_functions", set())
+                if not is_func and self._sema_ctx is not None:
+                    # If it's not a known global variable, treat as a function symbol.
+                    # This allows extern prototypes across translation units.
+                    is_func = sym not in getattr(self._sema_ctx, "global_linkage", {})
+                if is_func:
                     self._emit(f"  call {sym}")
                 else:
                     # Otherwise treat it as a function pointer variable.
