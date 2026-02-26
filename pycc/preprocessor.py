@@ -113,6 +113,7 @@ class Preprocessor:
     def __init__(self, *, include_paths: Optional[List[str]] = None) -> None:
         self._include_quote_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
         self._include_angle_re = re.compile(r"^\s*#\s*include\s*<([^>]+)>\s*$")
+        self._include_next_re = re.compile(r"^\s*#\s*include_next\b.*$")
         self._define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
         self._undef_re = re.compile(r"^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._ifdef_re = re.compile(r"^\s*#\s*ifdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
@@ -371,6 +372,8 @@ class Preprocessor:
         taken_stack: List[bool] = []
 
         for line in raw:
+            if self._include_next_re.match(line):
+                raise RuntimeError("unsupported directive: #include_next")
             # Line markers (subset): accept and strip.
             if self._line_re.match(line):
                 continue
