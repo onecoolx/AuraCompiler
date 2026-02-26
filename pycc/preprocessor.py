@@ -309,4 +309,6 @@ class Preprocessor:
             cand = os.path.abspath(os.path.join(d, inc_name))
             if os.path.isfile(cand):
                 return cand
-        raise RuntimeError(f"cannot find include: {inc_name}")
+        shown = ", ".join(search_paths[:10])
+        more = "" if len(search_paths) <= 10 else f" (+{len(search_paths) - 10} more)"
+        raise RuntimeError(f"cannot find include: {inc_name} (searched: {shown}{more})")
