@@ -494,6 +494,14 @@ class SemanticAnalyzer:
                 if getattr(ty, "is_const", False):
                     self.errors.append(f"Assignment to const-qualified variable '{expr.target.name}'")
 
+            # Feature B (subset): reject writes through pointers-to-const.
+            # Detect `*p = ...` where `p` was declared as `const T*`.
+            if isinstance(expr.target, UnaryOp) and expr.target.operator == "*" and isinstance(expr.target.operand, Identifier):
+                p_name = expr.target.operand.name
+                p_ty = getattr(self, "_decl_types", {}).get(p_name)
+                if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
+                    self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
+
             self._analyze_expr(expr.target)
             self._analyze_expr(expr.value)
             return

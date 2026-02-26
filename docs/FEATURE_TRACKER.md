@@ -23,6 +23,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** storage class (`static`/`extern`/`auto`/`register` subset + `&register` rejected + `extern` initializer rejected + local `static` rejected) — `tests/test_storage_class.py`, `tests/test_auto_register.py`, `tests/test_extern_initializer.py`, `tests/test_local_static.py`
 - **PARTIAL** full declarator grammar (function pointers etc.) — TODO
 - **PARTIAL** `const` qualifier: reject assignment and compound assignment to const locals/globals (subset) — `tests/test_const.py`
+- **PARTIAL** `const` qualifier: reject assignment through `*p` when `p` is const-qualified pointer (subset) — `tests/test_const_pointer.py`
 - **PARTIAL** function pointer local declarations + indirect calls (subset) — `tests/test_declarators.py`
 - **PARTIAL** array of function pointers declarator (subset) — `tests/test_declarators.py`
 - **PARTIAL** function pointer parameters (subset) — `tests/test_declarators.py`
