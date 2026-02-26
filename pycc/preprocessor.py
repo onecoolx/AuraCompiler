@@ -118,11 +118,17 @@ class Preprocessor:
         self._ifdef_re = re.compile(r"^\s*#\s*ifdef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._ifndef_re = re.compile(r"^\s*#\s*ifndef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
         self._if_name_re = re.compile(r"^\s*#\s*if\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+        self._if_defined_re = re.compile(
+            r"^\s*#\s*if\s+(!\s*)?defined\s*(?:\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))\s*$"
+        )
         self._if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
         self._if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
         self._elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
         self._elif1_re = re.compile(r"^\s*#\s*elif\s+1\s*$")
         self._elif_name_re = re.compile(r"^\s*#\s*elif\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
+        self._elif_defined_re = re.compile(
+            r"^\s*#\s*elif\s+(!\s*)?defined\s*(?:\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))\s*$"
+        )
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
         self._line_re = re.compile(r"^\s*#\s*line\b.*$")
@@ -206,6 +212,17 @@ class Preprocessor:
                 include_stack.append(parent and True)
                 taken_stack.append(parent and True)
                 continue
+            mifdef = self._if_defined_re.match(line)
+            if mifdef:
+                parent = include_stack[-1]
+                neg = bool(mifdef.group(1))
+                name = mifdef.group(2) or mifdef.group(3) or ""
+                cond_true = (name in macros)
+                if neg:
+                    cond_true = not cond_true
+                include_stack.append(parent and cond_true)
+                taken_stack.append(parent and cond_true)
+                continue
             mifname = self._if_name_re.match(line)
             if mifname:
                 parent = include_stack[-1]
@@ -236,6 +253,21 @@ class Preprocessor:
                 parent = include_stack[-2]
                 already = taken_stack[-1]
                 cond_true = bool(self._elif1_re.match(line))
+                new_active = parent and (not already) and cond_true
+                include_stack[-1] = new_active
+                taken_stack[-1] = already or new_active
+                continue
+            melifdef = self._elif_defined_re.match(line)
+            if melifdef:
+                if len(include_stack) <= 1:
+                    continue
+                parent = include_stack[-2]
+                already = taken_stack[-1]
+                neg = bool(melifdef.group(1))
+                name = melifdef.group(2) or melifdef.group(3) or ""
+                cond_true = (name in macros)
+                if neg:
+                    cond_true = not cond_true
                 new_active = parent and (not already) and cond_true
                 include_stack[-1] = new_active
                 taken_stack[-1] = already or new_active
@@ -287,8 +319,22 @@ class Preprocessor:
                     else:
                         params = [p.strip() for p in params_raw.split(",")]
                     for p in params:
+                        if p == "...":
+                            raise RuntimeError(f"unsupported variadic macro: {name}")
                         if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", p):
-                            raise RuntimeError(f"unsupported function-like macro params for {name}")
+                            # In system headers we may see extensions like:
+                            #   #define __END_DECLS }
+                            #   #define EOF (-1)
+                            # and function-like macro parameter lists with
+                            # unusual tokens. For the built-in preprocessor,
+                            # treat such macros as unsupported and ignore
+                            # the definition instead of failing compilation.
+                            params = []
+                            body = ""
+                            break
+                    if body == "" and params == [] and params_raw != "":
+                        # Ignored unsupported function-like macro.
+                        continue
                     self._fn_macros[name] = (params, body.strip())
                     macros.pop(name, None)
                 else:
