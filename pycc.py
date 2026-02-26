@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import argparse
 import sys
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import os
 import tempfile
@@ -29,6 +29,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="pycc", description="AuraCompiler CLI")
     ap.add_argument("source", nargs="+", help="Input C source file(s)")
     ap.add_argument("-E", action="store_true", help="Preprocess only (subset: passthrough)")
+    ap.add_argument(
+        "-D",
+        dest="defines",
+        action="append",
+        default=[],
+        metavar="NAME[=VALUE]",
+        help="Define a macro for preprocessing (subset; -E only)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -40,10 +48,25 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Error: -E currently supports exactly one input file")
             return 1
 
+        initial_macros: Dict[str, str] = {}
+        for item in args.defines:
+            if not item:
+                continue
+            if "=" in item:
+                name, val = item.split("=", 1)
+                name = name.strip()
+                val = val.strip()
+            else:
+                name, val = item.strip(), "1"
+            if not name:
+                print(f"Error: invalid -D argument: {item!r}")
+                return 1
+            initial_macros[name] = val
+
         src = args.source[0]
         try:
             pp = Preprocessor()
-            res = pp.preprocess(src)
+            res = pp.preprocess(src, initial_macros=initial_macros)
             if not res.success:
                 for e in (res.errors or []):
                     print(f"Error: {e}")

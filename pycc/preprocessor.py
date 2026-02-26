@@ -71,9 +71,10 @@ class Preprocessor:
             return True
         raise RuntimeError(f"unsupported #if expression: {name} expands to {repl!r}")
 
-    def preprocess(self, path: str) -> PreprocessResult:
+    def preprocess(self, path: str, *, initial_macros: Optional[Dict[str, str]] = None) -> PreprocessResult:
         try:
-            text = self._preprocess_file(path, stack=[], macros={})
+            macros = dict(initial_macros or {})
+            text = self._preprocess_file(path, stack=[], macros=macros)
             return PreprocessResult(success=True, text=text)
         except RuntimeError as e:
             return PreprocessResult(success=False, errors=[str(e)])
