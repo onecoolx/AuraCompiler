@@ -45,6 +45,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
         if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
         else_re = re.compile(r"^\s*#\s*else\s*$")
+        elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
+        elif1_re = re.compile(r"^\s*#\s*elif\s+1\s*$")
         endif_re = re.compile(r"^\s*#\s*endif\s*$")
 
         def _preprocess_file(path: str, stack: List[str], macros: dict[str, str]) -> str:
@@ -62,23 +64,47 @@ def main(argv: Optional[List[str]] = None) -> int:
             # Track conditional inclusion state.
             # include_stack entries are booleans: whether the current level is active.
             include_stack: List[bool] = [True]
+            # For each nested #if-group, track whether any previous branch has been taken.
+            # Value is meaningful only when len(include_stack) > 1.
+            taken_stack: List[bool] = []
             for line in raw:
                 # Minimal conditional compilation subset: #if 0 ... #endif
                 if if0_re.match(line):
-                    include_stack.append(False and include_stack[-1])
+                    parent = include_stack[-1]
+                    include_stack.append(parent and False)
+                    taken_stack.append(False)
                     continue
                 if if1_re.match(line):
-                    include_stack.append(True and include_stack[-1])
+                    parent = include_stack[-1]
+                    include_stack.append(parent and True)
+                    taken_stack.append(parent and True)
                     continue
+
+                if elif0_re.match(line) or elif1_re.match(line):
+                    if len(include_stack) <= 1:
+                        continue
+                    parent = include_stack[-2]
+                    already = taken_stack[-1]
+                    cond_true = bool(elif1_re.match(line))
+                    new_active = parent and (not already) and cond_true
+                    include_stack[-1] = new_active
+                    taken_stack[-1] = already or new_active
+                    continue
+
                 if else_re.match(line):
                     if len(include_stack) > 1:
                         parent = include_stack[-2]
-                        cur = include_stack[-1]
-                        include_stack[-1] = parent and (not cur)
+                        already = taken_stack[-1] if taken_stack else False
+                        new_active = parent and (not already)
+                        include_stack[-1] = new_active
+                        if taken_stack:
+                            taken_stack[-1] = already or new_active
                     continue
                 if endif_re.match(line):
                     if len(include_stack) > 1:
                         include_stack.pop()
+                        if taken_stack:
+                            taken_stack.pop()
                     continue
                 if not include_stack[-1]:
                     continue
