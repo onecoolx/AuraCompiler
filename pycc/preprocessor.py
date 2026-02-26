@@ -1,0 +1,133 @@
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass
+from typing import Dict, List, Optional
+
+
+@dataclass
+class PreprocessResult:
+    success: bool
+    text: str = ""
+    errors: List[str] = None
+
+    def __post_init__(self) -> None:
+        if self.errors is None:
+            self.errors = []
+
+
+class Preprocessor:
+    """Very small preprocessor for AuraCompiler.
+
+    Current subset (used by `pycc.py -E`):
+    - passthrough of source text
+    - local includes: #include "file"
+    - object-like defines: #define NAME value
+    - conditionals: #if 0/1, #elif 0/1, #else, #endif
+
+    Not supported:
+    - angle-bracket includes, include paths
+    - function-like macros
+    - expression evaluation in #if
+    """
+
+    def __init__(self) -> None:
+        self._include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
+        self._define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
+        self._if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
+        self._if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
+        self._elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
+        self._elif1_re = re.compile(r"^\s*#\s*elif\s+1\s*$")
+        self._else_re = re.compile(r"^\s*#\s*else\s*$")
+        self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
+
+    def preprocess(self, path: str) -> PreprocessResult:
+        try:
+            text = self._preprocess_file(path, stack=[], macros={})
+            return PreprocessResult(success=True, text=text)
+        except RuntimeError as e:
+            return PreprocessResult(success=False, errors=[str(e)])
+
+    def _preprocess_file(self, path: str, stack: List[str], macros: Dict[str, str]) -> str:
+        abspath = os.path.abspath(path)
+        if abspath in stack:
+            raise RuntimeError(f"include cycle detected: {abspath}")
+
+        stack.append(abspath)
+        try:
+            raw = open(abspath, "r", encoding="utf-8").read().splitlines(True)
+        except OSError as e:
+            raise RuntimeError(f"cannot read {path}: {e}")
+
+        out_lines: List[str] = []
+        base_dir = os.path.dirname(abspath)
+
+        include_stack: List[bool] = [True]
+        taken_stack: List[bool] = []
+
+        for line in raw:
+            # Conditionals
+            if self._if0_re.match(line):
+                parent = include_stack[-1]
+                include_stack.append(parent and False)
+                taken_stack.append(False)
+                continue
+            if self._if1_re.match(line):
+                parent = include_stack[-1]
+                include_stack.append(parent and True)
+                taken_stack.append(parent and True)
+                continue
+            if self._elif0_re.match(line) or self._elif1_re.match(line):
+                if len(include_stack) <= 1:
+                    continue
+                parent = include_stack[-2]
+                already = taken_stack[-1]
+                cond_true = bool(self._elif1_re.match(line))
+                new_active = parent and (not already) and cond_true
+                include_stack[-1] = new_active
+                taken_stack[-1] = already or new_active
+                continue
+            if self._else_re.match(line):
+                if len(include_stack) > 1:
+                    parent = include_stack[-2]
+                    already = taken_stack[-1] if taken_stack else False
+                    new_active = parent and (not already)
+                    include_stack[-1] = new_active
+                    if taken_stack:
+                        taken_stack[-1] = already or new_active
+                continue
+            if self._endif_re.match(line):
+                if len(include_stack) > 1:
+                    include_stack.pop()
+                    if taken_stack:
+                        taken_stack.pop()
+                continue
+
+            if not include_stack[-1]:
+                continue
+
+            # Defines
+            md = self._define_re.match(line)
+            if md:
+                name = md.group(1)
+                val = md.group(2).rstrip("\n")
+                macros[name] = val.strip()
+                continue
+
+            # Includes
+            mi = self._include_re.match(line)
+            if mi:
+                inc_name = mi.group(1)
+                inc_path = os.path.join(base_dir, inc_name)
+                out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                continue
+
+            # Macro expansion (very small subset): replace identifiers.
+            expanded = line
+            for k, v in macros.items():
+                expanded = re.sub(rf"\b{re.escape(k)}\b", v, expanded)
+            out_lines.append(expanded)
+
+        stack.pop()
+        return "".join(out_lines)

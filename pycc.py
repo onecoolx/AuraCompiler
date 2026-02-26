@@ -17,7 +17,7 @@ import os
 import tempfile
 import subprocess
 
-import re
+from pycc.preprocessor import Preprocessor
 
 from pycc.compiler import Compiler
 
@@ -40,102 +40,16 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Error: -E currently supports exactly one input file")
             return 1
 
-        include_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
-        define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
-        if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
-        if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
-        else_re = re.compile(r"^\s*#\s*else\s*$")
-        elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
-        elif1_re = re.compile(r"^\s*#\s*elif\s+1\s*$")
-        endif_re = re.compile(r"^\s*#\s*endif\s*$")
-
-        def _preprocess_file(path: str, stack: List[str], macros: dict[str, str]) -> str:
-            abspath = os.path.abspath(path)
-            if abspath in stack:
-                raise RuntimeError(f"include cycle detected: {abspath}")
-            stack.append(abspath)
-            try:
-                raw = open(abspath, "r", encoding="utf-8").read().splitlines(True)
-            except OSError as e:
-                raise RuntimeError(f"cannot read {path}: {e}")
-
-            out_lines: List[str] = []
-            base_dir = os.path.dirname(abspath)
-            # Track conditional inclusion state.
-            # include_stack entries are booleans: whether the current level is active.
-            include_stack: List[bool] = [True]
-            # For each nested #if-group, track whether any previous branch has been taken.
-            # Value is meaningful only when len(include_stack) > 1.
-            taken_stack: List[bool] = []
-            for line in raw:
-                # Minimal conditional compilation subset: #if 0 ... #endif
-                if if0_re.match(line):
-                    parent = include_stack[-1]
-                    include_stack.append(parent and False)
-                    taken_stack.append(False)
-                    continue
-                if if1_re.match(line):
-                    parent = include_stack[-1]
-                    include_stack.append(parent and True)
-                    taken_stack.append(parent and True)
-                    continue
-
-                if elif0_re.match(line) or elif1_re.match(line):
-                    if len(include_stack) <= 1:
-                        continue
-                    parent = include_stack[-2]
-                    already = taken_stack[-1]
-                    cond_true = bool(elif1_re.match(line))
-                    new_active = parent and (not already) and cond_true
-                    include_stack[-1] = new_active
-                    taken_stack[-1] = already or new_active
-                    continue
-
-                if else_re.match(line):
-                    if len(include_stack) > 1:
-                        parent = include_stack[-2]
-                        already = taken_stack[-1] if taken_stack else False
-                        new_active = parent and (not already)
-                        include_stack[-1] = new_active
-                        if taken_stack:
-                            taken_stack[-1] = already or new_active
-                    continue
-                if endif_re.match(line):
-                    if len(include_stack) > 1:
-                        include_stack.pop()
-                        if taken_stack:
-                            taken_stack.pop()
-                    continue
-                if not include_stack[-1]:
-                    continue
-
-                md = define_re.match(line)
-                if md:
-                    name = md.group(1)
-                    val = md.group(2).rstrip("\n")
-                    macros[name] = val.strip()
-                    # Do not emit #define lines.
-                    continue
-                m = include_re.match(line)
-                if m:
-                    inc_name = m.group(1)
-                    inc_path = os.path.join(base_dir, inc_name)
-                    out_lines.append(_preprocess_file(inc_path, stack, macros))
-                    continue
-
-                # Very small subset: object-like macro replacement on identifier boundaries.
-                expanded = line
-                for k, v in macros.items():
-                    expanded = re.sub(rf"\b{re.escape(k)}\b", v, expanded)
-                out_lines.append(expanded)
-
-            stack.pop()
-            return "".join(out_lines)
-
         src = args.source[0]
         try:
-            text = _preprocess_file(src, [], {})
-        except RuntimeError as e:
+            pp = Preprocessor()
+            res = pp.preprocess(src)
+            if not res.success:
+                for e in (res.errors or []):
+                    print(f"Error: {e}")
+                return 1
+            text = res.text
+        except Exception as e:
             print(f"Error: {e}")
             return 1
         if args.output:
