@@ -82,6 +82,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 ## Milestone 2 — Preprocessor + Multi-file + glibc
 
 - **PARTIAL** Preprocessor stage (`-E`) (subset: passthrough + local `#include "file"` + object-like `#define` + `#undef` + `#ifdef/#ifndef` + `#if 0/1` and `#if NAME` (NAME expands to 0/1) with `#elif 0/1` and `#elif NAME` + `#else`) — `tests/test_preprocessor_E.py`, `tests/test_preprocessor_include.py`, `tests/test_preprocessor_define.py`, `tests/test_preprocessor_undef.py`, `tests/test_preprocessor_ifdef.py`, `tests/test_preprocessor_if0.py`, `tests/test_preprocessor_if_macro.py`, `tests/test_preprocessor_else.py`, `tests/test_preprocessor_elif.py`
+- **PARTIAL** Preprocessor function-like macros (subset): `#define F(x) ...` + invocation expansion (incl. nested calls) — `tests/test_preprocessor_function_like_macros.py`
 - **PARTIAL** Driver supports multiple inputs (subset): `pycc.py file1.c file2.c -o a.out` — `tests/test_driver_multi_file_cli.py`
 - **PARTIAL** Multi-input + `--use-system-cpp` (glibc headers + multi-TU link) — `tests/test_driver_multi_file_system_cpp.py`
 - **PARTIAL** Emit `.o` and link multiple translation units with system `gcc` (no-pie subset) — `tests/test_multi_tu.py`

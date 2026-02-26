@@ -5,7 +5,7 @@ import re
 import subprocess
 import shutil
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Union
 
 
 def _parse_gcc_include_paths(gcc_stderr: str) -> List[str]:
@@ -138,6 +138,9 @@ class Preprocessor:
         sys_paths = probed or fallback
         self._include_paths = user_paths + sys_paths
 
+        # Function-like macro storage: NAME -> (param_names, body)
+        self._fn_macros: Dict[str, Tuple[List[str], str]] = {}
+
     def _eval_cond_01(self, name: str, macros: Dict[str, str]) -> bool:
         """Evaluate a very small #if/#elif condition.
 
@@ -269,13 +272,31 @@ class Preprocessor:
             if md:
                 name = md.group(1)
                 val = md.group(2).rstrip("\n")
-                macros[name] = val.strip()
+                # Function-like macro: #define F(x) ...
+                # NOTE: very small subset; no variadics, no comments handling, no multiline.
+                mfn = re.match(r"^\s*\(([^)]*)\)\s*(.*)$", val)
+                if mfn is not None:
+                    params_raw = mfn.group(1).strip()
+                    body = mfn.group(2)
+                    if params_raw == "":
+                        params = []
+                    else:
+                        params = [p.strip() for p in params_raw.split(",")]
+                    for p in params:
+                        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", p):
+                            raise RuntimeError(f"unsupported function-like macro params for {name}")
+                    self._fn_macros[name] = (params, body.strip())
+                    macros.pop(name, None)
+                else:
+                    macros[name] = val.strip()
+                    self._fn_macros.pop(name, None)
                 continue
 
             mu = self._undef_re.match(line)
             if mu:
                 name = mu.group(1)
                 macros.pop(name, None)
+                self._fn_macros.pop(name, None)
                 continue
 
             # Includes (subset)
@@ -295,14 +316,92 @@ class Preprocessor:
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
 
-            # Macro expansion (very small subset): replace identifiers.
-            expanded = line
-            for k, v in macros.items():
-                expanded = re.sub(rf"\b{re.escape(k)}\b", lambda _m, _v=v: _v, expanded)
-            out_lines.append(expanded)
+            out_lines.append(self._expand_line(line, macros))
 
         stack.pop()
         return "".join(out_lines)
+
+    def _expand_line(self, line: str, macros: Dict[str, str]) -> str:
+        # Expand function-like invocations first (best-effort), then object-like macros.
+        expanded = line
+        expanded = self._expand_function_like_macros(expanded, macros)
+        for k, v in macros.items():
+            expanded = re.sub(rf"\b{re.escape(k)}\b", lambda _m, _v=v: _v, expanded)
+        return expanded
+
+    def _expand_function_like_macros(self, text: str, macros: Dict[str, str]) -> str:
+        # Very small subset expansion:
+        # - only expands NAME(arglist) with balanced parentheses in arglist
+        # - arguments are split by commas at paren depth 0
+        # - supports nested expansions by iterating until no change (cap iterations)
+        out = text
+        for _ in range(20):
+            changed = False
+            for name, (params, body) in list(self._fn_macros.items()):
+                # Find a call site "NAME(" and expand the first one found, repeatedly.
+                idx = 0
+                while True:
+                    m = re.search(rf"\b{re.escape(name)}\s*\(", out[idx:])
+                    if not m:
+                        break
+                    call_start = idx + m.start()
+                    paren_start = idx + m.end() - 1  # points at '('
+                    arg_text, paren_end = self._extract_paren_group(out, paren_start)
+                    if paren_end is None:
+                        break
+
+                    args = self._split_args(arg_text)
+                    if len(args) != len(params):
+                        raise RuntimeError(
+                            f"unsupported macro invocation: {name} expects {len(params)} args, got {len(args)}"
+                        )
+                    repl = body
+                    for p, a in zip(params, args):
+                        repl = re.sub(rf"\b{re.escape(p)}\b", a, repl)
+                    # Recursively expand inside the replacement on subsequent passes.
+                    out = out[:call_start] + repl + out[paren_end + 1 :]
+                    changed = True
+                    idx = call_start + len(repl)
+            if not changed:
+                return out
+        return out
+
+    def _extract_paren_group(self, s: str, lparen_index: int) -> Tuple[str, Union[int, None]]:
+        if lparen_index < 0 or lparen_index >= len(s) or s[lparen_index] != "(":
+            return "", None
+        depth = 0
+        i = lparen_index
+        start = lparen_index + 1
+        while i < len(s):
+            ch = s[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    return s[start:i], i
+            i += 1
+        return "", None
+
+    def _split_args(self, arg_text: str) -> List[str]:
+        args: List[str] = []
+        cur: List[str] = []
+        depth = 0
+        for ch in arg_text:
+            if ch == "," and depth == 0:
+                args.append("".join(cur).strip())
+                cur = []
+                continue
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth > 0:
+                    depth -= 1
+            cur.append(ch)
+        tail = "".join(cur).strip()
+        if tail or arg_text.strip() == "":
+            args.append(tail)
+        return args
 
     def _resolve_include(self, inc_name: str, search_paths: List[str]) -> str:
         for d in search_paths:
