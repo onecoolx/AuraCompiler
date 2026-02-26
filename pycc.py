@@ -26,9 +26,36 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     ap = argparse.ArgumentParser(prog="pycc", description="AuraCompiler CLI")
     ap.add_argument("source", nargs="+", help="Input C source file(s)")
-    ap.add_argument("-o", dest="output", required=True, help="Output: .s, .o, or executable")
+    ap.add_argument("-E", action="store_true", help="Preprocess only (subset: passthrough)")
+    ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
+
+    # Preprocessor stage (subset): passthrough the first input.
+    if args.E:
+        # For now, only support a single input in -E mode.
+        if len(args.source) != 1:
+            print("Error: -E currently supports exactly one input file")
+            return 1
+        src = args.source[0]
+        try:
+            text = open(src, "r", encoding="utf-8").read()
+        except OSError as e:
+            print(f"Error: cannot read {src}: {e}")
+            return 1
+        if args.output:
+            try:
+                open(args.output, "w", encoding="utf-8").write(text)
+            except OSError as e:
+                print(f"Error: cannot write {args.output}: {e}")
+                return 1
+        else:
+            sys.stdout.write(text)
+        return 0
+
+    if not args.output:
+        print("Error: -o is required unless -E is used")
+        return 1
 
     compiler = Compiler(optimize=not args.no_opt)
 

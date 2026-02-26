@@ -81,7 +81,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 
 ## Milestone 2 — Preprocessor + Multi-file + glibc
 
-- **TODO** Preprocessor stage (`-E`): includes, macros, conditional compilation, line control
+- **PARTIAL** Preprocessor stage (`-E`) (subset: passthrough) — `tests/test_preprocessor_E.py`
 - **PARTIAL** Driver supports multiple inputs (subset): `pycc.py file1.c file2.c -o a.out` — `tests/test_driver_multi_file_cli.py`
 - **PARTIAL** Emit `.o` and link multiple translation units with system `gcc` (no-pie subset) — `tests/test_multi_tu.py`
 - Tests:
