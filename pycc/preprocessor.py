@@ -13,7 +13,7 @@ def _parse_gcc_include_paths(gcc_stderr: str) -> List[str]:
     in_block = False
     for raw in gcc_stderr.splitlines():
         line = raw.rstrip("\n")
-        if "#include <...> search starts here:" in line:
+        if "#include <...> search starts here:" in line or "#include \"...\" search starts here:" in line:
             in_block = True
             continue
         if in_block and "End of search list." in line:
@@ -27,6 +27,9 @@ def _parse_gcc_include_paths(gcc_stderr: str) -> List[str]:
         if s.startswith("(") and s.endswith(")"):
             # e.g. "(framework directory)"
             continue
+        # Drop trailing annotations like "(sysroot)" or "(framework directory)".
+        if " (" in s and s.endswith(")"):
+            s = s.split(" (", 1)[0].strip()
         paths.append(s)
     return paths
 
