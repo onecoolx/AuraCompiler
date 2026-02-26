@@ -372,7 +372,11 @@ class Preprocessor:
         include_stack: List[bool] = [True]
         taken_stack: List[bool] = []
 
+        in_block_comment = False
+
         for line in raw:
+            line, in_block_comment = self._strip_comments(line, in_block_comment)
+
             if self._include_next_re.match(line):
                 raise RuntimeError("unsupported directive: #include_next")
 
@@ -572,6 +576,81 @@ class Preprocessor:
 
         stack.pop()
         return "".join(out_lines)
+
+    def _strip_comments(self, line: str, in_block: bool) -> Tuple[str, bool]:
+        """Strip // and /* */ comments (subset) while preserving strings/chars.
+
+        Supports block comments spanning lines via the in_block state.
+        """
+
+        out: List[str] = []
+        i = 0
+        n = len(line)
+        in_str = False
+        in_char = False
+
+        while i < n:
+            ch = line[i]
+
+            if in_block:
+                end = line.find("*/", i)
+                if end == -1:
+                    # Entire rest of line is inside block comment.
+                    return "".join(out), True
+                i = end + 2
+                in_block = False
+                continue
+
+            if in_str:
+                out.append(ch)
+                if ch == "\\" and i + 1 < n:
+                    out.append(line[i + 1])
+                    i += 2
+                    continue
+                if ch == '"':
+                    in_str = False
+                i += 1
+                continue
+
+            if in_char:
+                out.append(ch)
+                if ch == "\\" and i + 1 < n:
+                    out.append(line[i + 1])
+                    i += 2
+                    continue
+                if ch == "'":
+                    in_char = False
+                i += 1
+                continue
+
+            # Not in string/char/comment
+            if ch == '"':
+                in_str = True
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "'":
+                in_char = True
+                out.append(ch)
+                i += 1
+                continue
+
+            if ch == "/" and i + 1 < n:
+                nxt = line[i + 1]
+                if nxt == "/":
+                    # Line comment: ignore rest, preserve trailing newline if present.
+                    if line.endswith("\n"):
+                        out.append("\n")
+                    return "".join(out), False
+                if nxt == "*":
+                    in_block = True
+                    i += 2
+                    continue
+
+            out.append(ch)
+            i += 1
+
+        return "".join(out), in_block
 
     def _expand_line(self, line: str, macros: Dict[str, str]) -> str:
         # Expand function-like invocations first (best-effort), then object-like macros.
