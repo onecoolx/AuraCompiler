@@ -47,6 +47,7 @@ from pycc.ast_nodes import (
         FunctionCall,
         ArrayAccess,
         TernaryOp,
+        CommaOp,
         Expression,
         Type,
         MemberAccess,
@@ -192,6 +193,10 @@ class SemanticAnalyzer:
 
     def _eval_const_int(self, expr: Expression) -> int:
         # Minimal constant expression evaluator for enum values (C89 subset)
+        if isinstance(expr, CommaOp):
+            # Constant expressions may include the comma operator; the value is the RHS.
+            self._eval_const_int(expr.left)
+            return self._eval_const_int(expr.right)
         if isinstance(expr, IntLiteral):
             return int(expr.value)
         if isinstance(expr, CharLiteral):
@@ -558,6 +563,11 @@ class SemanticAnalyzer:
             self._analyze_expr(expr.condition)
             self._analyze_expr(expr.true_expr)
             self._analyze_expr(expr.false_expr)
+            return
+
+        if isinstance(expr, CommaOp):
+            self._analyze_expr(expr.left)
+            self._analyze_expr(expr.right)
             return
 
         # Unknown expressions ignored

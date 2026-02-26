@@ -301,6 +301,14 @@ class TernaryOp(Expression):
 
 
 @dataclass
+class CommaOp(Expression):
+    """Comma operator: evaluates left, discards its value, then evaluates right."""
+
+    left: Expression
+    right: Expression
+
+
+@dataclass
 class Assignment(Expression):
     """Assignment expression"""
     target: Expression

@@ -51,6 +51,7 @@ from pycc.ast_nodes import (
     MemberAccess,
     PointerMemberAccess,
     TernaryOp,
+    CommaOp,
     SizeOf,
     Cast,
     Initializer,
@@ -1128,6 +1129,11 @@ class IRGenerator:
             self.instructions.append(IRInstruction(op="mov", result=t, operand1=fv))
             self.instructions.append(IRInstruction(op="label", label=end_lbl))
             return t
+
+        if isinstance(expr, CommaOp):
+            # Evaluate left for side-effects, discard value, then evaluate right.
+            self._gen_expr(expr.left)
+            return self._gen_expr(expr.right)
 
         # fallback
         t = self._new_temp()

@@ -58,6 +58,7 @@ from pycc.ast_nodes import (
     MemberAccess,
     PointerMemberAccess,
     TernaryOp,
+    CommaOp,
     Cast,
     EnumDecl,
     Initializer,
@@ -430,7 +431,9 @@ class Parser:
                     name_tok = self._expect(TokenType.IDENTIFIER, "Expected enumerator name")
                     value_expr = None
                     if self._match(TokenType.ASSIGN):
-                        value_expr = self._parse_expression()
+                        # In enum lists, commas separate enumerators; parse the
+                        # explicit value as an assignment-expression.
+                        value_expr = self._parse_assignment()
                     members.append((name_tok.value, value_expr))
                     if not self._match(TokenType.COMMA):
                         break
@@ -691,7 +694,7 @@ class Parser:
             return Initializer(elements=elements, line=rbrace.line, column=rbrace.column)
 
         # assignment-expression
-        return self._parse_expression()
+        return self._parse_assignment()
 
     def _parse_statement(self):
         tok = self.current_token
@@ -814,7 +817,14 @@ class Parser:
     # -----------------
 
     def _parse_expression(self):
-        return self._parse_assignment()
+        # C comma operator has the lowest precedence.
+        expr = self._parse_assignment()
+        while self.current_token and self.current_token.type == TokenType.COMMA:
+            comma_tok = self.current_token
+            self.advance()
+            rhs = self._parse_assignment()
+            expr = CommaOp(left=expr, right=rhs, line=comma_tok.line, column=comma_tok.column)
+        return expr
 
     def _parse_assignment(self):
         left = self._parse_conditional()
@@ -965,9 +975,11 @@ class Parser:
             if self._match(TokenType.LPAREN):
                 args: List = []
                 if not self._at(TokenType.RPAREN):
-                    args.append(self._parse_expression())
+                    # In argument lists, commas separate arguments, so we must
+                    # parse each argument as an assignment-expression.
+                    args.append(self._parse_assignment())
                     while self._match(TokenType.COMMA):
-                        args.append(self._parse_expression())
+                        args.append(self._parse_assignment())
                 self._expect(TokenType.RPAREN, "Expected ')' after call")
                 expr = FunctionCall(function=expr, arguments=args, line=expr.line, column=expr.column)
                 continue

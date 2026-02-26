@@ -1,6 +1,6 @@
 # AuraCompiler Feature Tracker (Living)
 
-Last updated: 2026-02-25
+Last updated: 2026-02-26
 
 This is the **single source of truth** for feature status.
 
@@ -35,6 +35,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **DONE** `sizeof` (subset) — `tests/test_sizeof.py`
 - **DONE** C-style cast (subset) — `tests/test_cast.py`
 - **DONE** `&&`/`||` short-circuit — `tests/test_short_circuit.py`
+- **PARTIAL** comma operator `,` (expression + for-clause) — `tests/test_comma_operator.py`
 - **PARTIAL** reject `void` objects/parameters (subset) — `tests/test_void_type.py`
 - **PARTIAL** conditional operator (`?:`) usual arithmetic conversions (unsigned int/unsigned long cases) — `tests/test_int_conversions.py`
 - **PARTIAL** integer promotions + usual arithmetic conversions — comparisons for `int` vs `unsigned int` (best-effort) — `tests/test_int_conversions.py`
