@@ -83,6 +83,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 
 - **PARTIAL** Preprocessor stage (`-E`) (subset: passthrough + local `#include "file"` + object-like `#define` + `#undef` + `#ifdef/#ifndef` + `#if 0/1` and `#if NAME` (NAME expands to 0/1) with `#elif 0/1` and `#elif NAME` + `#else`) — `tests/test_preprocessor_E.py`, `tests/test_preprocessor_include.py`, `tests/test_preprocessor_define.py`, `tests/test_preprocessor_undef.py`, `tests/test_preprocessor_ifdef.py`, `tests/test_preprocessor_if0.py`, `tests/test_preprocessor_if_macro.py`, `tests/test_preprocessor_else.py`, `tests/test_preprocessor_elif.py`
 - **PARTIAL** Preprocessor `defined(NAME)` in `#if/#elif` (subset): `defined(X)` and `!defined(X)` — `tests/test_preprocessor_defined.py`
+- **PARTIAL** Preprocessor `#if` expression evaluation (subset): `!`, `&&`, `||`, `==`, `!=`, `+`, `-`, parentheses, integers, identifiers (best-effort) — `tests/test_preprocessor_if_expr.py`
 - **PARTIAL** Preprocessor angle-bracket includes (subset): `#include <...>` via `-I` and system include probing — `tests/test_preprocessor_include_angle.py`
 - **PARTIAL** Preprocessor `#line` directive (subset): accept and strip from `-E` output — `tests/test_preprocessor_line_directive.py`
 - **PARTIAL** Preprocessor function-like macros (subset): `#define F(x) ...` + invocation expansion (incl. nested calls) — `tests/test_preprocessor_function_like_macros.py`

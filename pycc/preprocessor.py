@@ -121,6 +121,7 @@ class Preprocessor:
         self._if_defined_re = re.compile(
             r"^\s*#\s*if\s+(!\s*)?defined\s*(?:\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))\s*$"
         )
+        self._if_expr_re = re.compile(r"^\s*#\s*if\s+(.+?)\s*$")
         self._if0_re = re.compile(r"^\s*#\s*if\s+0\s*$")
         self._if1_re = re.compile(r"^\s*#\s*if\s+1\s*$")
         self._elif0_re = re.compile(r"^\s*#\s*elif\s+0\s*$")
@@ -129,6 +130,7 @@ class Preprocessor:
         self._elif_defined_re = re.compile(
             r"^\s*#\s*elif\s+(!\s*)?defined\s*(?:\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*\)|([A-Za-z_][A-Za-z0-9_]*))\s*$"
         )
+        self._elif_expr_re = re.compile(r"^\s*#\s*elif\s+(.+?)\s*$")
         self._else_re = re.compile(r"^\s*#\s*else\s*$")
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
         self._line_re = re.compile(r"^\s*#\s*line\b.*$")
@@ -170,6 +172,178 @@ class Preprocessor:
         if repl == "1":
             return True
         raise RuntimeError(f"unsupported #if expression: {name} expands to {repl!r}")
+
+    def _eval_if_expr(self, expr: str, macros: Dict[str, str]) -> bool:
+        """Evaluate a minimal preprocessor #if expression.
+
+        Supported subset:
+        - integer constants (decimal)
+        - identifiers: treated as 0 if undefined; if defined and expands to a
+          decimal integer literal, use that value; otherwise 0
+        - defined(NAME) and !defined(NAME)
+        - operators: !, +, -, ==, !=, &&, ||
+        - parentheses
+        """
+
+        tokens = self._tokenize_if_expr(expr)
+        p = self._IfExprParser(tokens=tokens, macros=macros)
+        val = p.parse_expr()
+        if not p.at_end():
+            raise RuntimeError(f"unsupported #if expression: trailing tokens in {expr!r}")
+        return bool(val)
+
+    def _eval_if_expr_strict_01(self, expr: str, macros: Dict[str, str]) -> bool:
+        """Strict legacy subset for `#if NAME` / `#elif NAME`.
+
+        Historically we required NAME to expand to exactly 0/1. Keep that
+        behavior for the NAME-only directive forms to preserve existing tests.
+        """
+
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", expr.strip()):
+            raise RuntimeError(f"unsupported #if expression: {expr!r}")
+        return self._eval_cond_01(expr.strip(), macros)
+
+    def _tokenize_if_expr(self, expr: str) -> List[str]:
+        toks: List[str] = []
+        i = 0
+        n = len(expr)
+        while i < n:
+            ch = expr[i]
+            if ch.isspace():
+                i += 1
+                continue
+            # Two-char operators
+            if i + 1 < n:
+                two = expr[i : i + 2]
+                if two in ("&&", "||", "==", "!="):
+                    toks.append(two)
+                    i += 2
+                    continue
+            if ch in ("(", ")", "!", "+", "-"):
+                toks.append(ch)
+                i += 1
+                continue
+            if ch.isdigit():
+                j = i + 1
+                while j < n and expr[j].isdigit():
+                    j += 1
+                toks.append(expr[i:j])
+                i = j
+                continue
+            if ch.isalpha() or ch == "_":
+                j = i + 1
+                while j < n and (expr[j].isalnum() or expr[j] == "_"):
+                    j += 1
+                toks.append(expr[i:j])
+                i = j
+                continue
+            raise RuntimeError(f"unsupported #if expression character: {ch!r} in {expr!r}")
+        return toks
+
+    class _IfExprParser:
+        def __init__(self, *, tokens: List[str], macros: Dict[str, str]) -> None:
+            self._toks = tokens
+            self._i = 0
+            self._macros = macros
+
+        def at_end(self) -> bool:
+            return self._i >= len(self._toks)
+
+        def _peek(self) -> str:
+            return self._toks[self._i] if self._i < len(self._toks) else ""
+
+        def _eat(self, t: str) -> bool:
+            if self._peek() == t:
+                self._i += 1
+                return True
+            return False
+
+        def _expect(self, t: str) -> None:
+            if not self._eat(t):
+                raise RuntimeError(f"unsupported #if expression: expected {t!r}")
+
+        def parse_expr(self) -> int:
+            return self._parse_or()
+
+        def _parse_or(self) -> int:
+            v = self._parse_and()
+            while self._eat("||"):
+                rhs = self._parse_and()
+                v = 1 if (v != 0 or rhs != 0) else 0
+            return v
+
+        def _parse_and(self) -> int:
+            v = self._parse_eq()
+            while self._eat("&&"):
+                rhs = self._parse_eq()
+                v = 1 if (v != 0 and rhs != 0) else 0
+            return v
+
+        def _parse_eq(self) -> int:
+            v = self._parse_add()
+            while True:
+                if self._eat("=="):
+                    rhs = self._parse_add()
+                    v = 1 if v == rhs else 0
+                    continue
+                if self._eat("!="):
+                    rhs = self._parse_add()
+                    v = 1 if v != rhs else 0
+                    continue
+                break
+            return v
+
+        def _parse_add(self) -> int:
+            v = self._parse_unary()
+            while True:
+                if self._eat("+"):
+                    v += self._parse_unary()
+                    continue
+                if self._eat("-"):
+                    v -= self._parse_unary()
+                    continue
+                break
+            return v
+
+        def _parse_unary(self) -> int:
+            if self._eat("!"):
+                return 0 if self._parse_unary() != 0 else 1
+            return self._parse_primary()
+
+        def _parse_primary(self) -> int:
+            if self._eat("("):
+                v = self.parse_expr()
+                self._expect(")")
+                return v
+            tok = self._peek()
+            if not tok:
+                raise RuntimeError("unsupported #if expression: unexpected end")
+            self._i += 1
+
+            if tok.isdigit():
+                return int(tok)
+
+            # defined operator
+            if tok == "defined":
+                if self._eat("("):
+                    name = self._peek()
+                    self._i += 1
+                    self._expect(")")
+                else:
+                    name = self._peek()
+                    self._i += 1
+                if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
+                    raise RuntimeError("unsupported #if expression: defined expects an identifier")
+                return 1 if name in self._macros else 0
+
+            # identifier
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", tok):
+                if tok not in self._macros:
+                    return 0
+                val = self._macros[tok].strip()
+                return int(val) if re.match(r"^[0-9]+$", val) else 0
+
+            raise RuntimeError(f"unsupported #if expression token: {tok!r}")
 
     def preprocess(self, path: str, *, initial_macros: Optional[Dict[str, str]] = None) -> PreprocessResult:
         try:
@@ -227,7 +401,15 @@ class Preprocessor:
             if mifname:
                 parent = include_stack[-1]
                 name = mifname.group(1)
-                cond_true = self._eval_cond_01(name, macros)
+                cond_true = self._eval_if_expr_strict_01(name, macros)
+                include_stack.append(parent and cond_true)
+                taken_stack.append(parent and cond_true)
+                continue
+            mifexpr = self._if_expr_re.match(line)
+            if mifexpr:
+                parent = include_stack[-1]
+                expr = mifexpr.group(1)
+                cond_true = self._eval_if_expr(expr, macros)
                 include_stack.append(parent and cond_true)
                 taken_stack.append(parent and cond_true)
                 continue
@@ -279,7 +461,19 @@ class Preprocessor:
                 parent = include_stack[-2]
                 already = taken_stack[-1]
                 name = melifname.group(1)
-                cond_true = self._eval_cond_01(name, macros)
+                cond_true = self._eval_if_expr_strict_01(name, macros)
+                new_active = parent and (not already) and cond_true
+                include_stack[-1] = new_active
+                taken_stack[-1] = already or new_active
+                continue
+            melifexpr = self._elif_expr_re.match(line)
+            if melifexpr:
+                if len(include_stack) <= 1:
+                    continue
+                parent = include_stack[-2]
+                already = taken_stack[-1]
+                expr = melifexpr.group(1)
+                cond_true = self._eval_if_expr(expr, macros)
                 new_active = parent and (not already) and cond_true
                 include_stack[-1] = new_active
                 taken_stack[-1] = already or new_active
