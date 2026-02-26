@@ -356,8 +356,18 @@ class Preprocessor:
                             f"unsupported macro invocation: {name} expects {len(params)} args, got {len(args)}"
                         )
                     repl = body
+                    # Subset ordering:
+                    # - stringize must see the original param names (#x)
+                    # - token paste must see param names to combine (a##b)
+                    # We therefore expand these operators per-parameter first,
+                    # then substitute the remaining plain params.
+                    for p, a in zip(params, args):
+                        repl = self._apply_stringize(repl, p, a)
+                    # Do parameter substitution first (so a##b turns into x##y),
+                    # then do token-paste removal.
                     for p, a in zip(params, args):
                         repl = re.sub(rf"\b{re.escape(p)}\b", a, repl)
+                    repl = self._apply_token_paste_simple(repl)
                     # Recursively expand inside the replacement on subsequent passes.
                     out = out[:call_start] + repl + out[paren_end + 1 :]
                     changed = True
@@ -365,6 +375,22 @@ class Preprocessor:
             if not changed:
                 return out
         return out
+
+    def _apply_stringize(self, body: str, param: str, arg: str) -> str:
+        # Very small subset of stringize (#param):
+        # - no whitespace normalization
+        # - no escaping
+        # - wraps raw argument text in double quotes
+        # Only match `#param` when '#' is not part of '##'.
+        return re.sub(
+            rf"(?<!#)#\s*{re.escape(param)}\b",
+            lambda _m: '"' + arg.strip() + '"',
+            body,
+        )
+
+    def _apply_token_paste_simple(self, body: str) -> str:
+        # Very small subset: after params are substituted, just delete the operator.
+        return re.sub(r"\s*##\s*", "", body)
 
     def _extract_paren_group(self, s: str, lparen_index: int) -> Tuple[str, Union[int, None]]:
         if lparen_index < 0 or lparen_index >= len(s) or s[lparen_index] != "(":
