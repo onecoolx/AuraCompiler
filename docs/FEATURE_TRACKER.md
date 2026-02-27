@@ -89,6 +89,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - (tests) Preprocessor `defined(NAME)` does not macro-expand NAME — `tests/test_preprocessor_defined_defined_macro_expansion.py`
 - **PARTIAL** Preprocessor `#elifdef/#elifndef` directives (subset): `#elifdef X` and `#elifndef X` — `tests/test_preprocessor_elifdef_elifndef.py`
 - **PARTIAL** Preprocessor `#if` expression evaluation (subset): `!`, `&&`, `||`, `==`, `!=`, `+`, `-`, parentheses, integers, identifiers (best-effort) — `tests/test_preprocessor_if_expr.py`
+- (tests) Preprocessor `#if` treats undefined identifiers as 0 (subset) — `tests/test_preprocessor_if_expr_undefined_id_is_0.py`
 - **PARTIAL** Preprocessor `#elif` expression evaluation (subset): `#elif <expr>` using same evaluator as `#if` — `tests/test_preprocessor_elif_expr.py`
 - **PARTIAL** Preprocessor `#if` bitwise/shift operators (subset): `& | ^ ~ << >>` (+ `<, >, <=, >=` for comparisons) — `tests/test_preprocessor_if_bitwise.py`
 - (tests) Preprocessor `#if` unary bitwise not precedence/behavior (subset): `~` — `tests/test_preprocessor_if_unary_bitwise_not.py`
