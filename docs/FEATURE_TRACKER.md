@@ -74,6 +74,7 @@ Rule: every new feature must add/extend tests under `tests/`.
   - [x] no match + no default executes nothing — `tests/test_switch_no_match_returns_0.py`
   - [x] reject duplicate `case` labels — `tests/test_switch_duplicate_case_rejected_more.py`
   - [x] reject multiple `default` labels — `tests/test_switch_multiple_default_rejected_more.py`
+  - [x] negative `case` labels match (runtime) — `tests/test_switch_case_negative_label_runtime.py`
   - tests: `tests/test_switch.py`, `tests/test_switch_semantics.py`
 - **DONE** break/continue — integration tests
 - **DONE** goto/labels — `tests/test_goto.py`
