@@ -64,6 +64,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** pointer arithmetic completeness — `tests/test_pointer_arith.py` (more TODO)
   - [x] pointer +/- integer scales by element size (subset) — `tests/test_pointer_arith_add_sub.py`
   - [x] pointer comparisons `==` and `<` (subset) — `tests/test_pointer_comparisons.py`
+  - [x] pointer compound assignment `+=`/`-=` scales (subset) — `tests/test_pointer_arith_compound_assign.py`
   - [x] `char*` pointer difference in elements (subset) — `tests/test_pointer_arith.py`
   - [x] `short*` pointer difference in elements (subset) — `tests/test_pointer_arith.py`
   - [x] `long*` pointer difference in elements (subset) — `tests/test_pointer_arith_long.py`
