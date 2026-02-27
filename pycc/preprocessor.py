@@ -257,6 +257,27 @@ class Preprocessor:
                 toks.append(expr[i:j])
                 i = j
                 continue
+
+            # character constant (subset)
+            if ch == "'":
+                j = i + 1
+                if j >= n:
+                    raise RuntimeError(f"unsupported #if expression: unterminated character constant in {expr!r}")
+
+                if expr[j] == "\\":
+                    j += 1
+                    if j >= n:
+                        raise RuntimeError(f"unsupported #if expression: unterminated character constant in {expr!r}")
+                    j += 1  # consume one escape char (subset)
+                else:
+                    j += 1  # consume one char
+
+                if j >= n or expr[j] != "'":
+                    raise RuntimeError(f"unsupported #if expression: invalid character constant in {expr!r}")
+                j += 1
+                toks.append(expr[i:j])
+                i = j
+                continue
             raise RuntimeError(f"unsupported #if expression character: {ch!r} in {expr!r}")
         return toks
 
@@ -446,6 +467,25 @@ class Preprocessor:
                 if len(tok) > 1 and tok.startswith("0"):
                     return int(tok, 8)
                 return int(tok, 10)
+
+            # character constant (subset)
+            if tok.startswith("'") and tok.endswith("'") and len(tok) >= 3:
+                inner = tok[1:-1]
+                if len(inner) == 1:
+                    return ord(inner)
+                if len(inner) == 2 and inner[0] == "\\":
+                    esc = inner[1]
+                    if esc == "n":
+                        return 10
+                    if esc == "t":
+                        return 9
+                    if esc == "0":
+                        return 0
+                    if esc == "\\":
+                        return 92
+                    if esc == "'":
+                        return 39
+                raise RuntimeError(f"unsupported #if expression: unsupported character constant {tok!r}")
 
             # defined operator
             if tok == "defined":
