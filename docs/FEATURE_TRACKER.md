@@ -81,6 +81,8 @@ Rule: every new feature must add/extend tests under `tests/`.
 
 ## Milestone 2 — Preprocessor + Multi-file + glibc
 
+See also: `docs/PREPROCESSOR_C89_CHECKLIST.md` (quantified gap + prioritized checklist).
+
 - **PARTIAL** Preprocessor stage (`-E`) (subset: passthrough + local `#include "file"` + object-like `#define` + `#undef` + `#ifdef/#ifndef` + `#if 0/1` and `#if NAME` (NAME expands to 0/1) with `#elif 0/1` and `#elif NAME` + `#else`) — `tests/test_preprocessor_E.py`, `tests/test_preprocessor_include.py`, `tests/test_preprocessor_define.py`, `tests/test_preprocessor_undef.py`, `tests/test_preprocessor_ifdef.py`, `tests/test_preprocessor_if0.py`, `tests/test_preprocessor_if_macro.py`, `tests/test_preprocessor_else.py`, `tests/test_preprocessor_elif.py`
 - (tests) nested conditional handling — `tests/test_preprocessor_nested_conditionals.py`
 - (tests) preprocessor does not parse directives in inactive regions (subset): malformed #if expressions in `#if 0` blocks are ignored — `tests/test_preprocessor_defined_inactive_branch_no_error.py`
