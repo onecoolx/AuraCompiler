@@ -228,7 +228,7 @@ class Preprocessor:
                     toks.append(two)
                     i += 2
                     continue
-            if ch in ("(", ")", "!", "+", "-", "~", "&", "|", "^", "<", ">", "*", "/", "%", "?", ":"):
+            if ch in ("(", ")", "!", "+", "-", "~", "&", "|", "^", "<", ">", "*", "/", "%", "?", ":", ","):
                 toks.append(ch)
                 i += 1
                 continue
@@ -272,7 +272,13 @@ class Preprocessor:
                 raise RuntimeError(f"unsupported #if expression: expected {t!r}")
 
         def parse_expr(self) -> int:
-            return self._parse_conditional()
+            return self._parse_comma()
+
+        def _parse_comma(self) -> int:
+            v = self._parse_conditional()
+            while self._eat(","):
+                v = self._parse_conditional()
+            return v
 
         def _parse_conditional(self) -> int:
             cond = self._parse_or()
