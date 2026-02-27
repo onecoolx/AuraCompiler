@@ -119,6 +119,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#undef` directive (subset): removes object-like and function-like macros — `tests/test_preprocessor_undef.py`
 - **PARTIAL** Preprocessor angle-bracket includes (subset): `#include <...>` via `-I` and system include probing — `tests/test_preprocessor_include_angle.py`
 - **PARTIAL** Preprocessor `#line` directive (subset): accept and strip from `-E` output — `tests/test_preprocessor_line_directive.py`
+- (tests) malformed `#line` in `#if 0` region is ignored — `tests/test_preprocessor_line_directive_ignored_in_inactive.py`
 - **PARTIAL** Preprocessor function-like macros (subset): `#define F(x) ...` + invocation expansion (incl. nested calls) — `tests/test_preprocessor_function_like_macros.py`
 - **PARTIAL** Preprocessor multiline function-like macros (subset): `#define F(x) ... \\` line continuation in macro body — `tests/test_preprocessor_function_like_multiline.py`
 - **PARTIAL** Preprocessor expands function-like macro arguments (subset): e.g. `INC(B)` where `B` is a macro — `tests/test_preprocessor_function_like_arg_expansion.py`
