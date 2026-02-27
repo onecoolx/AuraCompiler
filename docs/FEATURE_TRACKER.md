@@ -118,6 +118,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor multiline function-like macros (subset): `#define F(x) ... \\` line continuation in macro body — `tests/test_preprocessor_function_like_multiline.py`
 - **PARTIAL** Preprocessor expands function-like macro arguments (subset): e.g. `INC(B)` where `B` is a macro — `tests/test_preprocessor_function_like_arg_expansion.py`
 - **PARTIAL** Preprocessor macro operators (subset): `#` (stringize, incl. basic escaping for `\\` and `\"`) and `##` (token paste, incl. best-effort rescan of pasted result; args not expanded pre-paste) — `tests/test_preprocessor_macro_operators.py`, `tests/test_preprocessor_macro_stringize_escapes.py`, `tests/test_preprocessor_macro_token_paste_rescan.py`, `tests/test_preprocessor_macro_token_paste_args_not_expanded.py`
+- (tests) Preprocessor stringize whitespace normalization (subset): collapse runs of whitespace inside `#x` to single spaces — `tests/test_preprocessor_macro_stringize_whitespace.py`
 - **PARTIAL** Preprocessor macro expansion safety (subset): no expansion inside string/char literals; identifier-only substitution — `tests/test_preprocessor_macro_expansion_edges.py`
 - **PARTIAL** Preprocessor predefined macros (subset): `__LINE__`, `__FILE__` — `tests/test_preprocessor_builtin_macros_line_file.py`
 - **PARTIAL** Preprocessor predefined macros (subset): `__LINE__`, `__FILE__`, `__STDC__`, `__DATE__`, `__TIME__` — `tests/test_preprocessor_builtin_macros_line_file.py`, `tests/test_preprocessor_builtin_macros_c89.py`

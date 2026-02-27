@@ -1223,13 +1223,15 @@ class Preprocessor:
 
     def _apply_stringize(self, body: str, param: str, arg: str) -> str:
         # Very small subset of stringize (#param):
-        # - no whitespace normalization
+        # - whitespace normalization: collapse runs of whitespace to single spaces
         # - escapes backslashes and double-quotes (subset)
         # - wraps raw argument text in double quotes
         # Only match `#param` when '#' is not part of '##'.
         return re.sub(
             rf"(?<!#)#\s*{re.escape(param)}\b",
-            lambda _m: '"' + arg.strip().replace("\\", "\\\\").replace('"', '\\"') + '"',
+            lambda _m: '"'
+            + re.sub(r"\s+", " ", arg.strip()).replace("\\", "\\\\").replace('"', '\\"')
+            + '"',
             body,
         )
 
