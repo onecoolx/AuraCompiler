@@ -1100,9 +1100,25 @@ class IRGenerator:
                     return dst
                 # compound assigns: a += b => a = a + b
                 cur = self._gen_expr(expr.target)
-                t = self._new_temp()
                 bop = expr.operator[:-1]
+
+                # Best-effort pointer compound arithmetic scaling.
+                # If `cur` is a pointer and rhs is integer, scale rhs by pointee size.
+                cty = getattr(self, "_var_types", {}).get(cur)
+                rty = getattr(self, "_var_types", {}).get(rhs)
+                if bop in {"+", "-"} and isinstance(cty, str) and "*" in cty and not (isinstance(rty, str) and "*" in rty):
+                    sz = _type_size(cty.split("*", 1)[0].strip())
+                    if sz != 1:
+                        s = self._new_temp()
+                        self.instructions.append(IRInstruction(op="binop", result=s, operand1=rhs, operand2=f"${sz}", label="*"))
+                        rhs = s
+
+                t = self._new_temp()
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=cur, operand2=rhs, label=bop))
+                # Preserve pointer type for the updated variable.
+                if isinstance(cty, str) and "*" in cty:
+                    self._var_types[t] = cty
+                    self._var_types[dst] = cty
                 self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
                 return dst
             # handle array element store: target is ArrayAccess
@@ -1143,6 +1159,14 @@ class IRGenerator:
                     base_part = inner.split(",", 1)[0].strip()
                     getattr(self, "_var_types", {})[t] = f"{base_part}*"
                     return t
+
+            # Dereference: treat as load from computed address.
+            # Best-effort: use element type info from pointer operand when available.
+            if expr.operator == "*":
+                base = self._gen_expr(expr.operand)
+                t = self._new_temp()
+                self.instructions.append(IRInstruction(op="load", result=t, operand1=base))
+                return t
 
             v = self._gen_expr(expr.operand)
             t = self._new_temp()
@@ -1189,6 +1213,32 @@ class IRGenerator:
 
             l = self._gen_expr(expr.left)
             r = self._gen_expr(expr.right)
+
+            # Best-effort pointer arithmetic scaling: if one operand is a
+            # pointer and the other is an integer, scale the integer by the
+            # pointer's pointee size before add/sub.
+            if expr.operator in {"+", "-"}:
+                lty0 = getattr(self, "_var_types", {}).get(l)
+                rty0 = getattr(self, "_var_types", {}).get(r)
+
+                def _pointee_sz(ptr_ty: object) -> int:
+                    if not isinstance(ptr_ty, str) or "*" not in ptr_ty:
+                        return 1
+                    base = ptr_ty.split("*", 1)[0].strip()
+                    return _type_size(base)
+
+                if isinstance(lty0, str) and "*" in lty0 and not (isinstance(rty0, str) and "*" in rty0):
+                    sz = _pointee_sz(lty0)
+                    if sz != 1:
+                        s = self._new_temp()
+                        self.instructions.append(IRInstruction(op="binop", result=s, operand1=r, operand2=f"${sz}", label="*"))
+                        r = s
+                elif isinstance(rty0, str) and "*" in rty0 and not (isinstance(lty0, str) and "*" in lty0):
+                    sz = _pointee_sz(rty0)
+                    if sz != 1:
+                        s = self._new_temp()
+                        self.instructions.append(IRInstruction(op="binop", result=s, operand1=l, operand2=f"${sz}", label="*"))
+                        l = s
             t = self._new_temp()
             if expr.operator in {"==", "!=", "<", "<=", ">", ">="}:
                 # Preserve comparison signedness in IR (best-effort) so codegen
@@ -1199,6 +1249,29 @@ class IRGenerator:
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=cmp_op))
             else:
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator))
+
+            # Best-effort: preserve pointer type when doing pointer +/- integer.
+            # This is needed so later unary dereference or loads can interpret
+            # the computed address correctly.
+            if expr.operator in {"+", "-"}:
+                lty = getattr(self, "_var_types", {}).get(l)
+                rty = getattr(self, "_var_types", {}).get(r)
+                if isinstance(lty, str) and "*" in lty and not (isinstance(rty, str) and "*" in rty):
+                    self._var_types[t] = lty
+                elif isinstance(rty, str) and "*" in rty and not (isinstance(lty, str) and "*" in lty):
+                    self._var_types[t] = rty
+
+            # Pointer difference (ptr - ptr) yields element count, not bytes.
+            if expr.operator == "-":
+                lty2 = getattr(self, "_var_types", {}).get(l)
+                rty2 = getattr(self, "_var_types", {}).get(r)
+                if isinstance(lty2, str) and "*" in lty2 and isinstance(rty2, str) and "*" in rty2:
+                    # assume compatible pointee types; semantic layer may further restrict
+                    sz = _type_size(lty2.split("*", 1)[0].strip())
+                    if sz > 1:
+                        q = self._new_temp()
+                        self.instructions.append(IRInstruction(op="binop", result=q, operand1=t, operand2=f"${sz}", label="/"))
+                        return q
             return t
         if isinstance(expr, FunctionCall):
             fn = self._gen_expr(expr.function)
