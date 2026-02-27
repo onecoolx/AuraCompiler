@@ -90,7 +90,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#if` expression evaluation (subset): `!`, `&&`, `||`, `==`, `!=`, `+`, `-`, parentheses, integers, identifiers (best-effort) — `tests/test_preprocessor_if_expr.py`
 - **PARTIAL** Preprocessor `#elif` expression evaluation (subset): `#elif <expr>` using same evaluator as `#if` — `tests/test_preprocessor_elif_expr.py`
 - **PARTIAL** Preprocessor rejects `#include_next` (subset): fail fast with explicit error — `tests/test_preprocessor_include_next.py`
-- **PARTIAL** Preprocessor accepts `#pragma once` (subset): strip from output — `tests/test_preprocessor_pragma_once.py`
+- **PARTIAL** Preprocessor `#pragma once` (subset): strip from output + honor include-once semantics — `tests/test_preprocessor_pragma_once.py`, `tests/test_preprocessor_include_guards.py`
 - **PARTIAL** Preprocessor strips comments (subset): `//` and `/* ... */` (incl. multiline) — `tests/test_preprocessor_comments.py`
 - **PARTIAL** Preprocessor rescans object-like macros (subset): chained defines expand to fixed point (bounded; cycle-safe) — `tests/test_preprocessor_macro_rescan.py`, `tests/test_preprocessor_macro_cycle.py`
 - **PARTIAL** Preprocessor `#error` directive (subset): fail when active, ignore in skipped regions — `tests/test_preprocessor_error_directive.py`

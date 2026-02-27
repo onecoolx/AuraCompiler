@@ -142,6 +142,7 @@ class Preprocessor:
         self._error_re = re.compile(r"^\s*#\s*error\b(.*)$")
         self._warning_re = re.compile(r"^\s*#\s*warning\b(.*)$")
         self._counter = 0
+        self._pragma_once_files: set[str] = set()
         user_paths = [os.path.abspath(p) for p in (include_paths or [])]
         probed = [p for p in _probe_system_include_paths() if os.path.isdir(p)]
         # Fallback defaults if probing fails.
@@ -363,6 +364,8 @@ class Preprocessor:
 
     def _preprocess_file(self, path: str, stack: List[str], macros: Dict[str, str]) -> str:
         abspath = os.path.abspath(path)
+        if abspath in self._pragma_once_files:
+            return ""
         if abspath in stack:
             raise RuntimeError(f"include cycle detected: {abspath}")
 
@@ -419,7 +422,8 @@ class Preprocessor:
                 raise RuntimeError("unsupported directive: #include_next")
 
             if self._pragma_once_re.match(line):
-                # Subset: accept and ignore.
+                # Subset: remember this file as include-once and strip directive.
+                self._pragma_once_files.add(abspath)
                 continue
 
             merr = self._error_re.match(line)
