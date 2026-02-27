@@ -228,7 +228,7 @@ class Preprocessor:
                     toks.append(two)
                     i += 2
                     continue
-            if ch in ("(", ")", "!", "+", "-", "~", "&", "|", "^", "<", ">"):
+            if ch in ("(", ")", "!", "+", "-", "~", "&", "|", "^", "<", ">", "*", "/", "%"):
                 toks.append(ch)
                 i += 1
                 continue
@@ -360,13 +360,34 @@ class Preprocessor:
             return v
 
         def _parse_add(self) -> int:
-            v = self._parse_unary()
+            v = self._parse_mul()
             while True:
                 if self._eat("+"):
-                    v += self._parse_unary()
+                    v += self._parse_mul()
                     continue
                 if self._eat("-"):
-                    v -= self._parse_unary()
+                    v -= self._parse_mul()
+                    continue
+                break
+            return v
+
+        def _parse_mul(self) -> int:
+            v = self._parse_unary()
+            while True:
+                if self._eat("*"):
+                    v *= self._parse_unary()
+                    continue
+                if self._eat("/"):
+                    rhs = self._parse_unary()
+                    if rhs == 0:
+                        raise RuntimeError("unsupported #if expression: division by zero")
+                    v = int(v / rhs)
+                    continue
+                if self._eat("%"):
+                    rhs = self._parse_unary()
+                    if rhs == 0:
+                        raise RuntimeError("unsupported #if expression: modulo by zero")
+                    v = v % rhs
                     continue
                 break
             return v
