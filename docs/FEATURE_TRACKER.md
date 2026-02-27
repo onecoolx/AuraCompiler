@@ -79,6 +79,7 @@ Rule: every new feature must add/extend tests under `tests/`.
   - [x] char-literal `case` labels match (runtime) — `tests/test_switch_case_char_label_runtime.py`
   - [x] `case` accepts simple constant expressions — `tests/test_switch_case_expression_constant_folding.py`
   - [x] constant-expression `case` matches (runtime) — `tests/test_switch_case_expression_runtime_match.py`
+  - [x] `case` supports ternary constant expression `?:` (subset) — `tests/test_switch_case_ternary_constant_expr.py`
   - tests: `tests/test_switch.py`, `tests/test_switch_semantics.py`
 - **DONE** break/continue — integration tests
 - **DONE** goto/labels — `tests/test_goto.py`

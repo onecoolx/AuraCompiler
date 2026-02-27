@@ -108,6 +108,12 @@ def _eval_const_int_expr(expr: Expression) -> int:
         _eval_const_int_expr(expr.left)
         return _eval_const_int_expr(expr.right)
 
+    if isinstance(expr, TernaryOp):
+        cond = _eval_const_int_expr(expr.condition)
+        if cond != 0:
+            return _eval_const_int_expr(expr.true_expr)
+        return _eval_const_int_expr(expr.false_expr)
+
     raise IRGenError("not an integer constant expression")
 
 
