@@ -564,6 +564,27 @@ class SemanticAnalyzer:
                 if _is_ptrlike(expr.left) and _is_ptrlike(expr.right):
                     self.errors.append("pointer + pointer is not allowed")
 
+            # Best-effort: reject subtraction of pointers with obviously
+            # different base types (e.g. int* - char*).
+            if expr.operator == "-":
+                def _ptr_base(e: Expression) -> Optional[str]:
+                    if isinstance(e, Identifier):
+                        ty = self._lookup_decl_type(e.name)
+                        if ty is None or not getattr(ty, "is_pointer", False):
+                            return None
+                        return str(getattr(ty, "base", ""))
+                    if isinstance(e, Cast):
+                        to_ty = getattr(e, "to_type", None)
+                        if to_ty is None or not getattr(to_ty, "is_pointer", False):
+                            return None
+                        return str(getattr(to_ty, "base", ""))
+                    return None
+
+                lb = _ptr_base(expr.left)
+                rb = _ptr_base(expr.right)
+                if lb is not None and rb is not None and lb != rb:
+                    self.errors.append("pointer - pointer with different base types is not allowed")
+
             # Ensure we still analyze nested expressions for other checks.
 
             return
