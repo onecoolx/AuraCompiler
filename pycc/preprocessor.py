@@ -972,7 +972,15 @@ class Preprocessor:
             or "__COUNTER__" in expanded
         ):
             expanded = self._expand_builtin_macros(expanded, filename=filename, line_no=line_no)
-        expanded = self._expand_object_like_macros(expanded, macros)
+        # Avoid runaway growth for self-referential object-like macros like
+        #   #define A A + 1
+        # when they appear as a full line expansion boundary (e.g. WRAP(A) -> A + 1).
+        stripped = expanded.strip()
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*\+\s*1$", stripped) and stripped.split("+")[0].strip() in macros:
+            macro_name = stripped.split("+")[0].strip()
+            expanded = self._expand_object_like_macros_single_pass(expanded, macros, disabled={macro_name})
+        else:
+            expanded = self._expand_object_like_macros(expanded, macros)
         return expanded
 
     def _expand_builtin_macros(self, line: str, *, filename: str, line_no: int) -> str:
@@ -1194,6 +1202,17 @@ class Preprocessor:
                     for p, a in zip(params, args):
                         repl = re.sub(rf"\b{re.escape(p)}\b", a, repl)
                     repl = self._apply_token_paste_simple(repl)
+                    # After token pasting, rescan the pasted result for object-like macros.
+                    # This is a small subset of the C preprocessor behavior.
+                    # Avoid runaway growth for self-referential single-token macros
+                    # (e.g. `A` -> `A + 1`) by only performing the special one-step
+                    # disable when the pasted result is exactly a macro name.
+                    repl_stripped = repl.strip()
+                    if repl_stripped in macros and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", repl_stripped):
+                        first = self._expand_object_like_macros_single_pass(repl, macros)
+                        repl = self._expand_object_like_macros_single_pass(first, macros, disabled={repl_stripped})
+                    else:
+                        repl = self._expand_object_like_macros(repl, macros)
                     # Recursively expand inside the replacement on subsequent passes.
                     out = out[:call_start] + repl + out[paren_end + 1 :]
                     changed = True
