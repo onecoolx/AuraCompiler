@@ -423,7 +423,9 @@ class Preprocessor:
 
             if self._pragma_once_re.match(line):
                 # Subset: remember this file as include-once and strip directive.
-                self._pragma_once_files.add(abspath)
+                # Only activate if the directive is in an active region.
+                if include_stack[-1]:
+                    self._pragma_once_files.add(abspath)
                 continue
 
             merr = self._error_re.match(line)
