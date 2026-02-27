@@ -1066,8 +1066,20 @@ class Preprocessor:
         #   #define A B
         #   #define B 1
         #   A -> 1
+        #
+        # Subset of C "hide-set" behavior:
+        # - If the input is exactly a single macro name, expand it once.
+        # - During that expansion, the macro name is disabled only while
+        #   rescanning its own replacement list, so self-referential macros like
+        #     #define A A + 1
+        #   produce "A + 1" (not "A + 1 + 1 + ...").
         if not macros:
             return line
+
+        stripped = line.strip()
+        if stripped in macros and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", stripped):
+            first = self._expand_object_like_macros_single_pass(line, macros)
+            return self._expand_object_like_macros_single_pass(first, macros, disabled={stripped})
 
         cur = line
         for _ in range(20):
@@ -1077,10 +1089,14 @@ class Preprocessor:
             cur = nxt
         return cur
 
-    def _expand_object_like_macros_single_pass(self, line: str, macros: Dict[str, str]) -> str:
+    def _expand_object_like_macros_single_pass(
+        self, line: str, macros: Dict[str, str], *, disabled: Optional[Set[str]] = None
+    ) -> str:
         out: List[str] = []
         i = 0
         n = len(line)
+
+        disabled = set(disabled or set())
 
         def is_ident_start(ch: str) -> bool:
             return ch.isalpha() or ch == "_"
@@ -1128,7 +1144,10 @@ class Preprocessor:
                 while i < n and is_ident_continue(line[i]):
                     i += 1
                 ident = line[start:i]
-                out.append(macros.get(ident, ident))
+                if ident in disabled:
+                    out.append(ident)
+                else:
+                    out.append(macros.get(ident, ident))
                 continue
 
             out.append(ch)
