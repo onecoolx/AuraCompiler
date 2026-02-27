@@ -86,6 +86,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - (tests) directive whitespace tolerance — `tests/test_preprocessor_directive_whitespace.py`
 - **PARTIAL** Preprocessor `#ifndef` directive (subset): conditional inclusion when macro is undefined — `tests/test_preprocessor_ifndef.py`
 - **PARTIAL** Preprocessor `defined` in `#if/#elif` (subset): `defined(X)` / `defined X` and negated forms — `tests/test_preprocessor_defined.py`
+- (tests) Preprocessor `defined(NAME)` does not macro-expand NAME — `tests/test_preprocessor_defined_defined_macro_expansion.py`
 - **PARTIAL** Preprocessor `#elifdef/#elifndef` directives (subset): `#elifdef X` and `#elifndef X` — `tests/test_preprocessor_elifdef_elifndef.py`
 - **PARTIAL** Preprocessor `#if` expression evaluation (subset): `!`, `&&`, `||`, `==`, `!=`, `+`, `-`, parentheses, integers, identifiers (best-effort) — `tests/test_preprocessor_if_expr.py`
 - **PARTIAL** Preprocessor `#elif` expression evaluation (subset): `#elif <expr>` using same evaluator as `#if` — `tests/test_preprocessor_elif_expr.py`

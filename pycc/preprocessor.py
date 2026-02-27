@@ -558,6 +558,8 @@ class Preprocessor:
             # defined operator
             if tok == "defined":
                 if self._eat("("):
+                    # Skip whitespace-like tokens are not present here; tolerate
+                    # parentheses form defined ( NAME ) where NAME may be a macro.
                     name = self._peek()
                     self._i += 1
                     self._expect(")")
@@ -566,6 +568,7 @@ class Preprocessor:
                     self._i += 1
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
                     raise RuntimeError("unsupported #if expression: defined expects an identifier")
+                # C rule: the argument of defined is not macro-expanded.
                 return 1 if name in self._macros else 0
 
             # identifier
