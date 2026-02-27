@@ -65,6 +65,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** switch/case/default (subset; duplicate `case`/multiple `default` rejected)
   - [x] fallthrough executes next case — `tests/test_switch_fallthrough.py`
   - [x] fallthrough can reach default — `tests/test_switch_fallthrough_default.py`
+  - [x] default-only switch executes — `tests/test_switch_default_only.py`
   - tests: `tests/test_switch.py`, `tests/test_switch_semantics.py`
 - **DONE** break/continue — integration tests
 - **DONE** goto/labels — `tests/test_goto.py`
