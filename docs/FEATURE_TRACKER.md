@@ -56,6 +56,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** integer promotions for `short`/`unsigned short` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** integer promotions: sign/zero extension for `char`/`short` and basic comparisons (tests) — `tests/test_integer_promotions_more.py`
   - [x] plain `char` signedness is consistent (impl-defined) — `tests/test_integer_promotions_char_signedness.py`
+  - [x] signed `char` promotion applies in `*` (subset) — `tests/test_int_conversions_signed_char_mul.py`
 - **PARTIAL** comparisons involving `short`/`unsigned short` after promotions (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** assignment narrowing/truncation for `char`/`short` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** load sign/zero extension for `char`/`short` (tests) — `tests/test_int_conversions.py`
