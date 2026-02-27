@@ -403,9 +403,7 @@ class SemanticAnalyzer:
                     self._decl_types[item.name] = item.type
                     if getattr(item, "storage_class", None) == "register":
                         self._register_locals.add(item.name)
-                    # Feature A (subset): local `static` not supported yet.
-                    if getattr(item, "storage_class", None) == "static":
-                        self.errors.append(f"local static declaration not supported: '{item.name}'")
+                    # local `static` is supported (subset); handled by IR/codegen as a global-like symbol.
                     # C89: `extern` is a declaration; it cannot have an initializer.
                     if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:
                         self.errors.append(f"extern declaration cannot have an initializer: '{item.name}'")
@@ -445,9 +443,7 @@ class SemanticAnalyzer:
                 self._decl_types[stmt.init.name] = stmt.init.type
                 if getattr(stmt.init, "storage_class", None) == "register":
                     self._register_locals.add(stmt.init.name)
-                # Feature A (subset): local `static` not supported yet.
-                if getattr(stmt.init, "storage_class", None) == "static":
-                    self.errors.append(f"local static declaration not supported: '{stmt.init.name}'")
+                # local `static` is supported (subset); handled by IR/codegen as a global-like symbol.
                 # C89: `extern` is a declaration; it cannot have an initializer.
                 if getattr(stmt.init, "storage_class", None) == "extern" and stmt.init.initializer is not None:
                     self.errors.append(f"extern declaration cannot have an initializer: '{stmt.init.name}'")

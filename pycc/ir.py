@@ -536,11 +536,15 @@ class IRGenerator:
     # -------------
 
     def _gen_function(self, fn: FunctionDecl) -> None:
+        self._fn_name = fn.name
         self.instructions.append(IRInstruction(op="func_begin", label=fn.name))
         # reset per-function array set
         self._local_arrays = set()
         # Track declared types of locals/params for signedness decisions.
         self._var_types: dict[str, str] = {}
+        # Function-local static storage (lowered to global symbols).
+        # Maps source name -> global symbol name (without leading '@').
+        self._local_static_syms: dict[str, str] = {}
         # params are treated as locals; codegen will map them from ABI regs
         for p in fn.parameters:
             self._var_types[f"@{p.name}"] = str(p.type.base)
@@ -549,6 +553,21 @@ class IRGenerator:
         # Ensure a return exists
         self.instructions.append(IRInstruction(op="ret", operand1="$0"))
         self.instructions.append(IRInstruction(op="func_end", label=fn.name))
+        self._fn_name = None
+
+    def _current_function_name(self) -> str:
+        return str(getattr(self, "_fn_name", ""))
+
+    def _ensure_local_static_aliases(self) -> None:
+        """Best-effort aliasing of local static identifiers.
+
+        Local statics are lowered to unique global symbols, but the rest of the
+        IR generator expects identifiers to lower to `@name`. This helper makes
+        sure we have a mapping ready for the current function.
+        """
+
+        if not hasattr(self, "_local_static_syms"):
+            self._local_static_syms = {}
 
     # -------------
     # Statements
@@ -558,6 +577,40 @@ class IRGenerator:
         if isinstance(stmt, CompoundStmt):
             for item in stmt.statements:
                 if isinstance(item, Declaration):
+                    # Local static variables: lower to a unique global symbol so state persists.
+                    if getattr(item, "storage_class", None) == "static":
+                        self._ensure_local_static_aliases()
+                        gname = f"__local_static_{self._current_function_name()}_{item.name}_{self.label_counter}"
+                        self.label_counter += 1
+                        self._local_static_syms[item.name] = gname
+
+                        # Define storage once, with constant initializer if present.
+                        if getattr(item, "initializer", None) is None:
+                            self.instructions.append(IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2="$0", label="static"))
+                        else:
+                            imm = self._const_initializer_imm(item.initializer)
+                            ptr = self._const_initializer_ptr(item.initializer)
+                            if imm is None and ptr is None:
+                                raise Exception(
+                                    f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
+                                )
+                            self.instructions.append(
+                                IRInstruction(
+                                    op="gdef",
+                                    result=f"@{gname}",
+                                    operand1=item.type.base,
+                                    operand2=imm if imm is not None else ptr,
+                                    label="static",
+                                )
+                            )
+
+                        # Record type for the lowered global symbol.
+                        self._var_types[f"@{gname}"] = str(item.type.base)
+
+                        # If initializer exists, we already applied it at global init time.
+                        # Skip normal local decl/init lowering.
+                        continue
+
                     # If this is an array with known size, encode element count in operand1.
                     # Also support C89: `char s[] = "..."` (size inferred from string literal).
                     op1 = None
@@ -981,6 +1034,12 @@ class IRGenerator:
             # enum constants lower to immediates
             if hasattr(self, "_enum_constants") and expr.name in self._enum_constants:
                 return f"${self._enum_constants[expr.name]}"
+            # Resolve function-local statics.
+            if hasattr(self, "_local_static_syms"):
+                m = getattr(self, "_local_static_syms", {})
+                if expr.name in m:
+                    return f"@{m[expr.name]}"
+
             sym = f"@{expr.name}"
             # Array-to-pointer decay in rvalue context: emit explicit addr-of.
             # Our semantic/type system is minimal; detect arrays by the presence of
@@ -1031,7 +1090,11 @@ class IRGenerator:
             rhs = self._gen_expr(expr.value)
             # only handle identifier targets in MVP
             if isinstance(expr.target, Identifier):
-                dst = f"@{expr.target.name}"
+                # local statics lower to unique global symbols
+                if hasattr(self, "_local_static_syms") and expr.target.name in getattr(self, "_local_static_syms", {}):
+                    dst = f"@{self._local_static_syms[expr.target.name]}"
+                else:
+                    dst = f"@{expr.target.name}"
                 if expr.operator == "=":
                     self.instructions.append(IRInstruction(op="mov", result=dst, operand1=rhs))
                     return dst

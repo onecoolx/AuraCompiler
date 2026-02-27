@@ -2,7 +2,7 @@ from pycc.compiler import Compiler
 
 
 def test_local_static_without_initializer_is_error(tmp_path):
-    # Feature A (subset): for now, reject function-scope `static` objects.
+    # Feature A (subset): function-scope `static` objects are supported.
     code = r'''
 int main(){
   static int x;
@@ -17,11 +17,11 @@ int main(){
 
     comp = Compiler(optimize=False)
     res = comp.compile_file(str(c_path), str(out_path))
-    assert not res.success
+    assert res.success
 
 
 def test_local_static_with_initializer_is_error(tmp_path):
-    # Feature A (subset): for now, reject function-scope `static` objects.
+    # Feature A (subset): function-scope `static` objects are supported.
     code = r'''
 int main(){
   static int x = 1;
@@ -35,4 +35,4 @@ int main(){
 
     comp = Compiler(optimize=False)
     res = comp.compile_file(str(c_path), str(out_path))
-    assert not res.success
+    assert res.success
