@@ -115,6 +115,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#error` directive (subset): fail when active, ignore in skipped regions — `tests/test_preprocessor_error_directive.py`
 - (tests) `#error` ignored in `#if 0` region — `tests/test_preprocessor_error_ignored_in_inactive.py`
 - **PARTIAL** Preprocessor `#warning` directive (subset): accept and strip from output — `tests/test_preprocessor_warning_directive.py`
+- (tests) `#warning` ignored in `#if 0` region — `tests/test_preprocessor_warning_ignored_in_inactive.py`
 - **PARTIAL** Preprocessor `#undef` directive (subset): removes object-like and function-like macros — `tests/test_preprocessor_undef.py`
 - **PARTIAL** Preprocessor angle-bracket includes (subset): `#include <...>` via `-I` and system include probing — `tests/test_preprocessor_include_angle.py`
 - **PARTIAL** Preprocessor `#line` directive (subset): accept and strip from `-E` output — `tests/test_preprocessor_line_directive.py`
