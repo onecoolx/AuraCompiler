@@ -40,3 +40,35 @@ int main(){
     )
     assert res.returncode == 0, res.stderr
     assert "return xy;" in res.stdout
+
+
+def test_E_stringize_does_not_expand_macro_argument(tmp_path: Path):
+    res = _run_E(
+        tmp_path,
+        r"""
+#define A 123
+#define STR(x) #x
+const char *s = STR(A);
+""".lstrip(),
+    )
+    assert res.returncode == 0, res.stderr
+    assert 'const char *s = "A";' in res.stdout
+    assert 'const char *s = "123";' not in res.stdout
+
+
+def test_E_token_paste_does_not_expand_arguments_before_paste(tmp_path: Path):
+    res = _run_E(
+        tmp_path,
+        r"""
+#define A x
+#define B y
+#define CAT(a,b) a##b
+int xy = 9;
+int main(){ return CAT(A, B); }
+""".lstrip(),
+    )
+    assert res.returncode == 0, res.stderr
+    # Args are expanded before being substituted into the macro body in this
+    # subset, but pasted results are not rescanned for further expansion.
+    assert "return AB;" in res.stdout
+    assert "return xy;" not in res.stdout
