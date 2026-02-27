@@ -4,6 +4,7 @@ import os
 import re
 import subprocess
 import shutil
+from datetime import datetime
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Union
 
@@ -725,7 +726,14 @@ class Preprocessor:
         # Expand function-like invocations first (best-effort), then object-like macros.
         expanded = line
         expanded = self._expand_function_like_macros(expanded, macros)
-        if "__LINE__" in expanded or "__FILE__" in expanded:
+        if (
+            "__LINE__" in expanded
+            or "__FILE__" in expanded
+            or "__STDC__" in expanded
+            or "__DATE__" in expanded
+            or "__TIME__" in expanded
+            or "__COUNTER__" in expanded
+        ):
             expanded = self._expand_builtin_macros(expanded, filename=filename, line_no=line_no)
         expanded = self._expand_object_like_macros(expanded, macros)
         return expanded
@@ -737,6 +745,12 @@ class Preprocessor:
         file_str = file_str.replace("\\", "\\\\").replace('"', '\\"')
         file_lit = f'"{file_str}"'
         line_lit = str(int(line_no))
+        # __DATE__ and __TIME__ use current datetime (subset).
+        now = datetime.now()
+        date_lit = now.strftime('%b %d %Y')
+        time_lit = now.strftime('%H:%M:%S')
+        date_lit = f'"{date_lit}"'
+        time_lit = f'"{time_lit}"'
 
         out: List[str] = []
         i = 0
@@ -789,6 +803,12 @@ class Preprocessor:
                     out.append(line_lit)
                 elif ident == "__FILE__":
                     out.append(file_lit)
+                elif ident == "__DATE__":
+                    out.append(date_lit)
+                elif ident == "__TIME__":
+                    out.append(time_lit)
+                elif ident == "__STDC__":
+                    out.append("1")
                 else:
                     out.append(ident)
                 continue
