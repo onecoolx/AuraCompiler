@@ -53,6 +53,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** load sign/zero extension for `char`/`short` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** compound assignment truncation for `char`/`short` (tests) — `tests/test_int_conversions.py`
 - **PARTIAL** pointer arithmetic completeness — `tests/test_pointer_arith.py` (more TODO)
+  - [x] `char*` pointer difference in elements (subset) — `tests/test_pointer_arith.py`
 
 ### Statements / Control Flow
 

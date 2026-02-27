@@ -59,3 +59,16 @@ int main(){
 }
 '''.lstrip()
         assert _compile_and_run(tmp_path, code) == 3
+
+
+def test_char_pointer_difference_in_elements(tmp_path):
+    # (p2 - p1) should be the element distance for char*.
+    code = r'''
+int main(){
+    char a[5];
+    char *p1 = a;
+    char *p2 = a + 3;
+    return (int)(p2 - p1);
+}
+'''.lstrip()
+    assert _compile_and_run(tmp_path, code) == 3
