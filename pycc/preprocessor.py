@@ -366,6 +366,11 @@ class Preprocessor:
         if abspath in stack:
             raise RuntimeError(f"include cycle detected: {abspath}")
 
+        # Per-file __COUNTER__ semantics: save and reset the instance counter
+        # while preprocessing this file so each file's __COUNTER__ starts at 0.
+        old_counter = getattr(self, "_counter", 0)
+        self._counter = 0
+
         stack.append(abspath)
         try:
             raw = open(abspath, "r", encoding="utf-8").read().splitlines(True)
@@ -646,6 +651,8 @@ class Preprocessor:
             out_lines.append(self._expand_line(line, macros, filename=abspath, line_no=logical_line_no))
 
         stack.pop()
+        # restore counter for the including context
+        self._counter = old_counter
         return "".join(out_lines)
 
     def _strip_comments(self, line: str, in_block: bool) -> Tuple[str, bool]:
