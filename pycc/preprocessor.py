@@ -233,6 +233,17 @@ class Preprocessor:
                 i += 1
                 continue
             if ch.isdigit():
+                # integer literal: decimal / octal (leading 0) / hex (0x...)
+                if ch == "0" and i + 1 < n and expr[i + 1] in ("x", "X"):
+                    j = i + 2
+                    while j < n and (expr[j].isdigit() or ("a" <= expr[j].lower() <= "f")):
+                        j += 1
+                    if j == i + 2:
+                        raise RuntimeError(f"unsupported #if expression: invalid hex literal in {expr!r}")
+                    toks.append(expr[i:j])
+                    i = j
+                    continue
+
                 j = i + 1
                 while j < n and expr[j].isdigit():
                     j += 1
@@ -428,8 +439,13 @@ class Preprocessor:
                 raise RuntimeError("unsupported #if expression: unexpected end")
             self._i += 1
 
-            if tok.isdigit():
-                return int(tok)
+            if tok.isdigit() or (tok.startswith(("0x", "0X")) and len(tok) > 2):
+                if tok.startswith(("0x", "0X")):
+                    return int(tok, 16)
+                # C-like octal for leading-zero literals (but keep "0" as 0)
+                if len(tok) > 1 and tok.startswith("0"):
+                    return int(tok, 8)
+                return int(tok, 10)
 
             # defined operator
             if tok == "defined":
