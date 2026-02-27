@@ -93,6 +93,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#pragma once` (subset): strip from output + honor include-once semantics (active-region only) — `tests/test_preprocessor_pragma_once.py`, `tests/test_preprocessor_include_guards.py`, `tests/test_preprocessor_pragma_once_edges.py`
 - (tests) `#pragma once` breaks mutual include cycles (subset) — `tests/test_preprocessor_include_cycle_pragma_once.py`
 - (tests) `#pragma once` path equivalence (same file, different include spellings) — `tests/test_preprocessor_pragma_once_path_equivalence.py`
+- (tests) `#pragma once` symlink/realpath equivalence (subset) — `tests/test_preprocessor_pragma_once_symlink.py`
 - **PARTIAL** Preprocessor strips comments (subset): `//` and `/* ... */` (incl. multiline) — `tests/test_preprocessor_comments.py`
 - **PARTIAL** Preprocessor rescans object-like macros (subset): chained defines expand to fixed point (bounded; cycle-safe) — `tests/test_preprocessor_macro_rescan.py`, `tests/test_preprocessor_macro_cycle.py`
 - **PARTIAL** Preprocessor `#error` directive (subset): fail when active, ignore in skipped regions — `tests/test_preprocessor_error_directive.py`
