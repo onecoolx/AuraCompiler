@@ -141,6 +141,7 @@ class Preprocessor:
         self._pragma_once_re = re.compile(r"^\s*#\s*pragma\s+once\s*$")
         self._error_re = re.compile(r"^\s*#\s*error\b(.*)$")
         self._warning_re = re.compile(r"^\s*#\s*warning\b(.*)$")
+        self._counter = 0
         user_paths = [os.path.abspath(p) for p in (include_paths or [])]
         probed = [p for p in _probe_system_include_paths() if os.path.isdir(p)]
         # Fallback defaults if probing fails.
@@ -809,6 +810,9 @@ class Preprocessor:
                     out.append(time_lit)
                 elif ident == "__STDC__":
                     out.append("1")
+                elif ident == "__COUNTER__":
+                    out.append(str(self._counter))
+                    self._counter += 1
                 else:
                     out.append(ident)
                 continue
@@ -980,6 +984,10 @@ class Preprocessor:
         args: List[str] = []
         cur: List[str] = []
         depth = 0
+        # If arg_text is empty or only whitespace, this is a zero-argument call.
+        if arg_text.strip() == "":
+            return []
+
         for ch in arg_text:
             if ch == "," and depth == 0:
                 args.append("".join(cur).strip())
@@ -992,7 +1000,7 @@ class Preprocessor:
                     depth -= 1
             cur.append(ch)
         tail = "".join(cur).strip()
-        if tail or arg_text.strip() == "":
+        if tail:
             args.append(tail)
         return args
 

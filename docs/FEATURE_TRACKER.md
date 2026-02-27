@@ -105,6 +105,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor macro expansion safety (subset): no expansion inside string/char literals; identifier-only substitution — `tests/test_preprocessor_macro_expansion_edges.py`
 - **PARTIAL** Preprocessor predefined macros (subset): `__LINE__`, `__FILE__` — `tests/test_preprocessor_builtin_macros_line_file.py`
 - **PARTIAL** Preprocessor predefined macros (subset): `__LINE__`, `__FILE__`, `__STDC__`, `__DATE__`, `__TIME__` — `tests/test_preprocessor_builtin_macros_line_file.py`, `tests/test_preprocessor_builtin_macros_c89.py`
+- **PARTIAL** Preprocessor predefined macros (subset): `__LINE__`, `__FILE__`, `__STDC__`, `__DATE__`, `__TIME__`, `__COUNTER__` (per-instance monotonic counter) — `tests/test_preprocessor_builtin_macros_line_file.py`, `tests/test_preprocessor_builtin_macros_c89.py`, `tests/test_preprocessor_counter.py`
 - **PARTIAL** Preprocessor multiline object-like `#define` (subset): line continuation with trailing `\\` — `tests/test_preprocessor_define_multiline.py`
 - **PARTIAL** Driver supports multiple inputs (subset): `pycc.py file1.c file2.c -o a.out` — `tests/test_driver_multi_file_cli.py`
 - **PARTIAL** Multi-input + `--use-system-cpp` (glibc headers + multi-TU link) — `tests/test_driver_multi_file_system_cpp.py`
