@@ -361,7 +361,10 @@ class SemanticAnalyzer:
 
     def _lookup_decl_type(self, name: str) -> Optional[Type]:
         # Best-effort: types are recorded in a side table during statement analysis.
-        return getattr(self, "_decl_types", {}).get(name)
+        ty = getattr(self, "_decl_types", {}).get(name)
+        if ty is None:
+            ty = getattr(self, "_global_decl_types", {}).get(name)
+        return ty
 
     def _is_declared(self, name: str) -> bool:
         for scope in reversed(self._scopes):
@@ -374,13 +377,15 @@ class SemanticAnalyzer:
     # -----------------
 
     def _analyze_function(self, fn: FunctionDecl) -> None:
+        # Ensure function locals/params are declared in a scope that remains
+        # active for the whole function body analysis.
         self._push_scope()
+        # reset per-function declared-type table
+        self._decl_types = {}
         # function-scoped labels (C89)
         self._labels_defined: Set[str] = set()
         self._labels_gotoed: Set[str] = set()
         # best-effort map of identifier -> declared Type
-        if not hasattr(self, "_decl_types"):
-            self._decl_types = {}
         for p in fn.parameters:
             # C89: parameter of type void is invalid (except sole parameter list 'void').
             if getattr(p, "type", None) is not None and getattr(p.type, "base", None) == "void":
@@ -389,10 +394,29 @@ class SemanticAnalyzer:
             self._decl_types[p.name] = p.type
         # track register locals so we can reject `&register_var` (C89 rule)
         self._register_locals: Set[str] = set()
-        self._analyze_stmt(fn.body)
+        # Analyze the function body *without* introducing an extra nested
+        # scope for the outermost compound statement, so locals declared in the
+        # body stay visible across all statements.
+        if isinstance(fn.body, CompoundStmt):
+            for item in fn.body.statements:
+                if isinstance(item, Declaration):
+                    self._declare_local(item.name, "variable")
+                    self._decl_types[item.name] = item.type
+                    if getattr(item, "storage_class", None) == "register":
+                        self._register_locals.add(item.name)
+                    if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:
+                        self.errors.append(f"extern declaration cannot have an initializer: '{item.name}'")
+                    if item.initializer is not None:
+                        self._analyze_expr(item.initializer)
+                else:
+                    self._analyze_stmt(item)
+        else:
+            self._analyze_stmt(fn.body)
         missing = sorted(self._labels_gotoed - self._labels_defined)
         for m in missing:
             self.errors.append(f"Undefined label '{m}'")
+        # Keep locals/params visible throughout analysis; pop now that we're
+        # done analyzing the entire function.
         self._pop_scope()
 
     def _analyze_stmt(self, stmt: Statement) -> None:
@@ -488,13 +512,19 @@ class SemanticAnalyzer:
             # enum constants are always in-scope as integer constants
             if expr.name in getattr(self, "_enum_constants", {}):
                 return
-            if not self._is_declared(expr.name):
+            # Best-effort: treat names with known declared types as declared.
+            if self._lookup_decl_type(expr.name) is None and not self._is_declared(expr.name):
                 # C89 implicit extern/implicit int isn't desired for variables.
                 # But allow unknown names if they are used as function identifiers.
                 self.errors.append(f"Use of undeclared identifier: {expr.name}")
             return
 
         if isinstance(expr, BinaryOp):
+            # Ensure identifiers are validated before we do operator checks that
+            # require type lookup.
+            self._analyze_expr(expr.left)
+            self._analyze_expr(expr.right)
+
             # C89/C99: pointer arithmetic on void* is not allowed.
             # Best-effort: reject `void* +/- integer` and `integer +/- void*`.
             if expr.operator in {"+", "-"}:
@@ -512,8 +542,35 @@ class SemanticAnalyzer:
                 if _is_void_ptr(expr.left) or _is_void_ptr(expr.right):
                     self.errors.append("void* pointer arithmetic is not allowed")
 
-            self._analyze_expr(expr.left)
-            self._analyze_expr(expr.right)
+            # C89/C99: pointer + pointer is not allowed (only pointer +/- integer,
+            # and pointer - pointer). Catch identifiers, casts, and arrays which
+            # decay to pointers in most expressions.
+            if expr.operator == "+":
+                def _is_ptrlike(e: Expression) -> bool:
+                    if isinstance(e, Identifier):
+                        ty = self._lookup_decl_type(e.name)
+                        if ty is None:
+                            return False
+                        return bool(getattr(ty, "is_pointer", False))
+                    if isinstance(e, Cast):
+                        to_ty = getattr(e, "to_type", None)
+                        return bool(to_ty is not None and getattr(to_ty, "is_pointer", False))
+                    # Handle simple pointer expressions like `a + 1`.
+                    if isinstance(e, BinaryOp) and e.operator in {"+", "-"}:
+                        return _is_ptrlike(e.left) or _is_ptrlike(e.right)
+                    return False
+
+                # Detect any pointer-like expression on the left/right.
+                if _is_ptrlike(expr.left) and _is_ptrlike(expr.right):
+                    self.errors.append("pointer + pointer is not allowed")
+
+            # Ensure we still analyze nested expressions for other checks.
+
+            return
+
+        if isinstance(expr, Cast):
+            # Analyze the inner expression; type-checking is minimal for now.
+            self._analyze_expr(expr.expression)
             return
 
         if isinstance(expr, UnaryOp):
@@ -521,6 +578,23 @@ class SemanticAnalyzer:
             if expr.operator == "&" and isinstance(expr.operand, Identifier):
                 if expr.operand.name in getattr(self, "_register_locals", set()):
                     self.errors.append(f"Cannot take address of register variable '{expr.operand.name}'")
+            if expr.operator == "+":
+                def _is_ptrlike(e: Expression) -> bool:
+                    if isinstance(e, Identifier):
+                        ty = self._lookup_decl_type(e.name)
+                        if ty is None:
+                            return False
+                        return bool(getattr(ty, "is_pointer", False))
+                    if isinstance(e, Cast):
+                        to_ty = getattr(e, "to_type", None)
+                        return bool(to_ty is not None and getattr(to_ty, "is_pointer", False))
+                    # Handle simple pointer expressions like `a + 1`.
+                    if isinstance(e, BinaryOp) and e.operator in {"+", "-"}:
+                        return _is_ptrlike(e.left) or _is_ptrlike(e.right)
+                    return False
+                # Detect any pointer-like expression on the left/right.
+                if _is_ptrlike(expr.left) and _is_ptrlike(expr.right):
+                    self.errors.append("pointer + pointer is not allowed")
             self._analyze_expr(expr.operand)
             return
 

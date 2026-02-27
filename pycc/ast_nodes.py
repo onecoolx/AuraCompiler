@@ -49,6 +49,12 @@ class Type(ASTNode):
             result += " *"
         return result
 
+    @property
+    def is_array(self) -> bool:
+        # Parser encodes arrays via Declaration.array_size; the Type itself
+        # remains the element type. Keep this as a conservative default.
+        return False
+
 
 @dataclass
 class ArrayType(ASTNode):

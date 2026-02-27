@@ -176,9 +176,11 @@ class Compiler:
         
         # Phase 3: Semantic Analysis
         try:
-            sema_ctx = self.analyze_semantics(ast)
+            sema_ctx, analyzer = self.analyze_semantics(ast)
+            warnings.extend(list(getattr(analyzer, "warnings", []) or []))
         except Exception as e:
-            return CompilationResult(success=False, errors=[f"Semantic analysis failed: {e}"])
+            # Surface SemanticError and any other semantic-stage exception.
+            return CompilationResult(success=False, errors=[f"Semantic analysis failed: {e}"], warnings=warnings)
         
         # Phase 4: IR Generation
         try:
@@ -411,7 +413,8 @@ class Compiler:
     def analyze_semantics(self, ast):
         """Perform semantic analysis"""
         analyzer = SemanticAnalyzer()
-        return analyzer.analyze(ast)
+        sema_ctx = analyzer.analyze(ast)
+        return sema_ctx, analyzer
     
     def get_ir(self, ast, sema_ctx=None):
         """Generate IR from AST"""
