@@ -24,6 +24,7 @@ Rule: every new feature must add/extend tests under `tests/`.
   - [x] reject global `register` — `tests/test_storage_class_auto_register_global_rejected.py`
   - [x] reject global `auto` — `tests/test_storage_class_auto_register_global_rejected.py`
   - [x] reject `register` parameters (subset) — `tests/test_storage_class_register_param_rejected.py`
+  - [x] accept `register` locals (treated as normal locals) — `tests/test_storage_class_register_local_ok.py`
 - **PARTIAL** full declarator grammar (function pointers etc.) — TODO
 - **PARTIAL** `const` qualifier: reject assignment and compound assignment to const locals/globals (subset) — `tests/test_const.py`
 - **PARTIAL** `const` qualifier: reject assignment through `*p` when `p` is const-qualified pointer (subset) — `tests/test_const_pointer.py`
