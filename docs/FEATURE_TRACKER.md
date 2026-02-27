@@ -56,6 +56,7 @@ Rule: every new feature must add/extend tests under `tests/`.
   - [x] `char*` pointer difference in elements (subset) — `tests/test_pointer_arith.py`
   - [x] `short*` pointer difference in elements (subset) — `tests/test_pointer_arith.py`
   - [x] `long*` pointer difference in elements (subset) — `tests/test_pointer_arith_long.py`
+  - [x] unsigned `char*`/`short*` pointer difference in elements (subset) — `tests/test_pointer_arith_unsigned.py`
 
 ### Statements / Control Flow
 
