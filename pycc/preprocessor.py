@@ -683,6 +683,11 @@ class Preprocessor:
             mifdef = self._if_defined_re.match(line)
             if mifdef:
                 parent = include_stack[-1]
+                if not parent:
+                    # In inactive regions, do not parse/validate directive arguments.
+                    include_stack.append(False)
+                    taken_stack.append(False)
+                    continue
                 neg = bool(mifdef.group(1))
                 name = mifdef.group(2) or mifdef.group(3) or ""
                 cond_true = (name in macros)
@@ -694,6 +699,10 @@ class Preprocessor:
             mifname = self._if_name_re.match(line)
             if mifname:
                 parent = include_stack[-1]
+                if not parent:
+                    include_stack.append(False)
+                    taken_stack.append(False)
+                    continue
                 name = mifname.group(1)
                 cond_true = self._eval_if_expr_strict_01(name, macros)
                 include_stack.append(parent and cond_true)
@@ -702,6 +711,10 @@ class Preprocessor:
             mifexpr = self._if_expr_re.match(line)
             if mifexpr:
                 parent = include_stack[-1]
+                if not parent:
+                    include_stack.append(False)
+                    taken_stack.append(False)
+                    continue
                 expr = mifexpr.group(1)
                 cond_true = self._eval_if_expr(expr, macros)
                 include_stack.append(parent and cond_true)
