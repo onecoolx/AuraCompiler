@@ -95,6 +95,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#if` comma operator (subset): `,` — `tests/test_preprocessor_if_comma.py`
 - **PARTIAL** Preprocessor `#if` hex/octal integer literals (subset): `0x..` and leading-zero octal — `tests/test_preprocessor_if_numeric_bases.py`
 - **PARTIAL** Preprocessor `#if` character constants (subset): `'A'`, `\n`, `\t`, `\0`, `\\`, `\'` — `tests/test_preprocessor_if_char_literals_basic.py`
+- **PARTIAL** Preprocessor `#if` character constants hex/octal escapes (subset): `\xNN` and `\ooo` — `tests/test_preprocessor_if_char_literals_escapes.py`
 - **PARTIAL** Preprocessor rejects `#include_next` (subset): fail fast with explicit error — `tests/test_preprocessor_include_next.py`
 - **PARTIAL** Preprocessor `#pragma once` (subset): strip from output + honor include-once semantics (active-region only) — `tests/test_preprocessor_pragma_once.py`, `tests/test_preprocessor_include_guards.py`, `tests/test_preprocessor_pragma_once_edges.py`
 - (tests) `#pragma once` breaks mutual include cycles (subset) — `tests/test_preprocessor_include_cycle_pragma_once.py`

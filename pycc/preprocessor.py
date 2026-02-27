@@ -268,7 +268,26 @@ class Preprocessor:
                     j += 1
                     if j >= n:
                         raise RuntimeError(f"unsupported #if expression: unterminated character constant in {expr!r}")
-                    j += 1  # consume one escape char (subset)
+                    # Support basic escapes plus \xNN and \ooo (subset)
+                    if expr[j] in ("n", "t", "\\", "'"):
+                        j += 1
+                    elif expr[j] in ("x", "X"):
+                        j += 1
+                        k = j
+                        # 1-2 hex digits
+                        while k < n and (expr[k].isdigit() or ("a" <= expr[k].lower() <= "f")) and (k - j) < 2:
+                            k += 1
+                        if k == j:
+                            raise RuntimeError(f"unsupported #if expression: invalid character constant in {expr!r}")
+                        j = k
+                    elif expr[j] in ("0", "1", "2", "3", "4", "5", "6", "7"):
+                        k = j
+                        # 1-3 octal digits
+                        while k < n and expr[k] in ("0", "1", "2", "3", "4", "5", "6", "7") and (k - j) < 3:
+                            k += 1
+                        j = k
+                    else:
+                        raise RuntimeError(f"unsupported #if expression: invalid character constant in {expr!r}")
                 else:
                     j += 1  # consume one char
 
@@ -473,18 +492,28 @@ class Preprocessor:
                 inner = tok[1:-1]
                 if len(inner) == 1:
                     return ord(inner)
-                if len(inner) == 2 and inner[0] == "\\":
+                if inner.startswith("\\") and len(inner) >= 2:
                     esc = inner[1]
                     if esc == "n":
                         return 10
                     if esc == "t":
                         return 9
-                    if esc == "0":
-                        return 0
                     if esc == "\\":
                         return 92
                     if esc == "'":
                         return 39
+                    if esc in ("x", "X"):
+                        hx = inner[2:]
+                        if not (1 <= len(hx) <= 2) or not re.match(r"^[0-9A-Fa-f]+$", hx):
+                            raise RuntimeError(f"unsupported #if expression: unsupported character constant {tok!r}")
+                        return int(hx, 16)
+                    if esc in ("0", "1", "2", "3", "4", "5", "6", "7"):
+                        # octal escape: token is already bounded to 1-3 digits
+                        # by the tokenizer (subset), so parse all remaining digits.
+                        oc = inner[1:]
+                        if not (1 <= len(oc) <= 3) or not re.match(r"^[0-7]+$", oc):
+                            raise RuntimeError(f"unsupported #if expression: unsupported character constant {tok!r}")
+                        return int(oc, 8)
                 raise RuntimeError(f"unsupported #if expression: unsupported character constant {tok!r}")
 
             # defined operator
