@@ -84,6 +84,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor stage (`-E`) (subset: passthrough + local `#include "file"` + object-like `#define` + `#undef` + `#ifdef/#ifndef` + `#if 0/1` and `#if NAME` (NAME expands to 0/1) with `#elif 0/1` and `#elif NAME` + `#else`) — `tests/test_preprocessor_E.py`, `tests/test_preprocessor_include.py`, `tests/test_preprocessor_define.py`, `tests/test_preprocessor_undef.py`, `tests/test_preprocessor_ifdef.py`, `tests/test_preprocessor_if0.py`, `tests/test_preprocessor_if_macro.py`, `tests/test_preprocessor_else.py`, `tests/test_preprocessor_elif.py`
 - (tests) nested conditional handling — `tests/test_preprocessor_nested_conditionals.py`
 - (tests) preprocessor does not parse directives in inactive regions (subset): malformed #if expressions in `#if 0` blocks are ignored — `tests/test_preprocessor_defined_inactive_branch_no_error.py`
+- (tests) `#define` in inactive region has no effect — `tests/test_preprocessor_define_ignored_in_inactive.py`
 - (tests) directive whitespace tolerance — `tests/test_preprocessor_directive_whitespace.py`
 - **PARTIAL** Preprocessor `#ifndef` directive (subset): conditional inclusion when macro is undefined — `tests/test_preprocessor_ifndef.py`
 - **PARTIAL** Preprocessor `defined` in `#if/#elif` (subset): `defined(X)` / `defined X` and negated forms — `tests/test_preprocessor_defined.py`
