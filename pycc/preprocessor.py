@@ -224,11 +224,11 @@ class Preprocessor:
             # Two-char operators
             if i + 1 < n:
                 two = expr[i : i + 2]
-                if two in ("&&", "||", "==", "!="):
+                if two in ("&&", "||", "==", "!=", "<<", ">>", "<=", ">="):
                     toks.append(two)
                     i += 2
                     continue
-            if ch in ("(", ")", "!", "+", "-"):
+            if ch in ("(", ")", "!", "+", "-", "~", "&", "|", "^", "<", ">"):
                 toks.append(ch)
                 i += 1
                 continue
@@ -282,22 +282,79 @@ class Preprocessor:
             return v
 
         def _parse_and(self) -> int:
-            v = self._parse_eq()
+            v = self._parse_bitor()
             while self._eat("&&"):
-                rhs = self._parse_eq()
+                rhs = self._parse_bitor()
                 v = 1 if (v != 0 and rhs != 0) else 0
             return v
 
+        def _parse_bitor(self) -> int:
+            v = self._parse_bitxor()
+            while self._eat("|"):
+                rhs = self._parse_bitxor()
+                v = v | rhs
+            return v
+
+        def _parse_bitxor(self) -> int:
+            v = self._parse_bitand()
+            while self._eat("^"):
+                rhs = self._parse_bitand()
+                v = v ^ rhs
+            return v
+
+        def _parse_bitand(self) -> int:
+            v = self._parse_eq()
+            while self._eat("&"):
+                rhs = self._parse_eq()
+                v = v & rhs
+            return v
+
         def _parse_eq(self) -> int:
-            v = self._parse_add()
+            v = self._parse_rel()
             while True:
                 if self._eat("=="):
-                    rhs = self._parse_add()
+                    rhs = self._parse_rel()
                     v = 1 if v == rhs else 0
                     continue
                 if self._eat("!="):
-                    rhs = self._parse_add()
+                    rhs = self._parse_rel()
                     v = 1 if v != rhs else 0
+                    continue
+                break
+            return v
+
+        def _parse_rel(self) -> int:
+            v = self._parse_shift()
+            while True:
+                if self._eat("<"):
+                    rhs = self._parse_shift()
+                    v = 1 if v < rhs else 0
+                    continue
+                if self._eat(">"):
+                    rhs = self._parse_shift()
+                    v = 1 if v > rhs else 0
+                    continue
+                if self._eat("<="):
+                    rhs = self._parse_shift()
+                    v = 1 if v <= rhs else 0
+                    continue
+                if self._eat(">="):
+                    rhs = self._parse_shift()
+                    v = 1 if v >= rhs else 0
+                    continue
+                break
+            return v
+
+        def _parse_shift(self) -> int:
+            v = self._parse_add()
+            while True:
+                if self._eat("<<"):
+                    rhs = self._parse_add()
+                    v = v << rhs
+                    continue
+                if self._eat(">>"):
+                    rhs = self._parse_add()
+                    v = v >> rhs
                     continue
                 break
             return v
@@ -317,6 +374,12 @@ class Preprocessor:
         def _parse_unary(self) -> int:
             if self._eat("!"):
                 return 0 if self._parse_unary() != 0 else 1
+            if self._eat("~"):
+                return ~self._parse_unary()
+            if self._eat("+"):
+                return +self._parse_unary()
+            if self._eat("-"):
+                return -self._parse_unary()
             return self._parse_primary()
 
         def _parse_primary(self) -> int:

@@ -89,6 +89,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#elifdef/#elifndef` directives (subset): `#elifdef X` and `#elifndef X` — `tests/test_preprocessor_elifdef_elifndef.py`
 - **PARTIAL** Preprocessor `#if` expression evaluation (subset): `!`, `&&`, `||`, `==`, `!=`, `+`, `-`, parentheses, integers, identifiers (best-effort) — `tests/test_preprocessor_if_expr.py`
 - **PARTIAL** Preprocessor `#elif` expression evaluation (subset): `#elif <expr>` using same evaluator as `#if` — `tests/test_preprocessor_elif_expr.py`
+- **PARTIAL** Preprocessor `#if` bitwise/shift operators (subset): `& | ^ ~ << >>` (+ `<, >, <=, >=` for comparisons) — `tests/test_preprocessor_if_bitwise.py`
 - **PARTIAL** Preprocessor rejects `#include_next` (subset): fail fast with explicit error — `tests/test_preprocessor_include_next.py`
 - **PARTIAL** Preprocessor `#pragma once` (subset): strip from output + honor include-once semantics (active-region only) — `tests/test_preprocessor_pragma_once.py`, `tests/test_preprocessor_include_guards.py`, `tests/test_preprocessor_pragma_once_edges.py`
 - (tests) `#pragma once` breaks mutual include cycles (subset) — `tests/test_preprocessor_include_cycle_pragma_once.py`
