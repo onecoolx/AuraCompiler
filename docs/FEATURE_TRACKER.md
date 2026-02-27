@@ -55,6 +55,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** pointer arithmetic completeness — `tests/test_pointer_arith.py` (more TODO)
   - [x] `char*` pointer difference in elements (subset) — `tests/test_pointer_arith.py`
   - [x] `short*` pointer difference in elements (subset) — `tests/test_pointer_arith.py`
+  - [x] `long*` pointer difference in elements (subset) — `tests/test_pointer_arith_long.py`
 
 ### Statements / Control Flow
 
