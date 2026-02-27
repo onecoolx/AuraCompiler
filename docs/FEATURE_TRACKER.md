@@ -92,6 +92,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** Preprocessor `#if` bitwise/shift operators (subset): `& | ^ ~ << >>` (+ `<, >, <=, >=` for comparisons) — `tests/test_preprocessor_if_bitwise.py`
 - (tests) Preprocessor `#if` unary bitwise not precedence/behavior (subset): `~` — `tests/test_preprocessor_if_unary_bitwise_not.py`
 - (tests) Preprocessor `#if` unary plus/minus precedence/behavior (subset): `+` / `-` — `tests/test_preprocessor_if_unary_plus_minus.py`
+- (tests) Preprocessor macro re-expansion suppression (subset / hide-set-like): recursive macros terminate — `tests/test_preprocessor_macro_hideset.py`
 - **PARTIAL** Preprocessor `#if` multiplicative operators (subset): `* / %` — `tests/test_preprocessor_if_mul_div_mod.py`
 - **PARTIAL** Preprocessor `#if` ternary operator (subset): `?:` — `tests/test_preprocessor_if_ternary.py`
 - **PARTIAL** Preprocessor `#if` comma operator (subset): `,` — `tests/test_preprocessor_if_comma.py`
