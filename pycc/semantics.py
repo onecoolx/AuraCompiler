@@ -52,6 +52,7 @@ from pycc.ast_nodes import (
         Type,
         MemberAccess,
         PointerMemberAccess,
+    Cast,
 )
 
 
@@ -494,6 +495,23 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, BinaryOp):
+            # C89/C99: pointer arithmetic on void* is not allowed.
+            # Best-effort: reject `void* +/- integer` and `integer +/- void*`.
+            if expr.operator in {"+", "-"}:
+                def _is_void_ptr(e: Expression) -> bool:
+                    if isinstance(e, Identifier):
+                        ty = getattr(self, "_decl_types", {}).get(e.name)
+                        if ty is None:
+                            ty = getattr(self, "_global_decl_types", {}).get(e.name)
+                        return bool(ty is not None and getattr(ty, "is_pointer", False) and getattr(ty, "base", None) == "void")
+                    if isinstance(e, Cast):
+                        to_ty = getattr(e, "to_type", None)
+                        return bool(to_ty is not None and getattr(to_ty, "is_pointer", False) and getattr(to_ty, "base", None) == "void")
+                    return False
+
+                if _is_void_ptr(expr.left) or _is_void_ptr(expr.right):
+                    self.errors.append("void* pointer arithmetic is not allowed")
+
             self._analyze_expr(expr.left)
             self._analyze_expr(expr.right)
             return
