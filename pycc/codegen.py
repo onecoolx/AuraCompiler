@@ -350,6 +350,32 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "store":
+            # *(operand1) = result
+            # Best-effort: choose width based on pointer pointee type.
+            addr = ins.operand1 or ""
+            val = ins.result
+            elem_sz = 4
+            base_ty = None
+            if isinstance(addr, str):
+                base_ty = self._var_types.get(addr)
+                if base_ty is None and addr.startswith("@") and self._sema_ctx is not None:
+                    base_ty = getattr(self._sema_ctx, "global_types", {}).get(addr[1:], None)
+            if isinstance(base_ty, str) and "*" in base_ty:
+                elem_sz = self._pointee_size_bytes(base_ty)
+
+            self._load_operand(addr, "%rax")
+            self._load_operand(val, "%rdx")
+            if elem_sz == 1:
+                self._emit("  movb %dl, (%rax)")
+            elif elem_sz == 2:
+                self._emit("  movw %dx, (%rax)")
+            elif elem_sz == 4:
+                self._emit("  movl %edx, (%rax)")
+            else:
+                self._emit("  movq %rdx, (%rax)")
+            return
+
         if op == "mov_addr":
             # result = &operand1 (more explicit than addr_of in cases where operand1
             # is an lvalue expression already resolved to a symbol)

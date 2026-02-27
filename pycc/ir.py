@@ -1121,6 +1121,12 @@ class IRGenerator:
                     self._var_types[dst] = cty
                 self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
                 return dst
+
+            # handle pointer deref store: *p = rhs
+            if expr.operator == "=" and isinstance(expr.target, UnaryOp) and expr.target.operator == "*":
+                addr = self._gen_expr(expr.target.operand)
+                self.instructions.append(IRInstruction(op="store", result=rhs, operand1=addr))
+                return rhs
             # handle array element store: target is ArrayAccess
             if isinstance(expr.target, ArrayAccess):
                 base = self._gen_expr(expr.target.array)
