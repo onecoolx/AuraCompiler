@@ -209,7 +209,7 @@ Representative tests added:
 
 - Equality pointer comparisons now reject:
     - pointer vs non-pointer comparisons (e.g. `p == 1`)
-    - while allowing comparisons to null pointer constant subset (currently: literal `0` / casts of `0`).
+    - while allowing comparisons to null pointer constant subset (currently: literal `0` / casts of `0`, including pointer casts like `(int*)0`).
 
 ---
 
