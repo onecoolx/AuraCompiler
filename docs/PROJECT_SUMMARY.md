@@ -107,7 +107,16 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 - **DONE**: `&&` / `||` short-circuit.
 - **PARTIAL**: Type checking (best-effort), implicit function declarations (C89-style) for external calls.
 - **TODO**: Integer promotions + usual arithmetic conversions.
-- **TODO**: Pointer conversions and more complete pointer arithmetic rules.
+- **PARTIAL**: Pointer conversions and pointer operations (best-effort, tested):
+    - **DONE**: Pointer +/- integer scaling by pointee size.
+    - **DONE**: Pointer - pointer yields element distance (not bytes).
+    - **DONE**: Unary dereference `*(p + i)` (read) via IR `load`.
+    - **DONE**: Store-through-pointer `*p = v` (write) via IR `store`.
+    - **DONE**: Pointer comparisons `== != < <= > >=` for common cases.
+    - **DONE (conservative)**: Reject pointer + pointer.
+    - **DONE (conservative)**: Reject `void*` subtraction.
+    - **DONE (conservative)**: Reject pointer subtraction for different base types (e.g. `int* - char*`).
+    - **TODO**: More complete pointer conversions/qualification rules and diagnostics.
 
 ### Statements / Control flow
 
@@ -124,6 +133,72 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 
 - **DONE**: pytest suite covering many implemented features.
 - **TODO**: Systematic conformance suite for C89 (feature matrix + targeted tests) and behavior comparison with `gcc -std=c89`.
+
+---
+
+## Part 2.6: Design Notes & Long-Term Memory (living)
+
+This section captures **how we are extending C89 coverage** in a way that is robust to context loss.
+
+### 2.6.1 Development workflow (contract)
+
+- Drive changes by **pytest tests** first.
+- Keep the suite green; use **small commits**.
+- When a new test reveals a missing traversal/typing edge, prefer:
+    1) fix traversal in `pycc/semantics.py`,
+    2) fix lowering in `pycc/ir.py`,
+    3) fix emission in `pycc/codegen.py`,
+    4) then add/extend tests.
+
+### 2.6.2 Current pointer operation design (MVP rules)
+
+The compiler is intentionally "stringly-typed" in the IR/codegen boundary.
+We keep enough type info to choose element widths and scale pointer arithmetic.
+
+#### Key IR ops
+
+- `load`: `result = *(operand1)`
+- `store`: `*(operand1) = result`
+
+Both are implemented in `pycc/codegen.py` with **best-effort width selection** based on the pointer's pointee type.
+
+#### Pointer arithmetic lowering (IR)
+
+- For `ptr +/- int`: scale the integer by pointee size (e.g. `int*` scales by 4).
+- For `ptr - ptr`: compute byte difference and divide by pointee size to return element count.
+- Propagate pointer type through temporaries so later `load/store/load_index` can pick correct widths.
+
+#### Conservative semantic restrictions (Semantics)
+
+- Reject `pointer + pointer`.
+- Reject `void* - void*` and generally `void*` subtraction.
+- Reject `T* - U*` when base types differ (e.g. `int* - char*`).
+
+### 2.6.3 Recent progress snapshot (as of 2026-02)
+
+Pointer feature work added end-to-end support and tests:
+
+- Semantics:
+    - Traverse `Cast` expressions so nested checks run.
+    - Conservative pointer subtraction restrictions (base mismatch; `void*`).
+- IR:
+    - Add unary dereference lowering (`*p`) via `load`.
+    - Add store-through-pointer lowering (`*p = v`) via `store`.
+    - Pointer scaling for `+/-` and pointer-diff scaling for `-`.
+- Codegen:
+    - Emit `load` and `store` with width-aware `mov*` sequences.
+
+Representative tests added:
+
+- `tests/test_unary_deref_pointer_arith.py` (`*(p+2)` read)
+- `tests/test_store_through_pointer.py` (`*p = v` write)
+- `tests/test_pointer_comparisons_more.py` (more `== != < <= > >=` coverage)
+
+### 2.6.4 Next steps (planned)
+
+1) Add **negative/diagnostic tests** for pointer compares in invalid contexts (e.g. pointer vs integer without cast), and tighten `pycc/semantics.py` accordingly.
+2) Expand pointer loads/stores across types (`short`, `unsigned`, structs) once type strings are reliable.
+3) Continue C89 conformance expansion via targeted tests with small green commits.
 
 ---
 
