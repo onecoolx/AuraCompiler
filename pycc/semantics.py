@@ -424,6 +424,22 @@ class SemanticAnalyzer:
                 if isinstance(item, Declaration):
                     self._declare_local(item.name, "variable")
                     self._decl_types[item.name] = item.type
+                    # If this is a local `extern` declaration of a function prototype,
+                    # record it in global tables so codegen can treat calls as
+                    # direct calls and apply variadic ABI rules.
+                    if getattr(item, "storage_class", None) == "extern":
+                        try:
+                            base = getattr(item.type, "base", None)
+                            # Parser encodes function types in Type.base like: "int (*)()".
+                            if isinstance(base, str) and "(" in base and ")" in base:
+                                # best-effort: mark as function
+                                # NOTE: variadic detection relies on the parser's sentinel param name '...'
+                                # which is not represented in this local Declaration; keep non-variadic.
+                                self._global_types[item.name] = f"function {base.split()[0]}"
+                                self._global_linkage[item.name] = "external"
+                                self._functions.add(item.name)
+                        except Exception:
+                            pass
                     if getattr(item, "storage_class", None) == "register":
                         self._register_locals.add(item.name)
                     if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:

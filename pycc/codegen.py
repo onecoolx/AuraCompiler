@@ -256,6 +256,11 @@ class CodeGenerator:
         self._emit("  movq %rsp, %rbp")
         if self._stack_size:
             self._emit(f"  subq ${self._stack_size}, %rsp")
+        # Maintain SysV ABI stack alignment at call sites.
+        # After `call`, %rsp is 8 mod 16 on entry. After `push %rbp`, %rsp is 0 mod 16.
+        # Subtracting an aligned frame keeps it aligned here, but any subsequent pushes
+        # must be paired so that %rsp is again 0 mod 16 right before a `call`.
+        self._call_stack_adjust = 0
 
         # Move params from registers into stack slots (treat @param as local)
         arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
@@ -572,6 +577,16 @@ class CodeGenerator:
             return
 
         if op == "call":
+            # Ensure the stack is 16-byte aligned at the call instruction.
+            # Our codegen sometimes grows the stack dynamically (e.g. spilling temps)
+            # or does ad-hoc pushes; libc functions like printf assume proper alignment.
+            # If currently misaligned, temporarily adjust by 8 and undo after call.
+            pre_call_pad = False
+            if getattr(self, "_call_stack_adjust", 0) % 16 != 0:
+                self._emit("  subq $8, %rsp")
+                self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 8
+                pre_call_pad = True
+
             # operand1 is function name or @name
             # args are operand strings
             arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
@@ -595,6 +610,22 @@ class CodeGenerator:
                 sym = target[1:]
                 # If it's a local variable/temp, it's not a function symbol.
                 if self._is_local(target):
+                    # If semantics says this name is a function (e.g. an
+                    # extern prototype declared inside a function), emit a
+                    # direct call instead of indirect through an uninitialized
+                    # local slot.
+                    gty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+                    if isinstance(gty, str) and gty.strip().startswith("function"):
+                        # Keep SysV varargs ABI happy for calls the IR marks
+                        # as variadic (operand2 contains "...").
+                        if isinstance(ins.operand2, str) and "..." in ins.operand2:
+                            # SysV x86-64: for variadic calls, %al must contain
+                            # the number of XMM registers used to pass float
+                            # args. We don't pass floats yet, so set 0.
+                            self._emit("  xorl %eax, %eax")
+                        self._emit(f"  call {sym}")
+                        self._store_result(ins.result, "%rax")
+                        return
                     self._load_operand(target, "%rax")
                     self._emit("  call *%rax")
                     self._store_result(ins.result, "%rax")
@@ -624,6 +655,10 @@ class CodeGenerator:
                     target = f"@{target}"
                 self._load_operand(target, "%rax")
                 self._emit("  call *%rax")
+
+            if pre_call_pad:
+                self._emit("  addq $8, %rsp")
+                self._call_stack_adjust = max(0, getattr(self, "_call_stack_adjust", 0) - 8)
             self._store_result(ins.result, "%rax")
             return
 
@@ -1107,6 +1142,7 @@ class CodeGenerator:
         # grow stack by exactly one slot; keep frame accounting consistent.
         # Note: initial frame size is already aligned in _begin_function.
         self._emit("  subq $8, %rsp")
+        self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 8
         self._locals[sym] = self._stack_size
         return self._locals[sym]
 

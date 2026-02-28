@@ -53,7 +53,13 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest` currently passes (`109 passed`).
+**Test status:** `pytest` currently passes (`426 passed, 1 skipped`).
+
+### Recent changes
+
+- Fixed libc varargs crash cases by ensuring SysV x86-64 call-site stack alignment (16-byte aligned at each `call`).
+- Fixed local-scope `extern` function prototypes used with calls (e.g. `extern int printf(const char*, ...);` inside a function) so they resolve as direct symbol calls.
+- Added regression test: `tests/test_variadic_printf_local_extern_proto.py`.
 
 **Implemented highlights (see tests/):**
 - Globals + initializers (including global `char*` string literal pointer init)

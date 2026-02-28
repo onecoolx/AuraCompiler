@@ -1321,6 +1321,13 @@ class IRGenerator:
                 call_ty = getattr(self._sema_ctx, "global_types", {}).get(name)
             if call_ty is None:
                 call_ty = getattr(self, "_var_types", {}).get(fn)
+
+            # Ensure direct calls for known function identifiers. If the callee
+            # was lowered as '@name' but semantics has no record, treat it as a
+            # function symbol anyway (C89 implicit decl fallback).
+            if isinstance(expr.function, Identifier):
+                fn = f"@{expr.function.name}"
+
             self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
             return t
         if isinstance(expr, TernaryOp):
