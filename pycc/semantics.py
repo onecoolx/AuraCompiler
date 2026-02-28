@@ -134,6 +134,28 @@ class SemanticAnalyzer:
                         self.errors.append(f"conflicting parameter count for function '{decl.name}'")
                 self._declare_global(decl.name, "function")
                 self._functions.add(decl.name)
+                # Record function type for codegen. We don't model full
+                # prototypes yet, but we need to know whether it's variadic.
+                # Encode as a simple string so codegen can check for "...".
+                try:
+                    ret_base = getattr(decl, "return_type", None)
+                    ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
+                    params = getattr(decl, "parameters", []) or []
+                    is_variadic = bool(getattr(decl, "is_variadic", False)) or any(
+                        getattr(p, "name", None) == "..." for p in params
+                    )
+                    self._global_types[decl.name] = (
+                        f"function {ret_base_s}(...)" if is_variadic else f"function {ret_base_s}"
+                    )
+                except Exception:
+                    self._global_types[decl.name] = "function int"
+                # Record linkage for function declarations.
+                sc = getattr(decl, "storage_class", None)
+                if sc == "static":
+                    self._global_linkage[decl.name] = "internal"
+                else:
+                    # extern or default
+                    self._global_linkage[decl.name] = "external"
             elif isinstance(decl, EnumDecl):
                 self._register_enum_decl(decl)
             elif isinstance(decl, TypedefDecl):

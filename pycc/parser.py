@@ -570,6 +570,9 @@ class Parser:
             # varargs: `...,` appears after a comma in prototypes.
             if self.current_token and self.current_token.type == TokenType.ELLIPSIS:
                 self.advance()
+                # Stash a sentinel so later stages can mark the FunctionDecl as variadic.
+                # We don't type-check varargs yet.
+                params.append(Declaration(name="...", type=Type(base="int", line=0, column=0), line=0, column=0))
                 break
 
             base_type = self._parse_type_specifier()

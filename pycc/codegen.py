@@ -339,10 +339,17 @@ class CodeGenerator:
 
             self._load_operand(addr, "%rax")
             if elem_sz == 1:
-                self._emit("  movsbl (%rax), %eax")
-                self._emit("  movslq %eax, %rax")
+                if self._pointee_is_unsigned(base_ty):
+                    self._emit("  movzbl (%rax), %eax")
+                    self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  movsbl (%rax), %eax")
+                    self._emit("  movslq %eax, %rax")
             elif elem_sz == 2:
-                self._emit("  movswq (%rax), %rax")
+                if self._pointee_is_unsigned(base_ty):
+                    self._emit("  movzwq (%rax), %rax")
+                else:
+                    self._emit("  movswq (%rax), %rax")
             elif elem_sz == 4:
                 self._emit("  movslq (%rax), %rax")
             else:
@@ -574,6 +581,13 @@ class CodeGenerator:
                 self._load_operand(a, "%rax")
                 self._emit(f"  movq %rax, {arg_regs[idx]}")
 
+            # SysV AMD64 ABI: for variadic calls, %al must contain the number
+            # of vector registers used to pass arguments. We don't pass any
+            # vector args yet, so clear %eax.
+            # This is required for calls like printf("%d\n", 42).
+            if isinstance(ins.operand2, str) and "..." in ins.operand2:
+                self._emit("  xorl %eax, %eax")
+
             target = ins.operand1 or ""
             if target.startswith("@"):  # symbol
                 # If it names a function symbol, do a direct call. This must
@@ -589,9 +603,14 @@ class CodeGenerator:
                 # Otherwise, if semantics says it's externally linked, also treat as function.
                 is_func = sym in getattr(self, "_functions", set())
                 if not is_func and self._sema_ctx is not None:
-                    # If it's not a known global variable, treat as a function symbol.
-                    # This allows extern prototypes across translation units.
-                    is_func = sym not in getattr(self._sema_ctx, "global_linkage", {})
+                    # If semantics recorded it as a function, prefer a direct call.
+                    gty = getattr(self._sema_ctx, "global_types", {}).get(sym)
+                    if isinstance(gty, str) and gty.strip().startswith("function"):
+                        is_func = True
+                    else:
+                        # If it's not a known global variable, treat as a function symbol.
+                        # This allows extern prototypes across translation units.
+                        is_func = sym not in getattr(self._sema_ctx, "global_linkage", {})
                 if is_func:
                     self._emit(f"  call {sym}")
                 else:
@@ -817,6 +836,53 @@ class CodeGenerator:
         if operand.startswith("%t"):
             # temps are also stack allocated lazily
             off = self._ensure_local(operand)
+            # Best-effort: if we know the temp's type and it is narrower than
+            # 64-bit, load it with correct width/extension.
+            ty = self._var_types.get(operand, "")
+            b = ty.strip() if isinstance(ty, str) else ""
+            # IMPORTANT: pointer temps are 8-byte values.
+            if isinstance(b, str) and "*" in b:
+                self._emit(f"  movq -{off}(%rbp), {reg}")
+                return
+            if b == "char" or b.startswith("char "):
+                self._emit(f"  movsbq -{off}(%rbp), {reg}")
+                return
+            if b == "unsigned char" or b.startswith("unsigned char"):
+                self._emit(f"  movzbq -{off}(%rbp), {reg}")
+                return
+            if b == "short" or b == "short int" or b.startswith("short"):
+                self._emit(f"  movswq -{off}(%rbp), {reg}")
+                return
+            if b == "unsigned short" or b == "unsigned short int" or b.startswith("unsigned short"):
+                self._emit(f"  movzwq -{off}(%rbp), {reg}")
+                return
+            if b == "int" or b.startswith("int ") or b.startswith("enum "):
+                self._emit(f"  movslq -{off}(%rbp), {reg}")
+                return
+            if b == "unsigned int" or b.startswith("unsigned int"):
+                # load 32-bit and zero-extend into destination
+                if reg == "%rax":
+                    self._emit(f"  movl -{off}(%rbp), %eax")
+                elif reg == "%rcx":
+                    self._emit(f"  movl -{off}(%rbp), %ecx")
+                elif reg == "%rdx":
+                    self._emit(f"  movl -{off}(%rbp), %edx")
+                elif reg == "%rsi":
+                    self._emit(f"  movl -{off}(%rbp), %esi")
+                elif reg == "%rdi":
+                    self._emit(f"  movl -{off}(%rbp), %edi")
+                elif reg == "%r8":
+                    self._emit(f"  movl -{off}(%rbp), %r8d")
+                elif reg == "%r9":
+                    self._emit(f"  movl -{off}(%rbp), %r9d")
+                elif reg == "%r10":
+                    self._emit(f"  movl -{off}(%rbp), %r10d")
+                elif reg == "%r11":
+                    self._emit(f"  movl -{off}(%rbp), %r11d")
+                else:
+                    self._emit(f"  movl -{off}(%rbp), %eax")
+                    self._emit(f"  movq %rax, {reg}")
+                return
             self._emit(f"  movq -{off}(%rbp), {reg}")
             return
         if operand.startswith("@"):
@@ -828,6 +894,11 @@ class CodeGenerator:
                 # array variables: in expressions, array decays to pointer to first element
                 if isinstance(b, str) and b.startswith("array("):
                     self._emit(f"  leaq -{off}(%rbp), {reg}")
+                    return
+                # IMPORTANT: pointers are 8-byte values; do not apply char/short
+                # load/extension rules to e.g. "unsigned char*".
+                if isinstance(b, str) and "*" in b:
+                    self._emit(f"  movq -{off}(%rbp), {reg}")
                     return
                 # signed/unsigned char
                 if b == "char" or b.startswith("char "):
@@ -847,6 +918,9 @@ class CodeGenerator:
                 if b == "int" or b.startswith("int ") or b.startswith("enum "):
                     self._emit(f"  movslq -{off}(%rbp), {reg}")
                     return
+                # long/pointers/default
+                self._emit(f"  movq -{off}(%rbp), {reg}")
+                return
                 # unsigned int: load 32-bit and zero-extend
                 if b == "unsigned int" or b.startswith("unsigned int"):
                     # IMPORTANT: load into the requested destination register.
@@ -967,6 +1041,22 @@ class CodeGenerator:
             return 8
         return 8
 
+    def _pointee_is_unsigned(self, ptr_ty: object) -> bool:
+        """Best-effort unsignedness for T* pointer types."""
+        if ptr_ty is None:
+            return False
+        if isinstance(ptr_ty, str):
+            s = ptr_ty.strip()
+        else:
+            base = getattr(ptr_ty, "base", None)
+            s = base.strip() if isinstance(base, str) else ""
+        if not s or "*" not in s:
+            return False
+        # peel trailing '*'
+        while s.endswith("*"):
+            s = s[:-1]
+        return s.strip().startswith("unsigned ")
+
     def _store_result(self, result: Optional[str], reg: str) -> None:
         if result is None:
             return
@@ -980,6 +1070,12 @@ class CodeGenerator:
                 off = self._ensure_local(result)
                 ty = self._var_types.get(result, "")
                 b = ty.strip()
+                # IMPORTANT: pointers are always 8-byte values. Do not let
+                # prefix checks like `startswith("unsigned char")` treat
+                # "unsigned char*" as a 1-byte scalar.
+                if isinstance(b, str) and "*" in b:
+                    self._emit(f"  movq {reg}, -{off}(%rbp)")
+                    return
                 if b == "char" or b.startswith("char ") or b == "unsigned char" or b.startswith("unsigned char"):
                     src = "%al" if reg == "%rax" else reg
                     self._emit(f"  movb {src}, -{off}(%rbp)")
@@ -1008,10 +1104,9 @@ class CodeGenerator:
             return self._locals[sym]
         # allocate new slot at end
         self._stack_size += 8
-        if self._stack_size % 16 != 0:
-            # keep 16B alignment roughly; grow by another slot
-            self._stack_size += 8
-        self._emit(f"  subq $16, %rsp")
+        # grow stack by exactly one slot; keep frame accounting consistent.
+        # Note: initial frame size is already aligned in _begin_function.
+        self._emit("  subq $8, %rsp")
         self._locals[sym] = self._stack_size
         return self._locals[sym]
 

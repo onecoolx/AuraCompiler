@@ -1125,6 +1125,15 @@ class IRGenerator:
             # handle pointer deref store: *p = rhs
             if expr.operator == "=" and isinstance(expr.target, UnaryOp) and expr.target.operator == "*":
                 addr = self._gen_expr(expr.target.operand)
+                # propagate pointer type from operand to the computed address
+                try:
+                    op_ty = getattr(self, "_var_types", {}).get(addr)
+                    if not op_ty and isinstance(expr.target.operand, Identifier):
+                        op_ty = getattr(self, "_var_types", {}).get(f"@{expr.target.operand.name}")
+                    if isinstance(op_ty, str) and "*" in op_ty:
+                        self._var_types[addr] = op_ty
+                except Exception:
+                    pass
                 self.instructions.append(IRInstruction(op="store", result=rhs, operand1=addr))
                 return rhs
             # handle array element store: target is ArrayAccess
@@ -1170,6 +1179,15 @@ class IRGenerator:
             # Best-effort: use element type info from pointer operand when available.
             if expr.operator == "*":
                 base = self._gen_expr(expr.operand)
+                # propagate pointer type so codegen can choose correct width
+                try:
+                    op_ty = getattr(self, "_var_types", {}).get(base)
+                    if not op_ty and isinstance(expr.operand, Identifier):
+                        op_ty = getattr(self, "_var_types", {}).get(f"@{expr.operand.name}")
+                    if isinstance(op_ty, str) and "*" in op_ty:
+                        self._var_types[base] = op_ty
+                except Exception:
+                    pass
                 t = self._new_temp()
                 self.instructions.append(IRInstruction(op="load", result=t, operand1=base))
                 return t
@@ -1179,6 +1197,16 @@ class IRGenerator:
             if expr.operator == "&":
                 # address-of: only meaningful for identifiers/locals in MVP
                 self.instructions.append(IRInstruction(op="addr_of", result=t, operand1=v))
+                # Best-effort: carry pointer type info for address temps so
+                # codegen can emit correct `load/store` widths.
+                try:
+                    if isinstance(expr.operand, Identifier):
+                        src_sym = f"@{expr.operand.name}"
+                        src_ty = getattr(self, "_var_types", {}).get(src_sym)
+                        if isinstance(src_ty, str) and not src_ty.strip().startswith("array("):
+                            self._var_types[t] = f"{src_ty.strip()}*"
+                except Exception:
+                    pass
             else:
                 self.instructions.append(IRInstruction(op="unop", result=t, operand1=v, label=expr.operator))
             return t
@@ -1283,7 +1311,17 @@ class IRGenerator:
             fn = self._gen_expr(expr.function)
             args = [self._gen_expr(a) for a in expr.arguments]
             t = self._new_temp()
-            self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, args=args))
+            # Preserve best-effort function type for codegen (e.g. variadic
+            # calls like printf need special ABI handling).
+            call_ty = None
+            # For now, only handle direct identifier calls (extern prototypes
+            # are represented as global symbol types in sema).
+            if call_ty is None and self._sema_ctx is not None and hasattr(expr.function, "name"):
+                name = getattr(expr.function, "name")
+                call_ty = getattr(self._sema_ctx, "global_types", {}).get(name)
+            if call_ty is None:
+                call_ty = getattr(self, "_var_types", {}).get(fn)
+            self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
             return t
         if isinstance(expr, TernaryOp):
             t = self._new_temp()

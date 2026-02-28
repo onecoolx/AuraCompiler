@@ -112,11 +112,18 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
     - **DONE**: Pointer - pointer yields element distance (not bytes).
     - **DONE**: Unary dereference `*(p + i)` (read) via IR `load`.
     - **DONE**: Store-through-pointer `*p = v` (write) via IR `store`.
+    - **DONE**: Narrow pointee loads are correctly extended:
+        - `unsigned char*` / `unsigned short*` load: **zero-extend**.
+        - `char*` / `signed char*` / `short*` load: **sign-extend**.
     - **DONE**: Pointer comparisons `== != < <= > >=` for common cases.
     - **DONE (conservative)**: Reject pointer + pointer.
     - **DONE (conservative)**: Reject `void*` subtraction.
     - **DONE (conservative)**: Reject pointer subtraction for different base types (e.g. `int* - char*`).
     - **TODO**: More complete pointer conversions/qualification rules and diagnostics.
+
+- **DONE**: Backend correctness fixes triggered by narrow pointer tests:
+    - Pointers are always treated as 8-byte values in local/temp load/store selection (avoid truncation from string-prefix type matches like `"unsigned char*"`).
+    - Variadic calls (e.g. `printf`) emit the required SysV AMD64 ABI setup (`%al = 0` when passing no vector args).
 
 ### Statements / Control flow
 
