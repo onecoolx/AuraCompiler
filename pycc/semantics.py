@@ -525,20 +525,42 @@ class SemanticAnalyzer:
             self._analyze_expr(expr.left)
             self._analyze_expr(expr.right)
 
+            def _is_ptrlike(e: Expression) -> bool:
+                if isinstance(e, Identifier):
+                    ty = self._lookup_decl_type(e.name)
+                    if ty is None:
+                        return False
+                    return bool(getattr(ty, "is_pointer", False))
+                if isinstance(e, Cast):
+                    to_ty = getattr(e, "to_type", None)
+                    return bool(to_ty is not None and getattr(to_ty, "is_pointer", False))
+                # Handle simple pointer expressions like `a + 1`.
+                if isinstance(e, BinaryOp) and e.operator in {"+", "-"}:
+                    return _is_ptrlike(e.left) or _is_ptrlike(e.right)
+                return False
+
+            def _is_void_ptr(e: Expression) -> bool:
+                if isinstance(e, Identifier):
+                    ty = getattr(self, "_decl_types", {}).get(e.name)
+                    if ty is None:
+                        ty = getattr(self, "_global_decl_types", {}).get(e.name)
+                    return bool(
+                        ty is not None
+                        and getattr(ty, "is_pointer", False)
+                        and getattr(ty, "base", None) == "void"
+                    )
+                if isinstance(e, Cast):
+                    to_ty = getattr(e, "to_type", None)
+                    return bool(
+                        to_ty is not None
+                        and getattr(to_ty, "is_pointer", False)
+                        and getattr(to_ty, "base", None) == "void"
+                    )
+                return False
+
             # C89/C99: pointer arithmetic on void* is not allowed.
             # Best-effort: reject `void* +/- integer` and `integer +/- void*`.
             if expr.operator in {"+", "-"}:
-                def _is_void_ptr(e: Expression) -> bool:
-                    if isinstance(e, Identifier):
-                        ty = getattr(self, "_decl_types", {}).get(e.name)
-                        if ty is None:
-                            ty = getattr(self, "_global_decl_types", {}).get(e.name)
-                        return bool(ty is not None and getattr(ty, "is_pointer", False) and getattr(ty, "base", None) == "void")
-                    if isinstance(e, Cast):
-                        to_ty = getattr(e, "to_type", None)
-                        return bool(to_ty is not None and getattr(to_ty, "is_pointer", False) and getattr(to_ty, "base", None) == "void")
-                    return False
-
                 if _is_void_ptr(expr.left) or _is_void_ptr(expr.right):
                     self.errors.append("void* pointer arithmetic is not allowed")
 
@@ -546,23 +568,22 @@ class SemanticAnalyzer:
             # and pointer - pointer). Catch identifiers, casts, and arrays which
             # decay to pointers in most expressions.
             if expr.operator == "+":
-                def _is_ptrlike(e: Expression) -> bool:
-                    if isinstance(e, Identifier):
-                        ty = self._lookup_decl_type(e.name)
-                        if ty is None:
-                            return False
-                        return bool(getattr(ty, "is_pointer", False))
-                    if isinstance(e, Cast):
-                        to_ty = getattr(e, "to_type", None)
-                        return bool(to_ty is not None and getattr(to_ty, "is_pointer", False))
-                    # Handle simple pointer expressions like `a + 1`.
-                    if isinstance(e, BinaryOp) and e.operator in {"+", "-"}:
-                        return _is_ptrlike(e.left) or _is_ptrlike(e.right)
-                    return False
-
                 # Detect any pointer-like expression on the left/right.
                 if _is_ptrlike(expr.left) and _is_ptrlike(expr.right):
                     self.errors.append("pointer + pointer is not allowed")
+
+            # Conservative: relational comparisons require either two pointers
+            # (typically within the same aggregate/object) or two arithmetic
+            # values. We enforce a minimal subset:
+            # - reject pointer vs non-pointer relational compares
+            # - reject relational compares on void* (lack of element type)
+            if expr.operator in {"<", "<=", ">", ">="}:
+                lp = _is_ptrlike(expr.left)
+                rp = _is_ptrlike(expr.right)
+                if lp != rp:
+                    self.errors.append(f"pointer and non-pointer comparison is not allowed: '{expr.operator}'")
+                elif lp and rp and (_is_void_ptr(expr.left) or _is_void_ptr(expr.right)):
+                    self.errors.append("relational comparison on void* pointer is not allowed")
 
             # Best-effort: reject subtraction of pointers with obviously
             # different base types (e.g. int* - char*).

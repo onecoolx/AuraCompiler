@@ -196,9 +196,15 @@ Representative tests added:
 
 ### 2.6.4 Next steps (planned)
 
-1) Add **negative/diagnostic tests** for pointer compares in invalid contexts (e.g. pointer vs integer without cast), and tighten `pycc/semantics.py` accordingly.
+1) Add **negative/diagnostic tests** for pointer compares in invalid contexts (e.g. pointer vs integer without cast), and tighten `pycc/semantics.py` accordingly. (DONE for relational compares)
 2) Expand pointer loads/stores across types (`short`, `unsigned`, structs) once type strings are reliable.
 3) Continue C89 conformance expansion via targeted tests with small green commits.
+
+#### Recent tightening
+
+- Relational pointer comparisons now reject:
+    - pointer vs non-pointer comparisons (e.g. `p < 1`)
+    - `void*` relational comparisons (e.g. `p < q` where either is `void*`)
 
 ---
 
