@@ -581,7 +581,23 @@ class SemanticAnalyzer:
                 lp = _is_ptrlike(expr.left)
                 rp = _is_ptrlike(expr.right)
                 if lp != rp:
-                    self.errors.append(f"pointer and non-pointer comparison is not allowed: '{expr.operator}'")
+                    # Allow relational comparisons on ptrdiff-like integer
+                    # expressions produced by `ptr - ptr` in this MVP.
+                    def _is_ptrdiff_like(e: Expression) -> bool:
+                        return (
+                            isinstance(e, BinaryOp)
+                            and e.operator == "-"
+                            and _is_ptrlike(e.left)
+                            and (
+                                _is_ptrlike(e.right)
+                                or isinstance(e.right, Identifier)  # array identifier decay subset
+                            )
+                        )
+
+                    if _is_ptrdiff_like(expr.left) or _is_ptrdiff_like(expr.right):
+                        pass
+                    else:
+                        self.errors.append(f"pointer and non-pointer comparison is not allowed: '{expr.operator}'")
                 elif lp and rp and (_is_void_ptr(expr.left) or _is_void_ptr(expr.right)):
                     self.errors.append("relational comparison on void* pointer is not allowed")
 

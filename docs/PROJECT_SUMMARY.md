@@ -205,6 +205,7 @@ Representative tests added:
 - Relational pointer comparisons now reject:
     - pointer vs non-pointer comparisons (e.g. `p < 1`)
     - `void*` relational comparisons (e.g. `p < q` where either is `void*`)
+    - while allowing **ptrdiff-like** integer expressions (e.g. `(q - p) < 3`) to be compared against integers.
 
 - Equality pointer comparisons now reject:
     - pointer vs non-pointer comparisons (e.g. `p == 1`)
