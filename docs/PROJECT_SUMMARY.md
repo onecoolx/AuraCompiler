@@ -206,6 +206,10 @@ Representative tests added:
     - pointer vs non-pointer comparisons (e.g. `p < 1`)
     - `void*` relational comparisons (e.g. `p < q` where either is `void*`)
 
+- Equality pointer comparisons now reject:
+    - pointer vs non-pointer comparisons (e.g. `p == 1`)
+    - while allowing comparisons to null pointer constant subset (currently: literal `0` / casts of `0`).
+
 ---
 
 ## Part 2: Detailed Architecture

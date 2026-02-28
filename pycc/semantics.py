@@ -585,6 +585,64 @@ class SemanticAnalyzer:
                 elif lp and rp and (_is_void_ptr(expr.left) or _is_void_ptr(expr.right)):
                     self.errors.append("relational comparison on void* pointer is not allowed")
 
+            # Conservative: for equality comparisons, allow:
+            # - pointer ==/!= pointer (including void*)
+            # - pointer ==/!= 0 (null pointer constant subset)
+            # Reject pointer ==/!= non-zero integers.
+            if expr.operator in {"==", "!="}:
+                lp = _is_ptrlike(expr.left)
+                rp = _is_ptrlike(expr.right)
+
+                def _is_zero_int_const(e: Expression) -> bool:
+                    if isinstance(e, IntLiteral):
+                        try:
+                            return int(e.value) == 0
+                        except Exception:
+                            return False
+                    if isinstance(e, Cast):
+                        # allow (int)0 etc.
+                        return _is_zero_int_const(e.expression)
+                    return False
+
+                if lp != rp:
+                    # pointer compared to 0 is allowed (null pointer constant subset).
+                    if (lp and _is_zero_int_const(expr.right)) or (rp and _is_zero_int_const(expr.left)):
+                        pass
+                    # Allow comparing pointers against ptrdiff-like integer expressions
+                    # produced by `ptr - ptr` in this MVP.
+                    elif (
+                        lp
+                        and isinstance(expr.left, BinaryOp)
+                        and expr.left.operator == "-"
+                        and _is_ptrlike(expr.left.left)
+                        and _is_ptrlike(expr.left.right)
+                    ) or (
+                        rp
+                        and isinstance(expr.right, BinaryOp)
+                        and expr.right.operator == "-"
+                        and _is_ptrlike(expr.right.left)
+                        and _is_ptrlike(expr.right.right)
+                    ):
+                        pass
+                    # Allow comparisons like (p - a) == 2 where `a` is an array
+                    # identifier that decays to a pointer.
+                    elif (
+                        lp
+                        and isinstance(expr.left, BinaryOp)
+                        and expr.left.operator == "-"
+                        and _is_ptrlike(expr.left.left)
+                        and isinstance(expr.left.right, Identifier)
+                    ) or (
+                        rp
+                        and isinstance(expr.right, BinaryOp)
+                        and expr.right.operator == "-"
+                        and _is_ptrlike(expr.right.left)
+                        and isinstance(expr.right.right, Identifier)
+                    ):
+                        pass
+                    else:
+                        self.errors.append(f"pointer and non-pointer equality comparison is not allowed: '{expr.operator}'")
+
             # Best-effort: reject subtraction of pointers with obviously
             # different base types (e.g. int* - char*).
             if expr.operator == "-":
