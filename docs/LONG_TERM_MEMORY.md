@@ -47,6 +47,10 @@ Reason: IR comparisons and other expressions store results into `%t*` temps; if 
 - End-to-end compilation works for a practical C89-ish subset.
 - Test suite is the source of truth.
 
+Single source of truth for human-readable status:
+- `docs/FEATURE_TRACKER.md`
+- `docs/C89_CONFORMANCE_MATRIX.md` (spec area ↔ tests ↔ status)
+
 When updating this snapshot, include:
 - `pytest -q` result summary (counts)
 - any newly supported feature and the test file proving it

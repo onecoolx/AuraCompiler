@@ -53,7 +53,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest` currently passes (`432 passed, 1 skipped`).
+**Test status:** `pytest -q` is the source of truth. See `docs/FEATURE_TRACKER.md` for the current snapshot.
 
 ### Recent changes
 
@@ -77,7 +77,7 @@ pycc/
 - `goto`/labels
 
 **Known gaps (updated):**
-- No preprocessor (no `#include`, macros, conditional compilation, line control)
+- Preprocessor is still incomplete. See `docs/FEATURE_TRACKER.md`.
 - No floating point (`float`/`double`) codegen/type rules
 - C89 integer promotions / usual arithmetic conversions not fully modeled
 - Full declarator/type grammar coverage is incomplete (many edge cases)

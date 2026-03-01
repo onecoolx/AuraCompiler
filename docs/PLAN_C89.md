@@ -11,6 +11,9 @@
 
 ## 0. 当前实现状态（以现有 tests 为准）
 
+单一真相源：`docs/FEATURE_TRACKER.md`（能力状态）和 `pytest -q`（测试结果）。
+合规映射表：`docs/C89_CONFORMANCE_MATRIX.md`。
+
 ### 0.1 词法/解析
 - 基本 token/运算符：`+ - * / % == != < > <= >= && || ! ~ & | ^ << >>` 等（见 `tests/test_lexer.py`）
 - 基本语句：`if/else/while/do-while/for/switch/case/default/break/continue/return/goto/label`（多处集成测试覆盖）

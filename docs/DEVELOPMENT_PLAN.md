@@ -2,7 +2,7 @@
 
 This document is a **living plan**. It reflects the current repo reality and is updated as features land.
 
-Current test status: `pytest` passes (`109 passed`).
+Current status: `pytest -q` and `docs/FEATURE_TRACKER.md` are the source of truth.
 
 ## Status Summary (Reality)
 

@@ -1,8 +1,13 @@
 # AuraCompiler Feature Tracker (Living)
 
-Last updated: 2026-02-26
+Last updated: 2026-03-01
 
 This is the **single source of truth** for feature status.
+
+Rules:
+- Status is **test-driven**: mark **DONE** only when at least one test proves it.
+- Other docs should **link here** instead of duplicating current-state checklists.
+- Keep entries short and point to the tests.
 
 Legend:
 - **DONE**: implemented + tests merged and passing
