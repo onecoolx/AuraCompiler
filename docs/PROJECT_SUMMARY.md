@@ -153,6 +153,9 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 
 ## Part 2.6: Design Notes & Long-Term Memory (living)
 
+For durable project context (design invariants + workflow/commit rules), see:
+`docs/LONG_TERM_MEMORY.md`.
+
 This section captures **how we are extending C89 coverage** in a way that is robust to context loss.
 
 ### 2.6.1 Development workflow (contract)

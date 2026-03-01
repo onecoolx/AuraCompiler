@@ -214,11 +214,13 @@ class CodeGenerator:
         self._arrays = {}
         self._member_offsets = {}
         self._var_types: Dict[str, str] = {}
-        # NOTE: _spill_capacity/_spill_used are prepared in generate() before
-        # calling _begin_function(). Do not reset them here, otherwise the
-        # prologue may reserve 0 bytes for spills while _ensure_local() later
-        # allocates late locals/temps starting at offset 8, which can overlap
-        # existing locals (e.g. i and j sharing the same -8(%rbp) slot).
+        # Stack frame invariant:
+        # - declared locals are assigned fixed slots first
+        # - a fixed spill region for IR temps (%t*) is reserved below locals
+        # - any late-discovered locals are allocated below the spill region
+        #
+        # `_spill_capacity/_spill_used` are initialized in `generate()` for each
+        # function; do not reset them here.
 
         # Assign stack slots.
         # IMPORTANT: even if a variable's logical type is smaller (char/short/int),
@@ -624,7 +626,8 @@ class CodeGenerator:
             # If currently misaligned, temporarily adjust by 8 and undo after call.
             pre_call_pad = False
             if getattr(self, "_call_stack_adjust", 0) % 16 != 0:
-                self._emit("  subq $8, %rsp  # pre_call_pad")
+                # SysV AMD64 ABI: %rsp must be 16-byte aligned at each `call`.
+                self._emit("  subq $8, %rsp")
                 self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 8
                 pre_call_pad = True
 
