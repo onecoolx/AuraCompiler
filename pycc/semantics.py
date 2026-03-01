@@ -732,6 +732,20 @@ class SemanticAnalyzer:
             if expr.operator == "&" and isinstance(expr.operand, Identifier):
                 if expr.operand.name in getattr(self, "_register_locals", set()):
                     self.errors.append(f"Cannot take address of register variable '{expr.operand.name}'")
+            # Also reject taking the address of any subobject of a register
+            # object (e.g. `&s.x` where `s` is `register struct S s;`).
+            if expr.operator == "&" and not isinstance(expr.operand, Identifier):
+                from pycc.ast_nodes import MemberAccess as _MemberAccess, PointerMemberAccess as _PointerMemberAccess
+
+                def _base_ident(e: Expression):
+                    # Peel member access chains: s.x.y -> Identifier('s')
+                    while isinstance(e, (_MemberAccess, _PointerMemberAccess)):
+                        e = e.object if isinstance(e, _MemberAccess) else e.pointer
+                    return e if isinstance(e, Identifier) else None
+
+                b = _base_ident(expr.operand)
+                if b is not None and b.name in getattr(self, "_register_locals", set()):
+                    self.errors.append(f"Cannot take address of register variable '{b.name}'")
             if expr.operator == "+":
                 def _is_ptrlike(e: Expression) -> bool:
                     if isinstance(e, Identifier):
@@ -747,8 +761,7 @@ class SemanticAnalyzer:
                         return _is_ptrlike(e.left) or _is_ptrlike(e.right)
                     return False
                 # Detect any pointer-like expression on the left/right.
-                if _is_ptrlike(expr.left) and _is_ptrlike(expr.right):
-                    self.errors.append("pointer + pointer is not allowed")
+                # NOTE: Unary '+' only has one operand; pointer+pointer is a BinaryOp check.
             self._analyze_expr(expr.operand)
             return
 
