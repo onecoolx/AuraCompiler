@@ -49,6 +49,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** compile+run with `<stdio.h>`: `snprintf` — `tests/test_glibc_smoke_stdio_snprintf.py`
 - **PARTIAL** compile+run with `<stdarg.h>`: `va_list` + `va_start`/`va_end` + `vsnprintf` smoke test (tracked as xfail; varargs ABI not implemented) — `tests/test_glibc_smoke_stdarg_vsnprintf.py`
 - **PARTIAL** compile+run with `<errno.h>`: `errno` read/write — `tests/test_glibc_smoke_errno_basic.py`
+- **PARTIAL** compile+run with `<string.h>`: `strlen` — `tests/test_glibc_smoke_string_strlen.py`
 
 
 ### Expressions / Operators
