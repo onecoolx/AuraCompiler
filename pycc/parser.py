@@ -211,8 +211,38 @@ class Parser:
             return td
 
         base_type = self._parse_type_specifier()
+        # If the declaration starts with qualifiers like `const`, and the
+        # underlying type is a typedef-name, `_parse_type_specifier()` will
+        # return the normalized base type and stop with the typedef-name
+        # identifier still as the current token.
+        # Example token stream:
+        #   extern const __int32_t **foo(void);
+        # After _parse_type_specifier(): base_type is "const int", current token
+        # is IDENTIFIER "__int32_t".
+        # Consume that typedef-name token so the declarator parsing sees `*`.
+        if (
+            self.current_token
+            and self.current_token.type == TokenType.IDENTIFIER
+            and self.current_token.value in self._typedefs
+        ):
+            self.advance()
+
         # handle pointer declarators like: `int *p;` or `struct S *p;`
         # Also ignore pointer-level qualifiers like: `char *const p`.
+        while True:
+            if self._match(TokenType.STAR):
+                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+                continue
+            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+                self.advance()
+                continue
+            break
+
+        # If the type-specifier is a typedef-name, `_parse_type_specifier()`
+        # stops at the IDENTIFIER and leaves the following `*` tokens to be
+        # consumed as part of the declarator. System headers commonly use:
+        #   extern const T **foo(void);
+        # where `T` is a typedef-name.
         while True:
             if self._match(TokenType.STAR):
                 base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
