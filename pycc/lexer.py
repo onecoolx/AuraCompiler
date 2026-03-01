@@ -111,6 +111,7 @@ class Lexer:
         'unsigned', 'void', 'volatile', 'while', '_Bool', '_Complex', '_Imaginary',
         '_Pragma', '_Alignas', '_Alignof', '_Atomic', '_Generic', '_Noreturn',
         '_Static_assert', '_Thread_local'
+        , '__builtin_va_list'
     }
     
     def __init__(self, source: str, filename: str = "<input>"):

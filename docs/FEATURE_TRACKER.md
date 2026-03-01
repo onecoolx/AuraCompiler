@@ -40,6 +40,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** function pointer parameters (subset) — `tests/test_declarators.py`
 - **PARTIAL** functions returning function pointers (subset; incl. prototype/extern) — `tests/test_declarators.py`
 - **PARTIAL** function redeclaration compatibility checks (subset: return type + param count) — `tests/test_function_decl_compat.py`
+- **PARTIAL** builtin type `__builtin_va_list` parsing (modeled as opaque pointer-like type) — `tests/test_builtin_va_list_parsing.py`
 
 ### Expressions / Operators
 

@@ -27,6 +27,7 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 | member access `.` / `->` | DONE | `tests/test_member_access.py`, `tests/test_member_semantics.py` |
 | storage classes (`static/extern/auto/register`) | PARTIAL | `tests/test_storage_class*.py`, `tests/test_auto_register.py` |
 | qualifiers (`const/volatile`) | PARTIAL | `tests/test_const.py`, `tests/test_const_pointer.py` |
+| builtin types (`__builtin_va_list`) | PARTIAL | parsing support: `tests/test_builtin_va_list_parsing.py` |
 
 ## Expressions / Semantics
 

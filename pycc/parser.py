@@ -164,6 +164,7 @@ class Parser:
             "int",
             "void",
             "char",
+            "__builtin_va_list",
             "struct",
             "union",
             "enum",
@@ -396,7 +397,7 @@ class Parser:
             break
 
         # builtin + sized integer forms
-        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char"}:
+        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "__builtin_va_list"}:
             base_tok = self.current_token
             self.advance()
             t = Type(base=base_tok.value, line=base_tok.line, column=base_tok.column)
@@ -421,6 +422,12 @@ class Parser:
             if t.base == "short int":
                 if is_unsigned:
                     t.base = "unsigned short"
+
+            # GCC builtin type: treat as an opaque builtin that behaves like a pointer-sized scalar.
+            # We model it as a `void*`-like type in downstream codegen/IR.
+            if t.base == "__builtin_va_list":
+                t.base = "void"
+                t.is_pointer = True
             return t
 
         # forms like: 'unsigned' (=> unsigned int), 'long' (=> long int), etc.
