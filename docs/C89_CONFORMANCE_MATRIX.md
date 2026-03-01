@@ -55,6 +55,7 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 | `<stdarg.h>` smoke: `va_list` + `va_start`/`va_end` + `vsnprintf` | XFAIL (varargs ABI) | `tests/test_glibc_smoke_stdarg_vsnprintf.py` |
 | `<errno.h>` smoke: `errno` read/write | PARTIAL | `tests/test_glibc_smoke_errno_basic.py` |
 | `<string.h>` smoke: `strlen` | PARTIAL | `tests/test_glibc_smoke_string_strlen.py` |
+| `<string.h>` smoke: `memcpy` | PARTIAL | `tests/test_glibc_smoke_string_memcpy.py` |
 
 ## Next actions
 
