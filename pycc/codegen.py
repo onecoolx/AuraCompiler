@@ -42,6 +42,11 @@ class CodeGenerator:
         self._locals: Dict[str, int] = {}
         self._arrays: Dict[str, int] = {}
         self._stack_size = 0
+        # Fixed spill area for temporaries (to avoid dynamic %rsp adjustment).
+        self._spill_capacity = 0
+        self._spill_used = 0
+        # Total size of declared locals area for current function (bytes).
+        self._locals_base = 0
         # MVP struct layout: hardcode offset map per function as discovered
         # (until full semantic layout is implemented).
         self._member_offsets: Dict[tuple[str, str], int] = {}
@@ -131,6 +136,14 @@ class CodeGenerator:
                     body_start += 1
 
                 # Compute stack frame layout for locals/params
+                # Reserve a fixed spill area for lazily-created temporaries.
+                # This avoids emitting `subq $8, %rsp` for every new %t temp.
+                # Keep it 16B-aligned so call-site alignment stays stable.
+                self._spill_capacity = 4096
+                if self._spill_capacity % 16 != 0:
+                    self._spill_capacity += 16 - (self._spill_capacity % 16)
+                self._spill_used = 0
+
                 self._begin_function(fn_name, decls)
 
                 i = body_start
@@ -201,6 +214,11 @@ class CodeGenerator:
         self._arrays = {}
         self._member_offsets = {}
         self._var_types: Dict[str, str] = {}
+        # NOTE: _spill_capacity/_spill_used are prepared in generate() before
+        # calling _begin_function(). Do not reset them here, otherwise the
+        # prologue may reserve 0 bytes for spills while _ensure_local() later
+        # allocates late locals/temps starting at offset 8, which can overlap
+        # existing locals (e.g. i and j sharing the same -8(%rbp) slot).
 
         # Assign stack slots.
         # IMPORTANT: even if a variable's logical type is smaller (char/short/int),
@@ -243,6 +261,29 @@ class CodeGenerator:
                 if d.operand1:
                     # remember declared type base for load/store width decisions
                     self._var_types[sym] = str(d.operand1)
+
+        # Seed stack slots for late-discovered locals.
+        # IR currently emits decls before first use, but codegen also allocates
+        # stack slots lazily when it sees new symbols. Many such symbols are
+        # actually user locals (not temps), and we must not adjust %rsp during
+        # the function body.
+        for d in decls:
+            if d.op != "decl" or not d.result:
+                continue
+            sym = d.result
+            if sym in self._locals:
+                continue
+            offset += 8
+            self._locals[sym] = offset
+            if d.operand1:
+                self._var_types[sym] = str(d.operand1)
+
+        # Record declared locals size *before* reserving the spill area.
+        # Offsets in self._locals are positive and used as -off(%rbp).
+        self._locals_base = max(self._locals.values()) if self._locals else 0
+
+        # Fixed spill area reserved for temporaries lives below declared locals.
+        offset += self._spill_capacity
 
         # align stack to 16 bytes at call sites (after push %rbp)
         stack = offset
@@ -583,7 +624,7 @@ class CodeGenerator:
             # If currently misaligned, temporarily adjust by 8 and undo after call.
             pre_call_pad = False
             if getattr(self, "_call_stack_adjust", 0) % 16 != 0:
-                self._emit("  subq $8, %rsp")
+                self._emit("  subq $8, %rsp  # pre_call_pad")
                 self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 8
                 pre_call_pad = True
 
@@ -1137,13 +1178,60 @@ class CodeGenerator:
     def _ensure_local(self, sym: str) -> int:
         if sym in self._locals:
             return self._locals[sym]
-        # allocate new slot at end
-        self._stack_size += 8
-        # grow stack by exactly one slot; keep frame accounting consistent.
-        # Note: initial frame size is already aligned in _begin_function.
-        self._emit("  subq $8, %rsp")
-        self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 8
-        self._locals[sym] = self._stack_size
+
+        # If we discover a new user-local (@name) after the initial decl scan,
+        # allocate it after the declared locals AND after the fixed spill area.
+        # Offsets in self._locals are positive numbers used as -off(%rbp).
+        if sym.startswith("@"):
+            # Allocate after all declared locals and after the reserved spill
+            # area. This avoids overlapping with %t temps.
+            base = int(getattr(self, "_locals_base", 0)) + int(getattr(self, "_spill_capacity", 0))
+            # Also place after any already-created late locals (which also live
+            # after the spill area).
+            cur_max = max(self._locals.values()) if self._locals else 0
+            off = max(base, cur_max) + 8
+            self._locals[sym] = off
+            return off
+
+        # Allocate in the reserved spill area (no %rsp adjustment).
+        if sym.startswith("%t"):
+            # If we exhaust the reserved spill area, make a conservative
+            # fallback by extending the function's frame in 16-byte chunks.
+            # This still avoids emitting per-temp `subq $8, %rsp`.
+            if self._spill_used + 8 > self._spill_capacity:
+                grow = 256
+                if grow % 16 != 0:
+                    grow += 16 - (grow % 16)
+                self._spill_capacity += grow
+                self._stack_size += grow
+                # Update the already-emitted prologue frame size.
+                # Prologue is: push %rbp; mov %rsp,%rbp; subq $N,%rsp
+                for idx, line in enumerate(self.assembly_lines[:16]):
+                    if line.strip().startswith("subq $") and line.strip().endswith(", %rsp"):
+                        self.assembly_lines[idx] = f"  subq ${self._stack_size}, %rsp"
+                        break
+            self._spill_used += 8
+            # Spill slots live below all declared locals.
+            # Place them at (locals_base + spill_used).
+            base = int(getattr(self, "_locals_base", 0))
+            self._locals[sym] = base + self._spill_used
+            return self._locals[sym]
+
+        # Late-introduced local (should be rare). Do NOT adjust %rsp in the body;
+        # instead, conservatively assign a slot within the reserved spill area.
+        if self._spill_used + 8 > self._spill_capacity:
+            grow = 256
+            if grow % 16 != 0:
+                grow += 16 - (grow % 16)
+            self._spill_capacity += grow
+            self._stack_size += grow
+            for idx, line in enumerate(self.assembly_lines[:16]):
+                if line.strip().startswith("subq $") and line.strip().endswith(", %rsp"):
+                    self.assembly_lines[idx] = f"  subq ${self._stack_size}, %rsp"
+                    break
+        self._spill_used += 8
+        base = int(getattr(self, "_locals_base", 0))
+        self._locals[sym] = base + self._spill_used
         return self._locals[sym]
 
     def _addr_of_symbol(self, sym: str, reg: str) -> None:
