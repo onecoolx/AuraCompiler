@@ -242,6 +242,9 @@ class SemanticAnalyzer:
             # Constant expressions may include the comma operator; the value is the RHS.
             self._eval_const_int(expr.left)
             return self._eval_const_int(expr.right)
+        if isinstance(expr, TernaryOp):
+            c = self._eval_const_int(expr.condition)
+            return self._eval_const_int(expr.true_expr if c != 0 else expr.false_expr)
         if isinstance(expr, IntLiteral):
             return int(expr.value)
         if isinstance(expr, CharLiteral):
@@ -253,7 +256,7 @@ class SemanticAnalyzer:
             if expr.operator == "-":
                 return -v
             return ~v
-        if isinstance(expr, BinaryOp) and expr.operator in {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>"}:
+        if isinstance(expr, BinaryOp) and expr.operator in {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>", "<"}:
             l = self._eval_const_int(expr.left)
             r = self._eval_const_int(expr.right)
             if expr.operator == "+":
@@ -274,6 +277,8 @@ class SemanticAnalyzer:
                 return l ^ r
             if expr.operator == "<<":
                 return l << r
+            if expr.operator == "<":
+                return 1 if l < r else 0
             return l >> r
         if isinstance(expr, Identifier) and expr.name in self._enum_constants:
             return self._enum_constants[expr.name]

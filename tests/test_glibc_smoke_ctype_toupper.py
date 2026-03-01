@@ -41,8 +41,8 @@ int main(void) {
         pytest.skip("system headers require unsupported types: " + combined.strip())
     if res.returncode != 0 and "Expected ';' after declaration" in combined:
         pytest.skip("system headers require unsupported typedefs/types: " + combined.strip())
-    if res.returncode != 0 and "enum value must be an integer constant expression" in combined:
-        pytest.skip("system headers require unsupported enum constant expressions: " + combined.strip())
+    # If this triggers, extend constant-expression support in semantics.
+    # We keep this as an assertion failure (not a skip) to avoid hiding regressions.
 
     assert res.returncode == 0, combined
 
