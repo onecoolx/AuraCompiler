@@ -247,6 +247,15 @@ class Preprocessor:
                 j = i + 1
                 while j < n and expr[j].isdigit():
                     j += 1
+                # Accept and ignore common integer suffixes used in system headers.
+                # C89: U/u, L/l; also accept LL/ll and combinations.
+                k = j
+                while k < n and expr[k] in ("u", "U", "l", "L"):
+                    k += 1
+                if k != j:
+                    toks.append(expr[i:k])
+                    i = k
+                    continue
                 toks.append(expr[i:j])
                 i = j
                 continue
@@ -486,13 +495,16 @@ class Preprocessor:
                 raise RuntimeError("unsupported #if expression: unexpected end")
             self._i += 1
 
-            if tok.isdigit() or (tok.startswith(("0x", "0X")) and len(tok) > 2):
-                if tok.startswith(("0x", "0X")):
-                    return int(tok, 16)
+            # integer constant (accept common suffixes U/L/UL/LL/etc)
+            m_int = re.match(r"^(0[xX][0-9A-Fa-f]+|[0-9]+)([uUlL]*)$", tok)
+            if m_int:
+                num = m_int.group(1)
+                if num.startswith(("0x", "0X")):
+                    return int(num, 16)
                 # C-like octal for leading-zero literals (but keep "0" as 0)
-                if len(tok) > 1 and tok.startswith("0"):
-                    return int(tok, 8)
-                return int(tok, 10)
+                if len(num) > 1 and num.startswith("0"):
+                    return int(num, 8)
+                return int(num, 10)
 
             # character constant (subset)
             if tok.startswith("'") and tok.endswith("'") and len(tok) >= 3:
@@ -561,10 +573,14 @@ class Preprocessor:
                     # Skip whitespace-like tokens are not present here; tolerate
                     # parentheses form defined ( NAME ) where NAME may be a macro.
                     name = self._peek()
+                    if not name:
+                        raise RuntimeError("unsupported #if expression: defined expects an identifier")
                     self._i += 1
                     self._expect(")")
                 else:
                     name = self._peek()
+                    if not name:
+                        raise RuntimeError("unsupported #if expression: defined expects an identifier")
                     self._i += 1
                 if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name):
                     raise RuntimeError("unsupported #if expression: defined expects an identifier")
@@ -573,6 +589,22 @@ class Preprocessor:
 
             # identifier
             if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", tok):
+                # Function-like macro calls in #if expressions (e.g. __GNUC_PREREQ(4,1))
+                # are common in system headers. This preprocessor does not
+                # implement full macro expansion; treat such calls as 0.
+                if self._peek() == "(":
+                    depth = 0
+                    while not self.at_end():
+                        t = self._peek()
+                        self._i += 1
+                        if t == "(":
+                            depth += 1
+                            continue
+                        if t == ")":
+                            depth -= 1
+                            if depth <= 0:
+                                break
+                    return 0
                 if tok not in self._macros:
                     return 0
                 val = self._macros[tok].strip()
@@ -716,7 +748,10 @@ class Preprocessor:
                     taken_stack.append(False)
                     continue
                 expr = mifexpr.group(1)
-                cond_true = self._eval_if_expr(expr, macros)
+                try:
+                    cond_true = self._eval_if_expr(expr, macros)
+                except RuntimeError as e:
+                    raise RuntimeError(f"{e} (at {os.path.basename(abspath)}:{logical_line_no}: {expr.strip()!r})")
                 include_stack.append(parent and cond_true)
                 taken_stack.append(parent and cond_true)
                 continue
@@ -806,7 +841,10 @@ class Preprocessor:
                 parent = include_stack[-2]
                 already = taken_stack[-1]
                 expr = melifexpr.group(1)
-                cond_true = self._eval_if_expr(expr, macros)
+                try:
+                    cond_true = self._eval_if_expr(expr, macros)
+                except RuntimeError as e:
+                    raise RuntimeError(f"{e} (at {os.path.basename(abspath)}:{logical_line_no}: {expr.strip()!r})")
                 new_active = parent and (not already) and cond_true
                 include_stack[-1] = new_active
                 taken_stack[-1] = already or new_active
