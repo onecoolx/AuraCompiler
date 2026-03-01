@@ -56,6 +56,7 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 | `<errno.h>` smoke: `errno` read/write | PARTIAL | `tests/test_glibc_smoke_errno_basic.py` |
 | `<string.h>` smoke: `strlen` | PARTIAL | `tests/test_glibc_smoke_string_strlen.py` |
 | `<string.h>` smoke: `memcpy` | PARTIAL | `tests/test_glibc_smoke_string_memcpy.py` |
+| `<string.h>` smoke: `memcmp` | PARTIAL | `tests/test_glibc_smoke_string_memcmp.py` |
 
 ## Next actions
 
