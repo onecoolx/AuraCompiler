@@ -46,6 +46,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 
 - **PARTIAL** compile+run with `<stdio.h>`: `puts` — `tests/test_glibc_smoke_stdio.py`
 - **PARTIAL** compile+run with `<stdio.h>`: `printf` — `tests/test_glibc_smoke_stdio_printf.py`
+- **PARTIAL** compile+run with `<stdio.h>`: `snprintf` — `tests/test_glibc_smoke_stdio_snprintf.py`
 
 ### Expressions / Operators
 
