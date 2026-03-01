@@ -57,6 +57,7 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 | `<string.h>` smoke: `strlen` | PARTIAL | `tests/test_glibc_smoke_string_strlen.py` |
 | `<string.h>` smoke: `memcpy` | PARTIAL | `tests/test_glibc_smoke_string_memcpy.py` |
 | `<string.h>` smoke: `memcmp` | PARTIAL | `tests/test_glibc_smoke_string_memcmp.py` |
+| `<string.h>` smoke: `memset` | PARTIAL | `tests/test_glibc_smoke_string_memset.py` |
 
 ## Next actions
 

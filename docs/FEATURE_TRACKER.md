@@ -52,6 +52,7 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** compile+run with `<string.h>`: `strlen` — `tests/test_glibc_smoke_string_strlen.py`
 - **PARTIAL** compile+run with `<string.h>`: `memcpy` — `tests/test_glibc_smoke_string_memcpy.py`
 - **PARTIAL** compile+run with `<string.h>`: `memcmp` — `tests/test_glibc_smoke_string_memcmp.py`
+- **PARTIAL** compile+run with `<string.h>`: `memset` — `tests/test_glibc_smoke_string_memset.py`
 
 
 ### Expressions / Operators
