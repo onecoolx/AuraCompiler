@@ -76,7 +76,9 @@ class SemanticContext:
 
 class SemanticError(Exception):
     """Semantic analysis error"""
-    pass
+    def __init__(self, message: str, token=None):
+        super().__init__(message)
+        self.token = token
 
 
 class SemanticAnalyzer:
@@ -731,7 +733,9 @@ class SemanticAnalyzer:
             # C89: cannot take the address of a register object.
             if expr.operator == "&" and isinstance(expr.operand, Identifier):
                 if expr.operand.name in getattr(self, "_register_locals", set()):
-                    self.errors.append(f"Cannot take address of register variable '{expr.operand.name}'")
+                    self.errors.append(
+                        f"Cannot take address of register variable '{expr.operand.name}' at {expr.operand.line}:{expr.operand.column}"
+                    )
             # Also reject taking the address of any subobject of a register
             # object (e.g. `&s.x` where `s` is `register struct S s;`).
             if expr.operator == "&" and not isinstance(expr.operand, Identifier):
@@ -745,7 +749,9 @@ class SemanticAnalyzer:
 
                 b = _base_ident(expr.operand)
                 if b is not None and b.name in getattr(self, "_register_locals", set()):
-                    self.errors.append(f"Cannot take address of register variable '{b.name}'")
+                    self.errors.append(
+                        f"Cannot take address of register variable '{b.name}' at {b.line}:{b.column}"
+                    )
             if expr.operator == "+":
                 def _is_ptrlike(e: Expression) -> bool:
                     if isinstance(e, Identifier):

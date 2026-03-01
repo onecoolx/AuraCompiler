@@ -42,6 +42,11 @@ Rule: every new feature must add/extend tests under `tests/`.
 - **PARTIAL** function redeclaration compatibility checks (subset: return type + param count) — `tests/test_function_decl_compat.py`
 - **PARTIAL** builtin type `__builtin_va_list` parsing (modeled as opaque pointer-like type) — `tests/test_builtin_va_list_parsing.py`
 
+## glibc / system headers (smoke)
+
+- **PARTIAL** compile+run with `<stdio.h>`: `puts` — `tests/test_glibc_smoke_stdio.py`
+- **PARTIAL** compile+run with `<stdio.h>`: `printf` — `tests/test_glibc_smoke_stdio_printf.py`
+
 ### Expressions / Operators
 
 - **DONE** arithmetic/bitwise/compare/assignment/calls/?: — covered across many tests

@@ -45,6 +45,13 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 | SysV call alignment | DONE | integration tests + varargs tests |
 | varargs `%al` | DONE (subset) | `tests/test_variadic_printf_local_extern_proto.py` |
 
+## glibc / system headers (smoke)
+
+| Area | Status | Tests / Notes |
+|---|---:|---|
+| `<stdio.h>` smoke: `puts` | PARTIAL | `tests/test_glibc_smoke_stdio.py` |
+| `<stdio.h>` smoke: `printf` | PARTIAL | `tests/test_glibc_smoke_stdio_printf.py` |
+
 ## Next actions
 
 - Expand this matrix incrementally as features land.
