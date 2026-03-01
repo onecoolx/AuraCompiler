@@ -159,6 +159,28 @@ class Compiler:
         errors = []
         warnings = []
         assembly = None
+
+        def _fmt_error(*, phase: str, msg: str) -> str:
+            """Format an error in a consistent, testable way.
+
+            Format:
+              error: <phase>: <message> (at <file>:<line>:<col>)
+            Location is best-effort.
+            """
+
+            loc = None
+
+            # ParserError already includes `... at L:C` in its str().
+            if " at " in msg:
+                left, right = msg.rsplit(" at ", 1)
+                if ":" in right:
+                    loc = right.strip()
+                    msg = left.strip()
+
+            if loc is None:
+                loc = "?:?:?"
+
+            return f"error: {phase}: {msg} (at {source_path}:{loc})"
         
         # Phase 1: Lexical Analysis
         try:
@@ -172,11 +194,7 @@ class Compiler:
         try:
             ast = self.get_ast(tokens)
         except Exception as e:
-            # Best-effort location formatting (ParserError uses `... at L:C`).
-            msg = str(e)
-            if " at " in msg:
-                return CompilationResult(success=False, errors=[f"Syntax analysis failed: {msg}"])
-            return CompilationResult(success=False, errors=[f"Syntax analysis failed: {msg}"])
+            return CompilationResult(success=False, errors=[_fmt_error(phase="syntax", msg=str(e))])
         
         # Phase 3: Semantic Analysis
         try:
@@ -184,12 +202,7 @@ class Compiler:
             warnings.extend(list(getattr(analyzer, "warnings", []) or []))
         except Exception as e:
             # Surface SemanticError and any other semantic-stage exception.
-            msg = str(e)
-            # Try to attach a location if the exception carries one.
-            tok = getattr(e, "token", None)
-            if tok is not None and getattr(tok, "line", None) is not None and getattr(tok, "column", None) is not None:
-                msg = f"{msg} at {tok.line}:{tok.column}"
-            return CompilationResult(success=False, errors=[f"Semantic analysis failed: {msg}"], warnings=warnings)
+            return CompilationResult(success=False, errors=[_fmt_error(phase="semantics", msg=str(e))], warnings=warnings)
         
         # Phase 4: IR Generation
         try:

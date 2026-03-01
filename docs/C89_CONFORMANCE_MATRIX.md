@@ -52,6 +52,7 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 | `<stdio.h>` smoke: `puts` | PARTIAL | `tests/test_glibc_smoke_stdio.py` |
 | `<stdio.h>` smoke: `printf` | PARTIAL | `tests/test_glibc_smoke_stdio_printf.py` |
 | `<stdio.h>` smoke: `snprintf` | PARTIAL | `tests/test_glibc_smoke_stdio_snprintf.py` |
+| `<stdio.h>` smoke: `snprintf` | PARTIAL | `tests/test_glibc_smoke_stdio_snprintf.py` |
 
 ## Next actions
 

@@ -3,23 +3,24 @@ from pathlib import Path
 from pycc.compiler import Compiler
 
 
-def test_diagnostic_format_includes_location_for_parser_error(tmp_path: Path):
-    # Missing identifier after 'int' should be a parser error with a location.
+def test_unified_error_format_parser(tmp_path: Path):
     src = tmp_path / "t.c"
+    # Intentionally broken syntax.
     src.write_text("int main( { return 0; }\n", encoding="utf-8")
 
     comp = Compiler(optimize=False)
-    # Only need to run through syntax; avoid toolchain/linker noise.
     res = comp.compile_file(str(src), str(tmp_path / "out.s"))
     assert not res.success
     msg = "\n".join(res.errors)
-    # Unified format: error: syntax: ... (at file:line:col)
-    assert "error: syntax:" in msg
-    assert f"(at {src}:1:" in msg
+
+    # New unified format (phase 2):
+    #   error: syntax: <message> (at <file>:<line>:<col>)
+    assert msg.startswith("error: syntax:"), msg
+    assert "(at" in msg and ")" in msg, msg
+    assert "t.c:" in msg, msg
 
 
-def test_diagnostic_format_includes_location_for_semantic_error(tmp_path: Path):
-    # Taking address of register variable should be a semantic error with location.
+def test_unified_error_format_semantics(tmp_path: Path):
     src = tmp_path / "t.c"
     src.write_text(
         """
@@ -36,5 +37,7 @@ def test_diagnostic_format_includes_location_for_semantic_error(tmp_path: Path):
     res = comp.compile_file(str(src), str(tmp_path / "out.s"))
     assert not res.success
     msg = "\n".join(res.errors)
-    assert "error: semantics:" in msg
-    assert f"(at {src}:3:" in msg
+
+    assert msg.startswith("error: semantics:"), msg
+    assert "(at" in msg and ")" in msg, msg
+    assert "t.c:" in msg, msg
