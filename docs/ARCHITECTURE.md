@@ -242,7 +242,9 @@ Codegen responsibilities:
 - Lowering `__builtin_va_start(ap, last_named)` initializes the tag:
     - `gp_offset = named_gp_count * 8`
     - `fp_offset = 48`
-    - `overflow_arg_area` points just past the return address (best-effort)
+    - `overflow_arg_area` points just past the return address (best-effort; this
+        is only correct when all variadic args are still in registers. Precise
+        stack vararg tracking is not implemented yet.)
     - `reg_save_area` points at the reserved save area in the current frame
 - The GP save area uses fixed 8-byte slots (offsets relative to
     `va_list.reg_save_area`):
