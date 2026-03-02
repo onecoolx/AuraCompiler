@@ -1,6 +1,6 @@
 C89 Implementation Roadmap (Living)
 
-Last updated: 2026-02-25
+Last updated: 2026-03-02
 
 目标
 - 以可执行、可验证（tests）方式推进：
@@ -29,6 +29,13 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - **DONE** 控制流（if/while/do/for/switch）+ break/continue：多文件覆盖
 - **DONE** `&&`/`||` 短路：`tests/test_short_circuit.py`
 - **PARTIAL** 类型系统：整数提升/常见算术转换尚未完全实现（见阶段 2）
+
+补充（2026-03-02 现状）
+- `pytest -q`：**450 passed**（测试为准）。
+- 目标平台关键 ABI 点已覆盖并有回归测试：
+	- SysV AMD64 variadic ABI：`printf` 类调用点 `%al` 规则、以及 `va_list` 传递给 libc `v*` 系列（`vsnprintf` 等）。
+	- 相关实现与不变量记录：`docs/ARCHITECTURE.md` → “2.6.1 Variadic functions and `va_list`”。
+	- 相关回归测试（示例）：`tests/test_varargs_va_list_pass_to_libc_vsnprintf.py`。
 
 阶段 1.1 — 语言核心待补齐（TODO backlog）
 - **TODO** 完整的声明器组合（函数指针、复杂嵌套声明器）
@@ -74,6 +81,8 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - C-style cast `(type)expr`（最小子集）
 - `goto`/labels
 - `&&` / `||` 短路
+
+注：上面的“109 tests”已过期；以 `pytest -q` 输出为准（当前 450）。
 
 引用文件
 - `pycc/parser.py`, `pycc/semantics.py`, `pycc/ast_nodes.py`, `pycc/codegen.py`

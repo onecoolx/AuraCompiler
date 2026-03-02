@@ -26,19 +26,19 @@ pycc/
 ├── pycc/                        # Main compiler package
 │   ├── __init__.py              # Package initialization
 │   ├── lexer.py                 # Lexical analysis (COMPLETE ✓)
-│   ├── parser.py                # Syntax analysis (TODO)
+│   ├── parser.py                # Syntax analysis (IMPLEMENTED ✓; still expanding)
 │   ├── ast_nodes.py             # AST definitions (COMPLETE ✓)
-│   ├── semantics.py             # Semantic analysis (TODO)
-│   ├── ir.py                    # Intermediate representation (TODO)
-│   ├── optimizer.py             # Optimization passes (TODO)
-│   ├── codegen.py               # Code generation (TODO)
+│   ├── semantics.py             # Semantic analysis (IMPLEMENTED ✓; conservative)
+│   ├── ir.py                    # Intermediate representation (IMPLEMENTED ✓)
+│   ├── optimizer.py             # Optimization passes (PARTIAL ✓)
+│   ├── codegen.py               # Code generation (IMPLEMENTED ✓)
 │   └── compiler.py              # Main compiler driver (PARTIAL ✓)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_lexer.py            # Lexer unit tests (COMPLETE ✓)
-│   ├── test_parser.py           # Parser unit tests (TODO)
-│   ├── test_semantics.py        # Semantic tests (TODO)
-│   ├── test_codegen.py          # Code gen tests (TODO)
+│   ├── test_parser.py           # Parser unit tests (legacy placeholder; see many feature tests instead)
+│   ├── test_semantics.py        # Semantic tests (legacy placeholder; see many feature tests instead)
+│   ├── test_codegen.py          # Code gen tests (legacy placeholder; see many feature tests instead)
 │   ├── test_integration.py      # Integration tests (COMPLETE ✓)
 │   └── testcases/               # C source test files (TODO)
 ├── examples/
@@ -53,7 +53,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. See `docs/FEATURE_TRACKER.md` for the current snapshot.
+**Test status:** `pytest -q` is the source of truth. Current tree: **450 tests passing**.
 
 ### Recent changes
 
@@ -63,6 +63,8 @@ pycc/
 - Fixed a for-loop infinite-loop bug caused by stack slot aliasing between user locals (`@i/@j`) and IR temporaries (`%t*`). Root cause was an inconsistent frame-offset scheme when reserving a fixed spill area; compare results were accidentally stored into the loop variable slot.
 - Implemented a consistent frame layout rule in `pycc/codegen.py`: declared locals occupy the top of the frame; temps/spills use a reserved spill region below locals; any late-discovered locals are allocated below the spill region. This prevents overlaps and stabilizes control-flow correctness.
 - Preprocessor: improved `#if` expression compatibility for system headers by accepting integer literal suffixes (e.g. `201710L`) and tolerating function-like macro calls in `#if` (treated as 0). Also enhanced `#if` error diagnostics with file:line and the expression text.
+
+- Variadic ABI (SysV AMD64): fixed glibc-compatible `va_list` handling so a `va_list` can be passed to libc `v*` entrypoints (e.g. `vsnprintf`). Documented in `docs/ARCHITECTURE.md` (2.6.1) and covered by regression tests.
 
 **Implemented highlights (see tests/):**
 - Globals + initializers (including global `char*` string literal pointer init)
@@ -77,7 +79,7 @@ pycc/
 - `goto`/labels
 
 **Known gaps (updated):**
-- Preprocessor is still incomplete. See `docs/FEATURE_TRACKER.md`.
+- Preprocessor is still incomplete. See `docs/PREPROCESSOR_C89_CHECKLIST.md`.
 - No floating point (`float`/`double`) codegen/type rules
 - C89 integer promotions / usual arithmetic conversions not fully modeled
 - Full declarator/type grammar coverage is incomplete (many edge cases)
@@ -890,7 +892,7 @@ The project is organized to be completed in 5-6 weeks with clear deliverables at
 
 ---
 
-**Project Status**: Phase 1 COMPLETE ✓ | Phase 2-6 IN PROGRESS
+**Project Status**: Actively progressing toward full C89 coverage; core pipeline is working end-to-end with broad tests. See `docs/C89_ROADMAP.md` and `docs/PREPROCESSOR_C89_CHECKLIST.md`.
 
 **Current Version**: 0.1.0 - Lexer & AST Complete
 
