@@ -38,6 +38,12 @@ class CodeGenerator:
         self._string_pool: Dict[str, str] = {}
         self._string_counter = 0
 
+        # SysV AMD64 varargs ABI constants (glibc).
+        self._VARARGS_GP_SAVE_AREA_SIZE = 48
+        self._VARARGS_REG_SAVE_AREA_SIZE = 176
+        self._VARARGS_VA_LIST_TAG_AREA_SIZE = 32
+        self._VARARGS_FIRST_STACK_ARG_OFF = 16
+
         # per-function
         self._locals: Dict[str, int] = {}
         self._arrays: Dict[str, int] = {}
@@ -363,9 +369,7 @@ class CodeGenerator:
             # Layout (lowest addresses):
             #   [reg_save_area 176B] [tag area 32B]
             # Both are addressed via fixed -off(%rbp) offsets.
-            REG_SAVE_AREA_SIZE = 176
-            VA_LIST_TAG_AREA_SIZE = 32
-            abi_reserve = VA_LIST_TAG_AREA_SIZE + REG_SAVE_AREA_SIZE
+            abi_reserve = self._VARARGS_VA_LIST_TAG_AREA_SIZE + self._VARARGS_REG_SAVE_AREA_SIZE
             # keep 16B alignment
             if abi_reserve % 16 != 0:
                 abi_reserve += 16 - (abi_reserve % 16)
@@ -383,12 +387,11 @@ class CodeGenerator:
             # Invariants (all offsets are positive integers used as -off(%rbp)):
             #   reg_save_area_addr = rbp - _varargs_reg_save_base
             #   tag_addr           = rbp - _varargs_tag_base
-            #   tag_addr           = reg_save_area_addr - REG_SAVE_AREA_SIZE
+            #   tag_addr           = reg_save_area_addr - _VARARGS_REG_SAVE_AREA_SIZE
             #
             # `reg_save_area` begins with the 48-byte GP slots (rdi..r9).
-            GP_SAVE_AREA_SIZE = 48
-            self._varargs_reg_save_base = int(self._stack_size - GP_SAVE_AREA_SIZE)
-            self._varargs_tag_base = int(self._stack_size - GP_SAVE_AREA_SIZE - REG_SAVE_AREA_SIZE)
+            self._varargs_reg_save_base = int(self._stack_size - self._VARARGS_GP_SAVE_AREA_SIZE)
+            self._varargs_tag_base = int(self._stack_size - self._VARARGS_GP_SAVE_AREA_SIZE - self._VARARGS_REG_SAVE_AREA_SIZE)
 
             # Count named GP params (excluding the '...').
             self._varargs_named_gpr_count = 0
@@ -712,8 +715,6 @@ class CodeGenerator:
                 # passing it to libc (vsnprintf) works for GP args.
                 # Layout (glibc):
                 #   u32 gp_offset; u32 fp_offset; void* overflow; void* regsave;
-
-                GP_SAVE_AREA_SIZE = 48
                 #
                 # IMPORTANT: `va_list` on SysV is an array-of-1 struct. In C,
                 # the macro expansion passes a `va_list` lvalue, so the builtin
@@ -756,19 +757,18 @@ class CodeGenerator:
                 #   n   -> rsi (slot 1)
                 #   fmt -> rdx (slot 2)
                 # so the first vararg is in rcx (slot 3) => gp_offset = 3*8.
-                gp_off = min(GP_SAVE_AREA_SIZE, named_gp * 8)
+                gp_off = min(self._VARARGS_GP_SAVE_AREA_SIZE, named_gp * 8)
                 self._emit(f"  movl ${gp_off}, ({tag_reg})")
                 # fp_offset: byte offset within reg_save_area where FP regs start.
                 # SysV AMD64: FP area starts after 48 bytes of GP slots.
-                self._emit(f"  movl ${GP_SAVE_AREA_SIZE}, 4({tag_reg})")
+                self._emit(f"  movl ${self._VARARGS_GP_SAVE_AREA_SIZE}, 4({tag_reg})")
 
                 # overflow_arg_area: point to first stack vararg.
                 # Best-effort default: just past the return address.
                 # (Only used when gp_offset exceeds 48.)
                 # SysV frame: 0(%rbp)=old rbp, 8(%rbp)=retaddr, so +16 is the
                 # first stack argument slot.
-                FIRST_STACK_ARG_OFF = 16
-                self._emit(f"  leaq {FIRST_STACK_ARG_OFF}(%rbp), %r10")
+                self._emit(f"  leaq {self._VARARGS_FIRST_STACK_ARG_OFF}(%rbp), %r10")
                 self._emit(f"  movq %r10, 8({tag_reg})")
 
                 # Keep reg_save_area's GP slots consistent with the ABI.
