@@ -712,6 +712,8 @@ class CodeGenerator:
                 # passing it to libc (vsnprintf) works for GP args.
                 # Layout (glibc):
                 #   u32 gp_offset; u32 fp_offset; void* overflow; void* regsave;
+
+                GP_SAVE_AREA_SIZE = 48
                 #
                 # IMPORTANT: `va_list` on SysV is an array-of-1 struct. In C,
                 # the macro expansion passes a `va_list` lvalue, so the builtin
@@ -754,11 +756,11 @@ class CodeGenerator:
                 #   n   -> rsi (slot 1)
                 #   fmt -> rdx (slot 2)
                 # so the first vararg is in rcx (slot 3) => gp_offset = 3*8.
-                gp_off = min(48, named_gp * 8)
+                gp_off = min(GP_SAVE_AREA_SIZE, named_gp * 8)
                 self._emit(f"  movl ${gp_off}, ({tag_reg})")
                 # fp_offset: byte offset within reg_save_area where FP regs start.
                 # SysV AMD64: FP area starts after 48 bytes of GP slots.
-                self._emit(f"  movl $48, 4({tag_reg})")
+                self._emit(f"  movl ${GP_SAVE_AREA_SIZE}, 4({tag_reg})")
 
                 # overflow_arg_area: point to first stack vararg.
                 # Best-effort default: just past the return address.
