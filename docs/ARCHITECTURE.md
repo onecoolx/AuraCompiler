@@ -224,6 +224,14 @@ Param: param x (for function calls)
 AuraCompiler targets the SysV AMD64 ABI on Linux. For variadic functions we
 implement the ABI form of `va_list` used by glibc:
 
+ABI constants used by the current implementation:
+
+- GP save area size: 48 bytes (6 registers * 8 bytes)
+- FP save area size: 128 bytes (8 XMM registers * 16 bytes)
+- `reg_save_area` size: 176 bytes (GP + FP)
+- `va_list` tag area reservation in the frame: 32 bytes
+- First stack argument offset from `%rbp`: 16 bytes
+
 - Conceptually, `va_list` is an **array-of-1** `struct __va_list_tag`.
 - When passed as a function argument, it **decays to a pointer** to the tag
     (i.e. a `struct __va_list_tag*`).
@@ -241,7 +249,7 @@ Codegen responsibilities:
     incoming GP argument registers (`rdi..r9`) into the ABI-defined slots.
 - Lowering `__builtin_va_start(ap, last_named)` initializes the tag:
     - `gp_offset = named_gp_count * 8`
-    - `fp_offset = 48`
+    - `fp_offset = 48` (start of the FP save area)
     - `overflow_arg_area` points just past the return address (best-effort; this
         is only correct when all variadic args are still in registers. Precise
         stack vararg tracking is not implemented yet.)
