@@ -2,7 +2,13 @@
 
 Last updated: 2026-03-01
 
-This is the **single source of truth** for feature status.
+Status: **DEPRECATED** (kept for historical context).
+
+Current sources of truth:
+- Test results: `pytest -q`
+- Language roadmap: `docs/C89_ROADMAP.md`
+- Preprocessor checklist (quantified): `docs/PREPROCESSOR_C89_CHECKLIST.md`
+- Project summary: `docs/PROJECT_SUMMARY.md`
 
 Rules:
 - Status is **test-driven**: mark **DONE** only when at least one test proves it.

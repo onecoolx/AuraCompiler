@@ -11,7 +11,10 @@
 
 ## 0. 当前实现状态（以现有 tests 为准）
 
-单一真相源：`docs/FEATURE_TRACKER.md`（能力状态）和 `pytest -q`（测试结果）。
+单一真相源：`pytest -q`（测试结果）。能力追踪见：
+- `docs/C89_ROADMAP.md`
+- `docs/PROJECT_SUMMARY.md`
+- 预处理器量化清单：`docs/PREPROCESSOR_C89_CHECKLIST.md`
 合规映射表：`docs/C89_CONFORMANCE_MATRIX.md`。
 
 ### 0.1 词法/解析

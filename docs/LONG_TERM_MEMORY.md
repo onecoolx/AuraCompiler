@@ -48,8 +48,9 @@ Reason: IR comparisons and other expressions store results into `%t*` temps; if 
 - Test suite is the source of truth.
 
 Single source of truth for human-readable status:
-- `docs/FEATURE_TRACKER.md`
-- `docs/C89_CONFORMANCE_MATRIX.md` (spec area ↔ tests ↔ status)
+- `docs/C89_ROADMAP.md` (language roadmap)
+- `docs/PREPROCESSOR_C89_CHECKLIST.md` (quantified preprocessor gap)
+- `docs/C89_CONFORMANCE_MATRIX.md` (spec area ↔ tests ↔ status; if present)
 
 When updating this snapshot, include:
 - `pytest -q` result summary (counts)
