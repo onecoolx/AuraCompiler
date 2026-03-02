@@ -726,23 +726,13 @@ class CodeGenerator:
                 # address, and we must load that pointer.
                 ap = (ins.args or [None, None])[0]
 
-                # Always use the pre-reserved tag area (32B) for the va_list tag.
-                # This avoids growing the frame in the middle of the function,
-                # which can desynchronize reg_save_area placement.
+                # We store a *tag pointer* into the user-visible `ap` local.
+                # Our frame reserves a dedicated tag slot at rbp-_varargs_tag_base.
                 self._addr_of_symbol(ap or "", "%rax")  # rax = &ap_slot
-                # `_varargs_tag_base` is the offset of the start of the 32B tag
-                # area (which lives *above* the 176B reg_save_area). In our
-                # addressing scheme, reg_save_area starts at rbp-_stack_size.
-                # So tag starts at: (rbp - _stack_size) + 176.
-                reg_base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
                 tag_base = int(getattr(self, "_varargs_tag_base", 0) or 0)
                 if not tag_base:
-                    # Fallback: place tag at the bottom of current frame.
+                    # Fallback: use the current frame bottom.
                     tag_base = int(getattr(self, "_stack_size", 0) or 0)
-                # If bases are set, compute tag as reg_save_area_addr + 176.
-                if reg_base and tag_base:
-                    # tag_offset = reg_base - 176
-                    tag_base = reg_base - 176
                 self._emit(f"  leaq -{tag_base}(%rbp), %r12")
                 self._emit("  movq %r12, (%rax)")
                 tag_reg = "%r12"
