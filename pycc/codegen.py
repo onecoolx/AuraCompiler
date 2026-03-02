@@ -346,8 +346,8 @@ class CodeGenerator:
         #
         # SysV glibc expects `va_list.reg_save_area` to reference a 176-byte
         # reg_save_area:
-        #   - 6*8 bytes for rdi..r9 (48 bytes)
-        #   - 8*16 bytes for xmm0..xmm7 (128 bytes)
+        #   - GP save area: 6 * 8 bytes for rdi..r9 (48 bytes)
+        #   - FP save area: 8 * 16 bytes for xmm0..xmm7 (128 bytes)
         #
         # The critical part for our milestone is the GP save area.
         self._varargs_reg_save_base = None  # offset of start of 176B area
@@ -363,7 +363,9 @@ class CodeGenerator:
             # Layout (lowest addresses):
             #   [reg_save_area 176B] [tag area 32B]
             # Both are addressed via fixed -off(%rbp) offsets.
-            abi_reserve = 32 + 176
+            REG_SAVE_AREA_SIZE = 176
+            VA_LIST_TAG_AREA_SIZE = 32
+            abi_reserve = VA_LIST_TAG_AREA_SIZE + REG_SAVE_AREA_SIZE
             # keep 16B alignment
             if abi_reserve % 16 != 0:
                 abi_reserve += 16 - (abi_reserve % 16)
@@ -381,11 +383,12 @@ class CodeGenerator:
             # Invariants (all offsets are positive integers used as -off(%rbp)):
             #   reg_save_area_addr = rbp - _varargs_reg_save_base
             #   tag_addr           = rbp - _varargs_tag_base
-            #   tag_addr           = reg_save_area_addr - 176
+            #   tag_addr           = reg_save_area_addr - REG_SAVE_AREA_SIZE
             #
             # `reg_save_area` begins with the 48-byte GP slots (rdi..r9).
-            self._varargs_reg_save_base = int(self._stack_size - 48)
-            self._varargs_tag_base = int(self._stack_size - 48 - 176)
+            GP_SAVE_AREA_SIZE = 48
+            self._varargs_reg_save_base = int(self._stack_size - GP_SAVE_AREA_SIZE)
+            self._varargs_tag_base = int(self._stack_size - GP_SAVE_AREA_SIZE - REG_SAVE_AREA_SIZE)
 
             # Count named GP params (excluding the '...').
             self._varargs_named_gpr_count = 0
