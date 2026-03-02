@@ -244,6 +244,16 @@ Codegen responsibilities:
     - `fp_offset = 48`
     - `overflow_arg_area` points just past the return address (best-effort)
     - `reg_save_area` points at the reserved save area in the current frame
+- The GP save area uses fixed 8-byte slots (offsets relative to
+    `va_list.reg_save_area`):
+    - +0:  `rdi`
+    - +8:  `rsi`
+    - +16: `rdx`
+    - +24: `rcx`
+    - +32: `r8`
+    - +40: `r9`
+    Example: `wrap(out, n, fmt, ...)` has 3 named GP args, so the first variadic
+    arg is in `rcx` and `gp_offset = 3 * 8 = 24`.
 - For calls into libc `v*` entrypoints (`vsnprintf`, `vfprintf`, ...), the 4th
     argument must be a **tag pointer**. If the frontend models `va_list` as a
     pointer-sized local slot holding that tag pointer, codegen must load and pass
