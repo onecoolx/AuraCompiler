@@ -765,7 +765,10 @@ class CodeGenerator:
                 # overflow_arg_area: point to first stack vararg.
                 # Best-effort default: just past the return address.
                 # (Only used when gp_offset exceeds 48.)
-                self._emit("  leaq 16(%rbp), %r10")
+                # SysV frame: 0(%rbp)=old rbp, 8(%rbp)=retaddr, so +16 is the
+                # first stack argument slot.
+                FIRST_STACK_ARG_OFF = 16
+                self._emit(f"  leaq {FIRST_STACK_ARG_OFF}(%rbp), %r10")
                 self._emit(f"  movq %r10, 8({tag_reg})")
 
                 # Keep reg_save_area's GP slots consistent with the ABI.
