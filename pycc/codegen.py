@@ -340,15 +340,16 @@ class CodeGenerator:
                 self._var_types[d.result] = str(d.operand1)
             reg_idx += 1
 
-        # Varargs support (minimal, SysV AMD64): build a register save area so
-        # that a va_list can be passed to libc.
+        # Varargs support (SysV AMD64): reserve a fixed reg_save_area and tag
+        # area in the callee frame so `__builtin_va_start` can produce a glibc
+        # ABI-compatible `va_list`.
         #
-        # SysV glibc expects `va_list` to reference a 176-byte reg_save_area:
+        # SysV glibc expects `va_list.reg_save_area` to reference a 176-byte
+        # reg_save_area:
         #   - 6*8 bytes for rdi..r9 (48 bytes)
         #   - 8*16 bytes for xmm0..xmm7 (128 bytes)
         #
-        # The critical part for our milestone is the GP save area, because
-        # vsnprintf will fetch `%s`/`%d` from it via gp_offset.
+        # The critical part for our milestone is the GP save area.
         self._varargs_reg_save_base = None  # offset of start of 176B area
         self._varargs_tag_base = None  # offset of start of 32B tag area
         self._varargs_named_gpr_count = 0
@@ -374,30 +375,17 @@ class CodeGenerator:
                     self.assembly_lines[idx] = f"  subq ${self._stack_size}, %rsp"
                     break
 
-            # ABI region lives at the very bottom of the frame.
-            # Place reg_save_area in the lowest 176 bytes, and the tag area
-            # immediately above it (32 bytes). Use absolute offsets from %rbp
-            # so the two regions never overlap.
+            # ABI region lives at the very bottom of the frame and is addressed
+            # via fixed -off(%rbp) offsets (so later spills cannot overlap it).
             #
+            # Invariants (all offsets are positive integers used as -off(%rbp)):
             #   reg_save_area_addr = rbp - _varargs_reg_save_base
-            #   tag_addr          = rbp - _varargs_tag_base
-            # with: tag_addr == reg_save_area_addr - 176
-            # reg_save_area starts at rbp - _stack_size.
-            # We want the GP slots to start at (rbp - _varargs_reg_save_base).
-            # Use the first 48 bytes of that region for rdi..r9, matching SysV.
-            self._varargs_reg_save_base = int(self._stack_size - 48)
-            # Tag starts immediately above the 176B reg_save_area.
-            self._varargs_tag_base = int(self._stack_size - 48 - 176)
-
-            # Place the 176B save area *below* the declared locals. We reserved
-            # stack space by extending `_stack_size`, so we can address it via
-            # fixed -off(%rbp) offsets.
+            #   tag_addr           = rbp - _varargs_tag_base
+            #   tag_addr           = reg_save_area_addr - 176
             #
-            # Layout we use:
-            #   reg_save_area starts at rbp-(_locals_base + 176)
-            #   GP save slots at:
-            #     +0 rdi, +8 rsi, +16 rdx, +24 rcx, +32 r8, +40 r9
-            # NOTE: _varargs_reg_save_base is set above after reserving ABI area.
+            # `reg_save_area` begins with the 48-byte GP slots (rdi..r9).
+            self._varargs_reg_save_base = int(self._stack_size - 48)
+            self._varargs_tag_base = int(self._stack_size - 48 - 176)
 
             # Count named GP params (excluding the '...').
             self._varargs_named_gpr_count = 0
