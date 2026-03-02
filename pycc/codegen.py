@@ -790,11 +790,10 @@ class CodeGenerator:
                 self._emit("  leaq 16(%rbp), %r10")
                 self._emit(f"  movq %r10, 8({tag_reg})")
 
-                # Some libc implementations expect the GP slots in reg_save_area
-                # to contain the actual incoming argument values. Our prologue
-                # saves them, but to guard against layout drift, also refresh
-                # the vararg-relevant slots here (rcx/r8/r9) from current regs.
-                # This must happen before calling into libc.
+                # Keep reg_save_area's GP slots consistent with the ABI.
+                # We save incoming arg regs in the prologue; refresh the
+                # vararg-relevant slots (rcx/r8/r9) in case later codegen
+                # clobbered them before va_start runs.
                 base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
                 if base:
                     # `base` is the offset such that reg_save_area_addr = rbp - base.
@@ -871,28 +870,14 @@ class CodeGenerator:
                     continue
                 self._emit(f"  movq %rax, {arg_regs[idx]}")
 
-            # ABI fix: glibc's `va_list` is an array-of-1 `struct __va_list_tag`.
-            # When used as a function argument, it decays to a pointer to the tag.
-            # Our frontend currently models `va_list` as a pointer-sized scalar,
-            # and locals passed as `ap` are loaded by value (first 8 bytes of the
-            # tag), which is not a valid tag pointer and can crash libc.
-            #
-            # Heuristic: for known libc varargs entrypoints that take a `va_list`
-            # (e.g. vsnprintf), rewrite arg3 to pass the correct ABI form.
+            # ABI fix: SysV `va_list` is an array-of-1 tag; when passed as an
+            # argument it decays to a pointer to that tag.
             target_name = (ins.operand1 or "")
             if target_name.startswith("@"):  # symbol
                 target_name = target_name[1:]
             if target_name in {"vsnprintf", "vprintf", "vfprintf", "vsprintf", "vasprintf", "vdprintf"}:
                 if ins.args and len(ins.args) >= 4:
-                    a3 = ins.args[3]
-                    # Defer rewriting the va_list argument until immediately
-                    # before emitting the call (see below). Here we only
-                    # remember the operand.
-                    va_list_fix_operand = a3
-                else:
-                    va_list_fix_operand = None
-            else:
-                va_list_fix_operand = None
+                    pass
 
             # SysV AMD64 ABI: for variadic calls, %al must contain the number
             # of vector registers used to pass arguments. We don't pass any
