@@ -2,7 +2,9 @@
 
 This document is a **living plan**. It reflects the current repo reality and is updated as features land.
 
-Current status: `pytest -q` and `docs/FEATURE_TRACKER.md` are the source of truth.
+Current status: `pytest -q` is the source of truth. For detailed tracking:
+- C89 language roadmap: `docs/C89_ROADMAP.md`
+- Preprocessor checklist (quantified): `docs/PREPROCESSOR_C89_CHECKLIST.md`
 
 ## Status Summary (Reality)
 
@@ -10,6 +12,8 @@ The compiler already works end-to-end for a practical C89 subset:
 
 - Lexer → Parser → Semantics → IR → Optimizer → x86-64 codegen → `as`/`ld`
 - Covered by a reasonably broad pytest suite.
+
+As of 2026-03-02: `pytest -q` reports **450 tests passing**.
 
 However, it is **not yet fully conforming C89**. The remaining work is tracked below.
 
@@ -19,7 +23,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 
 ### Phase A — Preprocessing (required for real-world C89)
 
-- [ ] **TODO** Implement a preprocessor stage in the driver
+- [~] **PARTIAL** Preprocessor stage (internal `-E` and `--use-system-cpp` integration)
   - [ ] `#include` (at least quoted includes + include paths)
   - [ ] Object-like macros (`#define NAME value`) and simple expansion
   - [ ] Conditional compilation: `#if/#ifdef/#ifndef/#elif/#else/#endif`
@@ -27,6 +31,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
   - [ ] `#error`
   - Acceptance: compile programs that use `<stdio.h>` via `#include` (with a minimal shim or system headers subset)
   - Tests: unit tests for macro expansion + integration tests compiling code using `#include`.
+  - Source of truth: `docs/PREPROCESSOR_C89_CHECKLIST.md`
 
 ### Phase B — Type System Correctness (C89 core rules)
 
