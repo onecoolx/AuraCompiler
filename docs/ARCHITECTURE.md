@@ -219,6 +219,36 @@ Param: param x (for function calls)
   - Callee-saved: rbx, rbp, r12-r15
   - Caller-saved: rax, rcx, rdx, rsi, rdi, r8-r11
 
+#### 2.6.1 Variadic functions and `va_list` (SysV AMD64)
+
+AuraCompiler targets the SysV AMD64 ABI on Linux. For variadic functions we
+implement the ABI form of `va_list` used by glibc:
+
+- Conceptually, `va_list` is an **array-of-1** `struct __va_list_tag`.
+- When passed as a function argument, it **decays to a pointer** to the tag
+    (i.e. a `struct __va_list_tag*`).
+
+The tag layout is (24 bytes total):
+
+- `u32 gp_offset`: byte offset into the GP save area (0..48)
+- `u32 fp_offset`: byte offset into the FP save area (starts at 48)
+- `void* overflow_arg_area`: pointer to stack-based variadic args
+- `void* reg_save_area`: pointer to the register save area
+
+Codegen responsibilities:
+
+- For a *variadic callee*, the prologue reserves a `reg_save_area` and stores
+    incoming GP argument registers (`rdi..r9`) into the ABI-defined slots.
+- Lowering `__builtin_va_start(ap, last_named)` initializes the tag:
+    - `gp_offset = named_gp_count * 8`
+    - `fp_offset = 48`
+    - `overflow_arg_area` points just past the return address (best-effort)
+    - `reg_save_area` points at the reserved save area in the current frame
+- For calls into libc `v*` entrypoints (`vsnprintf`, `vfprintf`, ...), the 4th
+    argument must be a **tag pointer**. If the frontend models `va_list` as a
+    pointer-sized local slot holding that tag pointer, codegen must load and pass
+    the pointee (not the address of the local).
+
 - Function prologue/epilogue generation
 - Stack frame management
 - Register allocation (simple greedy)
