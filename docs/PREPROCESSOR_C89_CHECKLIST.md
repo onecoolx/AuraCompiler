@@ -1,6 +1,6 @@
 # C89 Preprocessor Checklist (Quantified)
 
-Last updated: 2026-02-27
+Last updated: 2026-03-02
 
 Purpose:
 - Provide a **quantified gap** vs. a "full" C89-style preprocessor.

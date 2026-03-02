@@ -1,5 +1,7 @@
 # C89 Conformance Matrix (stub)
 
+Last updated: 2026-03-02
+
 Purpose:
 - Provide a **spec-area ↔ tests ↔ status** map.
 - Reduce ambiguity when planning phases and reviewing regressions.

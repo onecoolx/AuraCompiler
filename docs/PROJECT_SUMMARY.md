@@ -1,5 +1,7 @@
 # AuraCompiler (pycc): Practical C89 Compiler - Project Summary
 
+Last updated: 2026-03-02
+
 ## Executive Summary
 
 AuraCompiler is a practical C89/ANSI C compiler in Python targeting x86-64 SysV Linux. It follows a classic frontend/middle/back pipeline and is driven by an end-to-end pytest suite. This document provides:

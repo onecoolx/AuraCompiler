@@ -1,6 +1,6 @@
 # AuraCompiler Feature Tracker (Living)
 
-Last updated: 2026-03-01
+Last updated: 2026-03-02
 
 Status: **DEPRECATED** (kept for historical context).
 

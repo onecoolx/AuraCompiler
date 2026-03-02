@@ -1,5 +1,7 @@
 # AuraCompiler (pycc) Development Plan & Roadmap
 
+Last updated: 2026-03-02
+
 This document is a **living plan**. It reflects the current repo reality and is updated as features land.
 
 Current status: `pytest -q` is the source of truth. For detailed tracking:

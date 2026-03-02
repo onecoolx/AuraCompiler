@@ -1,5 +1,7 @@
 # Long-Term Memory (Project + Workflow)
 
+Last updated: 2026-03-02
+
 This document captures durable project context so work can continue smoothly even if conversation context is lost or a different agent takes over.
 
 ## 1) Project goal and scope
