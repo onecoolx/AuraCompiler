@@ -406,12 +406,7 @@ class CodeGenerator:
             self._emit(f"  movq %rcx, -{base + 24}(%rbp)")
             self._emit(f"  movq %r8,  -{base + 32}(%rbp)")
             self._emit(f"  movq %r9,  -{base + 40}(%rbp)")
-            # Make sure param spills do not clobber our reg_save_area.
-            # Our frame layout uses:
-            #   params at small offsets near rbp (e.g. -8,-16,...)
-            #   reg_save_area at rbp-(_locals_base+176)
-            # If a bug in local slot allocation caused overlap, fail fast by
-            # spacing the reg_save_area further down.
+
         
     # -----------------
     # Instruction emission
