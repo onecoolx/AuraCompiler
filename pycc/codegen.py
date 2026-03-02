@@ -774,8 +774,12 @@ class CodeGenerator:
                 # clobbered them before va_start runs.
                 base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
                 if base:
-                    # `base` is the offset such that reg_save_area_addr = rbp - base.
-                    # The GP slots are at +0..+40 within that area.
+                    # `base` is the offset such that:
+                    #   reg_save_area_addr = rbp - base
+                    # The GP slots are at:
+                    #   +0 rdi, +8 rsi, +16 rdx, +24 rcx, +32 r8, +40 r9
+                    # So the vararg-relevant slots are at:
+                    #   rcx: rbp-(base-24), r8: rbp-(base-32), r9: rbp-(base-40)
                     self._emit(f"  movq %rcx, -{base - 24}(%rbp)")
                     self._emit(f"  movq %r8,  -{base - 32}(%rbp)")
                     self._emit(f"  movq %r9,  -{base - 40}(%rbp)")
