@@ -453,11 +453,9 @@ class Parser:
                 if is_unsigned:
                     t.base = "unsigned short"
 
-            # GCC builtin type: treat as an opaque builtin that behaves like a pointer-sized scalar.
-            # We model it as a `void*`-like type in downstream codegen/IR.
-            if t.base == "__builtin_va_list":
-                t.base = "void"
-                t.is_pointer = True
+            # GCC builtin type: keep the name so downstream can apply ABI-aware
+            # lowering (e.g. when passing a va_list to libc on SysV AMD64).
+            # Treat it as an opaque scalar type for most semantic checks.
             return t
 
         # forms like: 'unsigned' (=> unsigned int), 'long' (=> long int), etc.

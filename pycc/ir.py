@@ -545,10 +545,20 @@ class IRGenerator:
         # Function-local static storage (lowered to global symbols).
         # Maps source name -> global symbol name (without leading '@').
         self._local_static_syms: dict[str, str] = {}
+        def _ty_str(t) -> str:
+            # Encode pointer-ness in the type string so codegen doesn't
+            # accidentally spill pointer args using 8/16/32-bit stores.
+            # (Our type system is still stringly-typed in later stages.)
+            base = str(getattr(t, "base", ""))
+            if getattr(t, "is_pointer", False):
+                return f"{base}*"
+            return base
+
         # params are treated as locals; codegen will map them from ABI regs
         for p in fn.parameters:
-            self._var_types[f"@{p.name}"] = str(p.type.base)
-            self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=p.type.base))
+            ty_s = _ty_str(p.type)
+            self._var_types[f"@{p.name}"] = ty_s
+            self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=ty_s))
         self._gen_stmt(fn.body)
         # Ensure a return exists
         self.instructions.append(IRInstruction(op="ret", operand1="$0"))
@@ -971,6 +981,8 @@ class IRGenerator:
             t = self._new_temp()
             # encode string in IR as str_const with result temp
             self.instructions.append(IRInstruction(op="str_const", result=t, operand1=expr.value))
+            # Record that this temp is a pointer (char*).
+            self._var_types[t] = "char*"
             return t
         if isinstance(expr, SizeOf):
             # For now, lower sizeof to an immediate constant as best-effort.

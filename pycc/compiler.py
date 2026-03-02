@@ -133,6 +133,8 @@ class Compiler:
             "-D__has_attribute(x)=0",
             "-D__has_declspec_attribute(x)=0",
             "-D__has_cpp_attribute(x)=0",
+            # Keep the builtin type name simple for now.
+            # We'll model the ABI at codegen when lowering __builtin_va_start.
             "-D__builtin_va_list=void *",
             "-D__extension__=",
             # Drop gcc-style attributes from system headers.
@@ -152,16 +154,12 @@ class Compiler:
         if p.returncode != 0:
             msg = p.stderr.strip() or p.stdout.strip() or "(no output)"
             raise RuntimeError(f"system cpp failed: {msg}")
-        # Ensure varargs builtins do not leak into our codegen.
-        # In GCC/glibc headers, va_start/va_end typically expand to
-        # `__builtin_va_start` / `__builtin_va_end`. Our subset compiler does not
-        # implement these builtins, so treat them as no-ops. For the smoke tests
-        # we only care that headers parse and the program links/runs.
-        txt = p.stdout
-        txt = txt.replace("__builtin_va_start", "/*__builtin_va_start*/")
-        txt = txt.replace("__builtin_va_end", "/*__builtin_va_end*/")
-        txt = txt.replace("__builtin_va_copy", "/*__builtin_va_copy*/")
-        return txt
+        # Keep varargs builtins intact.
+        # In GCC/glibc headers, va_start/va_end expand to
+        # `__builtin_va_start` / `__builtin_va_end` and are required for correct
+        # runtime behavior when passing a va_list to libc (e.g. vsnprintf).
+        # We now handle these builtins in the frontend/codegen pipeline.
+        return p.stdout
     
     def compile_code(self, source_code: str, output_file: Optional[str] = None, source_path: str = "<input>") -> CompilationResult:
         """Compile source code"""

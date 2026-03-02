@@ -315,6 +315,12 @@ class CodeGenerator:
                 off = self._locals.get(d.result)
                 if off is not None:
                     ty = str(d.operand1 or self._var_types.get(d.result, "")).strip()
+                    # Special-case: pointer-like parameters may have been
+                    # recorded as "char" in our stringly-typed system.
+                    # Detect the common pattern `char*` by looking for
+                    # pointer uses recorded later.
+                    # Treat pointers/unknowns as 64-bit. Only use narrow stores
+                    # for true integer scalar types.
                     if ty == "char" or ty.startswith("char ") or ty == "unsigned char" or ty.startswith("unsigned char"):
                         r = arg_regs[reg_idx]
                         breg = {"%rdi": "%dil", "%rsi": "%sil", "%rdx": "%dl", "%rcx": "%cl", "%r8": "%r8b", "%r9": "%r9b"}.get(r, "%dil")
@@ -333,6 +339,91 @@ class CodeGenerator:
             if d.operand1:
                 self._var_types[d.result] = str(d.operand1)
             reg_idx += 1
+
+        # Varargs support (minimal, SysV AMD64): build a register save area so
+        # that a va_list can be passed to libc.
+        #
+        # SysV glibc expects `va_list` to reference a 176-byte reg_save_area:
+        #   - 6*8 bytes for rdi..r9 (48 bytes)
+        #   - 8*16 bytes for xmm0..xmm7 (128 bytes)
+        #
+        # The critical part for our milestone is the GP save area, because
+        # vsnprintf will fetch `%s`/`%d` from it via gp_offset.
+        self._varargs_reg_save_base = None  # offset of start of 176B area
+        self._varargs_tag_base = None  # offset of start of 32B tag area
+        self._varargs_named_gpr_count = 0
+
+        is_variadic = any((d.op == "param" and (d.result or "").lstrip("@") == "...") for d in decls)
+
+        if is_variadic:
+            # Reserve fixed ABI areas at the very bottom of the frame so that
+            # later local/temp allocation cannot overlap them.
+            #
+            # Layout (lowest addresses):
+            #   [reg_save_area 176B] [tag area 32B]
+            # Both are addressed via fixed -off(%rbp) offsets.
+            abi_reserve = 32 + 176
+            # keep 16B alignment
+            if abi_reserve % 16 != 0:
+                abi_reserve += 16 - (abi_reserve % 16)
+            self._stack_size += abi_reserve
+
+            # Patch already-emitted prologue to use the final frame size.
+            for idx, line in enumerate(self.assembly_lines[:16]):
+                if line.strip().startswith("subq $") and line.strip().endswith(", %rsp"):
+                    self.assembly_lines[idx] = f"  subq ${self._stack_size}, %rsp"
+                    break
+
+            # ABI region lives at the very bottom of the frame.
+            # Place reg_save_area in the lowest 176 bytes, and the tag area
+            # immediately above it (32 bytes). Use absolute offsets from %rbp
+            # so the two regions never overlap.
+            #
+            #   reg_save_area_addr = rbp - _varargs_reg_save_base
+            #   tag_addr          = rbp - _varargs_tag_base
+            # with: tag_addr == reg_save_area_addr - 176
+            # reg_save_area starts at rbp - _stack_size.
+            # We want the GP slots to start at (rbp - _varargs_reg_save_base).
+            # Use the first 48 bytes of that region for rdi..r9, matching SysV.
+            self._varargs_reg_save_base = int(self._stack_size - 48)
+            # Tag starts immediately above the 176B reg_save_area.
+            self._varargs_tag_base = int(self._stack_size - 48 - 176)
+
+            # Place the 176B save area *below* the declared locals. We reserved
+            # stack space by extending `_stack_size`, so we can address it via
+            # fixed -off(%rbp) offsets.
+            #
+            # Layout we use:
+            #   reg_save_area starts at rbp-(_locals_base + 176)
+            #   GP save slots at:
+            #     +0 rdi, +8 rsi, +16 rdx, +24 rcx, +32 r8, +40 r9
+            # NOTE: _varargs_reg_save_base is set above after reserving ABI area.
+
+            # Count named GP params (excluding the '...').
+            self._varargs_named_gpr_count = 0
+            for d in decls:
+                if d.op != "param" or not d.result:
+                    continue
+                nm = (d.result or "").lstrip("@")
+                if nm == "...":
+                    break
+                self._varargs_named_gpr_count += 1
+
+            base = self._varargs_reg_save_base
+            # Save *incoming* regs immediately in the prologue, before we use
+            # any of them as scratch.
+            self._emit(f"  movq %rdi, -{base + 0}(%rbp)")
+            self._emit(f"  movq %rsi, -{base + 8}(%rbp)")
+            self._emit(f"  movq %rdx, -{base + 16}(%rbp)")
+            self._emit(f"  movq %rcx, -{base + 24}(%rbp)")
+            self._emit(f"  movq %r8,  -{base + 32}(%rbp)")
+            self._emit(f"  movq %r9,  -{base + 40}(%rbp)")
+            # Make sure param spills do not clobber our reg_save_area.
+            # Our frame layout uses:
+            #   params at small offsets near rbp (e.g. -8,-16,...)
+            #   reg_save_area at rbp-(_locals_base+176)
+            # If a bug in local slot allocation caused overlap, fail fast by
+            # spacing the reg_save_area further down.
         
     # -----------------
     # Instruction emission
@@ -620,6 +711,118 @@ class CodeGenerator:
             return
 
         if op == "call":
+            # Builtins: handle varargs setup/teardown without emitting external calls.
+            # System headers expand va_start/va_end into these builtins.
+            target0 = (ins.operand1 or "")
+            if target0.startswith("@"):
+                target0 = target0[1:]
+            if target0 == "__builtin_va_end":
+                # SysV: va_end is a no-op.
+                self._store_result(ins.result, "$0")
+                return
+
+            if target0 == "__builtin_va_start":
+                # SysV AMD64 minimal: initialize the 24-byte __va_list_tag so
+                # passing it to libc (vsnprintf) works for GP args.
+                # Layout (glibc):
+                #   u32 gp_offset; u32 fp_offset; void* overflow; void* regsave;
+                #
+                # IMPORTANT: `va_list` on SysV is an array-of-1 struct. In C,
+                # the macro expansion passes a `va_list` lvalue, so the builtin
+                # receives a pointer to the first element (i.e. `&ap[0]`).
+                #
+                # If the frontend models `va_list` as the real array type, the
+                # operand will be a stack slot containing the tag itself.
+                # If the frontend models it as `void*` (via system-cpp defines),
+                # the operand will be a pointer-sized slot that holds the tag
+                # address, and we must load that pointer.
+                ap = (ins.args or [None, None])[0]
+
+                # Always use the pre-reserved tag area (32B) for the va_list tag.
+                # This avoids growing the frame in the middle of the function,
+                # which can desynchronize reg_save_area placement.
+                self._addr_of_symbol(ap or "", "%rax")  # rax = &ap_slot
+                # `_varargs_tag_base` is the offset of the start of the 32B tag
+                # area (which lives *above* the 176B reg_save_area). In our
+                # addressing scheme, reg_save_area starts at rbp-_stack_size.
+                # So tag starts at: (rbp - _stack_size) + 176.
+                reg_base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
+                tag_base = int(getattr(self, "_varargs_tag_base", 0) or 0)
+                if not tag_base:
+                    # Fallback: place tag at the bottom of current frame.
+                    tag_base = int(getattr(self, "_stack_size", 0) or 0)
+                # If bases are set, compute tag as reg_save_area_addr + 176.
+                if reg_base and tag_base:
+                    # tag_offset = reg_base - 176
+                    tag_base = reg_base - 176
+                self._emit(f"  leaq -{tag_base}(%rbp), %r12")
+                self._emit("  movq %r12, (%rax)")
+                tag_reg = "%r12"
+
+                # gp_offset: offset of the first *variable* argument within
+                # the GP save area. On SysV AMD64, the fixed args of the
+                # variadic function may already occupy some registers.
+                #
+                # The System V ABI uses a 6-slot GP area:
+                #   rdi,rsi,rdx,rcx,r8,r9
+                # For our supported subset, compute gp_offset from the number
+                # of fixed params, but note that `va_start(ap, last_named)`
+                # should start *after* the last named argument.
+                named_gp = int(getattr(self, "_varargs_named_gpr_count", 0) or 0)
+                # SysV AMD64: gp_offset is the byte offset *within the GP save area*
+                # of the next argument to be fetched. It should point to the first
+                # *variadic* argument slot, i.e. right after the last named argument.
+                #
+                # Example: wrap(out, n, fmt, ...) has 3 named GP args:
+                #   out -> rdi (slot 0)
+                #   n   -> rsi (slot 1)
+                #   fmt -> rdx (slot 2)
+                # so the first vararg is in rcx (slot 3) => gp_offset = 3*8.
+                gp_off = min(48, named_gp * 8)
+                self._emit(f"  movl ${gp_off}, ({tag_reg})")
+                # fp_offset: byte offset within reg_save_area where FP regs start.
+                # SysV AMD64: FP area starts after 48 bytes of GP slots.
+                self._emit(f"  movl $48, 4({tag_reg})")
+
+                # overflow_arg_area: point to first stack vararg.
+                # Best-effort default: just past the return address.
+                # (Only used when gp_offset exceeds 48.)
+                self._emit("  leaq 16(%rbp), %r10")
+                self._emit(f"  movq %r10, 8({tag_reg})")
+
+                # Some libc implementations expect the GP slots in reg_save_area
+                # to contain the actual incoming argument values. Our prologue
+                # saves them, but to guard against layout drift, also refresh
+                # the vararg-relevant slots here (rcx/r8/r9) from current regs.
+                # This must happen before calling into libc.
+                base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
+                if base:
+                    # `base` is the offset such that reg_save_area_addr = rbp - base.
+                    # The GP slots are at +0..+40 within that area.
+                    self._emit(f"  movq %rcx, -{base - 24}(%rbp)")
+                    self._emit(f"  movq %r8,  -{base - 32}(%rbp)")
+                    self._emit(f"  movq %r9,  -{base - 40}(%rbp)")
+
+                # reg_save_area: points to a contiguous save area:
+                #  - 6*8 bytes for rdi..r9 (48 bytes)
+                #  - 8*16 bytes for xmm0..xmm7 (128 bytes)
+                # We only populate the GP part for now.
+                # reg_save_area must match the prologue-saved area.
+                base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
+                if base:
+                    # reg_save_area_addr = rbp - base
+                    self._emit(f"  leaq -{base}(%rbp), %r11")
+                else:
+                    # Fallback (should not happen for a true variadic function)
+                    base2 = int(getattr(self, "_locals_base", 0))
+                    self._emit(f"  leaq -{base2 + 48 + 128}(%rbp), %r11")
+                self._emit(f"  movq %r11, 16({tag_reg})")
+
+
+
+                self._store_result(ins.result, "$0")
+                return
+
             # Ensure the stack is 16-byte aligned at the call instruction.
             # Our codegen sometimes grows the stack dynamically (e.g. spilling temps)
             # or does ad-hoc pushes; libc functions like printf assume proper alignment.
@@ -634,11 +837,62 @@ class CodeGenerator:
             # operand1 is function name or @name
             # args are operand strings
             arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
+
+            def _looks_like_ptr_arg(a: object) -> bool:
+                # Best-effort: IR temps for string literals are `%t*` and should
+                # be treated as pointers even if type info is missing.
+                if isinstance(a, str) and a.startswith("%t"):
+                    ty = self._var_types.get(a, "")
+                    if isinstance(ty, str) and "*" in ty:
+                        return True
+                    # Heuristic: string literal temps come from `str_const`.
+                    # If we don't have type, still treat as pointer.
+                    return True
+                return False
+
+            # SysV AMD64: args beyond r9 go on the stack (right-to-left).
+            stack_args = list(ins.args or [])[len(arg_regs):]
+            stack_pad = 0
+
+            if stack_args:
+                for a in reversed(stack_args):
+                    self._load_operand(a, "%rax")
+                    self._emit("  pushq %rax")
+                    stack_pad += 8
+                self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + stack_pad
+
             for idx, a in enumerate(ins.args or []):
                 if idx >= len(arg_regs):
                     break
                 self._load_operand(a, "%rax")
+                # If this is a pointer-y value, keep it as 64-bit.
+                if _looks_like_ptr_arg(a):
+                    self._emit(f"  movq %rax, {arg_regs[idx]}")
+                    continue
                 self._emit(f"  movq %rax, {arg_regs[idx]}")
+
+            # ABI fix: glibc's `va_list` is an array-of-1 `struct __va_list_tag`.
+            # When used as a function argument, it decays to a pointer to the tag.
+            # Our frontend currently models `va_list` as a pointer-sized scalar,
+            # and locals passed as `ap` are loaded by value (first 8 bytes of the
+            # tag), which is not a valid tag pointer and can crash libc.
+            #
+            # Heuristic: for known libc varargs entrypoints that take a `va_list`
+            # (e.g. vsnprintf), rewrite arg3 to pass the correct ABI form.
+            target_name = (ins.operand1 or "")
+            if target_name.startswith("@"):  # symbol
+                target_name = target_name[1:]
+            if target_name in {"vsnprintf", "vprintf", "vfprintf", "vsprintf", "vasprintf", "vdprintf"}:
+                if ins.args and len(ins.args) >= 4:
+                    a3 = ins.args[3]
+                    # Defer rewriting the va_list argument until immediately
+                    # before emitting the call (see below). Here we only
+                    # remember the operand.
+                    va_list_fix_operand = a3
+                else:
+                    va_list_fix_operand = None
+            else:
+                va_list_fix_operand = None
 
             # SysV AMD64 ABI: for variadic calls, %al must contain the number
             # of vector registers used to pass arguments. We don't pass any
@@ -646,6 +900,22 @@ class CodeGenerator:
             # This is required for calls like printf("%d\n", 42).
             if isinstance(ins.operand2, str) and "..." in ins.operand2:
                 self._emit("  xorl %eax, %eax")
+
+            # IMPORTANT: for glibc v* functions that take a `va_list`, the caller
+            # should not clear %al unless the function is variadic. These v*
+            # entrypoints are not variadic.
+
+            # Final fixup: if calling a libc v* function and the 4th argument is
+            # a local va_list variable, ensure we pass the tag pointer it holds
+            # (not the address of the local slot).
+            if target_name in {"vsnprintf", "vprintf", "vfprintf", "vsprintf", "vasprintf", "vdprintf"}:
+                if ins.args and len(ins.args) >= 4:
+                    a3 = ins.args[3]
+                    if isinstance(a3, str) and a3.startswith("@"):
+                        # 4th arg is %rcx
+                        self._addr_of_symbol(a3, "%rax")
+                        self._emit("  movq %rax, %rcx")
+                        self._emit("  movq (%rcx), %rcx")
 
             target = ins.operand1 or ""
             if target.startswith("@"):  # symbol
@@ -703,6 +973,10 @@ class CodeGenerator:
             if pre_call_pad:
                 self._emit("  addq $8, %rsp")
                 self._call_stack_adjust = max(0, getattr(self, "_call_stack_adjust", 0) - 8)
+
+            if stack_pad:
+                self._emit(f"  addq ${stack_pad}, %rsp")
+                self._call_stack_adjust = max(0, getattr(self, "_call_stack_adjust", 0) - stack_pad)
             self._store_result(ins.result, "%rax")
             return
 
@@ -1304,3 +1578,5 @@ class CodeGenerator:
 
     def _emit(self, line: str) -> None:
         self.assembly_lines.append(line)
+
+    
