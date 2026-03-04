@@ -475,15 +475,16 @@ python -m pycc.compiler input.c -o output.s
 ## Known Limitations & Future Enhancements
 
 ### Current Limitations
-- No support for variable-length arrays (initially)
-- Limited standard library function support
-- No preprocessor (macro expansion, #include)
-- No goto/label support initially
-- No optimization of loops initially
+- Preprocessor is partial; see `docs/PREPROCESSOR_C89_CHECKLIST.md`
+- No floating point (`float`/`double`) type rules or codegen
+- Integer promotions / usual arithmetic conversions are incomplete
+- Full initializer support is incomplete (especially aggregates)
+- Multi-translation-unit model is incomplete (extern across files, objects, archives)
 - Single-pass compilation (no separate compilation)
+- Limited standard library function coverage (header compatibility depends on preprocessor subset)
 
 ### Future Enhancements
-- [ ] Preprocessor support (#define, #include, #ifdef)
+- [ ] Preprocessor completeness (macro-expanded includes, full macro expansion semantics, #line tracking)
 - [ ] More optimization passes (loop unrolling, vectorization)
 - [ ] Support for static inline functions
 - [ ] Linker optimization (-O2, -O3)
@@ -495,13 +496,13 @@ python -m pycc.compiler input.c -o output.s
 
 ## Milestone Checklist
 
-- [ ] Milestone 1: Lexer + Parser complete and tested
-- [ ] Milestone 2: Semantic analysis complete
-- [ ] Milestone 3: IR generation and optimization complete
-- [ ] Milestone 4: Code generation complete
-- [ ] Milestone 5: Integration tests passing
+- [x] Milestone 1: Lexer + Parser working (subset) and tested
+- [x] Milestone 2: Semantic analysis working (conservative) and tested
+- [x] Milestone 3: IR generation + basic optimization working
+- [x] Milestone 4: Code generation working (x86-64 SysV)
+- [x] Milestone 5: Integration tests passing (end-to-end)
 - [ ] Milestone 6: Full documentation complete
-- [ ] Release 1.0: All features stable, comprehensive test coverage
+- [ ] Release 1.0: Full C89 coverage, comprehensive test coverage
 
 ## Resource Requirements
 

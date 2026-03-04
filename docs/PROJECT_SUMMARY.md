@@ -34,7 +34,7 @@ pycc/
 │   ├── ir.py                    # Intermediate representation (IMPLEMENTED ✓)
 │   ├── optimizer.py             # Optimization passes (PARTIAL ✓)
 │   ├── codegen.py               # Code generation (IMPLEMENTED ✓)
-│   └── compiler.py              # Main compiler driver (PARTIAL ✓)
+│   └── compiler.py              # Main compiler driver (IMPLEMENTED ✓)
 ├── tests/
 │   ├── __init__.py
 │   ├── test_lexer.py            # Lexer unit tests (COMPLETE ✓)
@@ -48,7 +48,6 @@ pycc/
 │   ├── factorial.c              # Recursive factorial
 │   ├── fibonacci.c              # Fibonacci sequence
 │   └── arrays.c                 # Array operations
-└── setup.py                     # Installation script (TODO)
 ```
 
 ### Current Implementation Status (reality)
@@ -81,7 +80,7 @@ pycc/
 - `goto`/labels
 
 **Known gaps (updated):**
-- Preprocessor is still incomplete. See `docs/PREPROCESSOR_C89_CHECKLIST.md`.
+- Preprocessor is implemented (broad subset) but still incomplete. See `docs/PREPROCESSOR_C89_CHECKLIST.md`.
 - No floating point (`float`/`double`) codegen/type rules
 - C89 integer promotions / usual arithmetic conversions not fully modeled
 - Full declarator/type grammar coverage is incomplete (many edge cases)
@@ -101,7 +100,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 
 - **DONE**: Tokens for C operators, delimiters, identifiers, integer/char/string literals, comments.
 - **PARTIAL**: Keywords set includes many non-C89 keywords (lexer accepts them).
-- **TODO**: Preprocessor (minimum viable): `#include` (textual), `#define` object-like macros, `#if/#ifdef/#ifndef/#else/#elif/#endif`, `#line`, `#error`.
+- **PARTIAL**: Preprocessor: `#include`, `#define` (object/function-like), `#if/#ifdef/#ifndef/#else/#elif/#endif`, `#line`, `#error`, `#warning`, `#pragma once` (subset). Missing full macro expansion semantics and macro-expanded includes.
 
 ### Declarations / Types
 
@@ -147,7 +146,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 - **PARTIAL**: String literals in `.rodata` and basic global initializers.
 - **TODO**: Full initializer support (scalars + aggregates), including nested aggregate initialization.
 - **TODO**: `.bss/.data` emission for more global/static objects with correct alignment/relocations.
-- **TODO**: Multi-translation-unit compilation model (`extern` across files), object file emission + link step orchestration.
+- **PARTIAL**: Multi-translation-unit compilation model (multi-file driver + link orchestration in tests); `extern` across units is still limited.
 
 ### Testing / Compliance
 
@@ -355,13 +354,13 @@ ASTNode (base class, line/column)
 - Derived types: pointers (*), arrays ([]), functions (())
 - Aggregate types: struct, union, enum
 
-#### **Parser (parser.py) - TODO**
+#### **Parser (parser.py) - IMPLEMENTED (subset; expanding)**
 
 **Purpose**: Build AST from token stream
 
 **Strategy**: Recursive descent with operator precedence climbing
 
-**Components to Implement**:
+**Remaining TODOs**:
 1. Expression parser (14 precedence levels)
 2. Statement parser (if, while, for, switch, etc.)
 3. Declaration parser (variables, functions, structs, etc.)
@@ -387,11 +386,11 @@ Level 14: Assignment: =, +=, -=, etc.
 Level 15: Comma: ,
 ```
 
-#### **Symbol Table & Type System (semantics.py) - TODO**
+#### **Symbol Table & Type System (semantics.py) - IMPLEMENTED (conservative)**
 
 **Purpose**: Track symbols and enforce type rules
 
-**Features**:
+**Features (current)**:
 - Multi-level scope management
 - Symbol lookup with scope chain
 - Type compatibility checking
@@ -404,7 +403,7 @@ Level 15: Comma: ,
 2. Function scope (parameter scope)
 3. Block scope (nested {...})
 
-#### **Intermediate Representation (ir.py) - TODO**
+#### **Intermediate Representation (ir.py) - IMPLEMENTED**
 
 **Purpose**: Convert AST to 3-Address Code (TAC)
 
@@ -438,9 +437,11 @@ Output IR:
   x = t1
 ```
 
-#### **Optimizer (optimizer.py) - TODO**
+#### **Optimizer (optimizer.py) - IMPLEMENTED (basic passes)**
 
 **Purpose**: Improve IR code quality
+
+**Note**: Current pass set is partial; see tests for coverage and behavior.
 
 **Optimization Passes**:
 
@@ -470,7 +471,7 @@ Output IR:
    - Invariant code motion
    - Loop unrolling (limited)
 
-#### **Code Generator (codegen.py) - TODO**
+#### **Code Generator (codegen.py) - IMPLEMENTED (x86-64 SysV; expanding)**
 
 **Purpose**: Generate x86-64 assembly code
 
@@ -510,9 +511,10 @@ Stack alignment:           16-byte before call instruction
 - AST nodes: Complete
 - Lexer tests: 40+ test cases
 
-### Phase 2: Parser (IN PROGRESS)
+### Phase 2: Parser (IMPLEMENTED; expanding)
 **Estimated Duration**: 1 week
-**Tasks**:
+**Status**: ✓ IMPLEMENTED (subset; expanding)
+**Remaining tasks**:
 - [ ] Recursive descent parser skeleton
 - [ ] Expression parser with precedence
 - [ ] Statement parser
@@ -541,7 +543,8 @@ ast = parser.parse()
 
 ### Phase 3: Semantic Analysis
 **Estimated Duration**: 1 week
-**Tasks**:
+**Status**: ✓ IMPLEMENTED (conservative)
+**Remaining tasks**:
 - [ ] Symbol table implementation
 - [ ] Type system implementation
 - [ ] Type checking
@@ -551,7 +554,8 @@ ast = parser.parse()
 
 ### Phase 4: IR Generation & Optimization
 **Estimated Duration**: 1 week
-**Tasks**:
+**Status**: ✓ IMPLEMENTED (basic)
+**Remaining tasks**:
 - [ ] IR instruction definition
 - [ ] AST to IR conversion
 - [ ] Optimization passes
@@ -559,7 +563,8 @@ ast = parser.parse()
 
 ### Phase 5: Code Generation
 **Estimated Duration**: 2 weeks
-**Tasks**:
+**Status**: ✓ IMPLEMENTED (x86-64 SysV)
+**Remaining tasks**:
 - [ ] x86-64 instruction selection
 - [ ] Register allocation
 - [ ] Function prologue/epilogue
@@ -568,7 +573,8 @@ ast = parser.parse()
 
 ### Phase 6: Integration & Testing
 **Estimated Duration**: 1 week
-**Tasks**:
+**Status**: ✓ IMPLEMENTED (end-to-end + tests)
+**Remaining tasks**:
 - [ ] End-to-end compilation
 - [ ] Regression tests
 - [ ] Performance benchmarking
@@ -805,21 +811,24 @@ print(print_ast(ast))
 ## Part 7: Known Limitations
 
 ### Phase 1 Limitations
-- No preprocessor (#include, #define, #ifdef)
-- No goto/label support (initially)
-- Limited standard library support
-- No separate compilation
+- Preprocessor is partial; see `docs/PREPROCESSOR_C89_CHECKLIST.md`
+- No floating point (`float`/`double`) type rules or codegen
+- Integer promotions / usual arithmetic conversions are incomplete
+- Full initializer support is incomplete (especially aggregates)
+- Multi-translation-unit model is incomplete (extern across files, objects, archives)
+- Limited standard library coverage (header compatibility depends on preprocessor subset)
 - No incremental compilation
 
 ### Future Enhancements
-1. Full preprocessor support
-2. More optimization passes
-3. Multi-file compilation
-4. Debug symbol generation (-g)
-5. Link-time optimization
-6. Profile-guided optimization
-7. ARM/MIPS backend support
-8. WebAssembly backend
+1. Preprocessor completeness (macro-expanded includes, full macro expansion semantics, #line tracking)
+2. Integer promotions / usual arithmetic conversions and qualifier semantics
+3. Multi-translation-unit compilation model and linking workflow
+4. More optimization passes
+5. Debug symbol generation (-g)
+6. Link-time optimization
+7. Profile-guided optimization
+8. ARM/MIPS backend support
+9. WebAssembly backend
 
 ---
 
@@ -885,8 +894,8 @@ This PyCC compiler project provides:
 
 ✓ **Complete architectural design** with modular components
 ✓ **Phased development plan** with clear milestones
-✓ **Comprehensive testing strategy** with 330+ test cases
-✓ **Full C99 feature support** target
+✓ **Comprehensive testing strategy** with 450+ tests in tree
+✓ **C89 coverage target** with pragmatic extensions
 ✓ **Educational value** with well-documented code
 ✓ **Extensibility** for future enhancements
 
@@ -896,6 +905,6 @@ The project is organized to be completed in 5-6 weeks with clear deliverables at
 
 **Project Status**: Actively progressing toward full C89 coverage; core pipeline is working end-to-end with broad tests. See `docs/C89_ROADMAP.md` and `docs/PREPROCESSOR_C89_CHECKLIST.md`.
 
-**Current Version**: 0.1.0 - Lexer & AST Complete
+**Current Version**: 0.1.0 - Core pipeline working end-to-end (C89 subset)
 
-**Next Steps**: Implement Parser (Phase 2)
+**Next Steps**: Preprocessor completeness, integer promotions/UAC, multi-translation-unit robustness
