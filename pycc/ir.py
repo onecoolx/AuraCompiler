@@ -162,6 +162,85 @@ def _type_size(ty: Optional[object]) -> int:
     return 8
 
 
+def _type_align(ty: Optional[object]) -> int:
+    """Best-effort alignment for the current project stage (x86-64 SysV).
+
+    This is used for padding when packing constant initializer blobs for
+    structs/unions.
+    """
+
+    if ty is None:
+        return 8
+    if isinstance(ty, str):
+        b = ty.strip()
+        if "*" in b:
+            return 8
+        if b in {"char", "unsigned char", "signed char"}:
+            return 1
+        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+            return 2
+        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
+            return 4
+        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
+            return 8
+        # default
+        return 8
+
+    base = getattr(ty, "base", None)
+    if isinstance(base, str):
+        if getattr(ty, "is_pointer", False):
+            return 8
+        b = base.strip()
+        if b in {"char", "unsigned char", "signed char"}:
+            return 1
+        if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+            return 2
+        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
+            return 4
+        if b in {"long int", "long", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
+            return 8
+    return 8
+
+
+def _type_size_bytes(sema_ctx: object, ty: Optional[object]) -> int:
+    """Best-effort size (bytes) for constant-initializer packing."""
+    if ty is None:
+        return 0
+    if isinstance(ty, str):
+        b = ty.strip()
+        if b.startswith("struct ") or b.startswith("union "):
+            layout = getattr(sema_ctx, "layouts", {}).get(b)
+            return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
+        if "*" in b:
+            return 8
+        if b in {"char", "unsigned char", "signed char"}:
+            return 1
+        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+            return 2
+        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
+            return 4
+        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
+            return 8
+        if "long long" in b:
+            return 8
+        return 0
+
+    # Type node
+    kind = getattr(ty, "kind", None)
+    if kind in ("struct", "union"):
+        layout = getattr(sema_ctx, "layouts", {}).get(str(ty))
+        return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
+    if kind == "pointer" or getattr(ty, "is_pointer", False):
+        return 8
+    if kind == "array":
+        base_sz = _type_size_bytes(sema_ctx, getattr(ty, "base", None))
+        n = getattr(ty, "size", None)
+        return base_sz * int(n) if n is not None else 0
+
+    base = getattr(ty, "base", None)
+    return _type_size_bytes(sema_ctx, base if base is not None else str(ty))
+
+
 @dataclass
 class IRInstruction:
     op: str
@@ -272,6 +351,7 @@ class IRGenerator:
         - fixed-size int/char arrays with brace init (int/char consts only)
         - fixed-size char arrays with string literal init
         - struct/union with brace init (member-order), scalar consts only
+        - array of structs with brace init (nested brace lists), scalar consts only
         """
 
         init = getattr(decl, "initializer", None)
@@ -283,13 +363,47 @@ class IRGenerator:
         if isinstance(decl.type, ArrayType):
             base = str(getattr(decl.type.element_type, "base", base))
         # Arrays: represented by decl.array_size (parser doesn't always wrap type).
-        if getattr(decl, "array_size", None) is not None:
-            n = int(decl.array_size)
+        # Also handle unsized arrays (`T a[] = {...}`) by inferring element count
+        # from the initializer list.
+        is_array_decl = (
+            isinstance(decl.type, ArrayType)
+            or getattr(decl, "array_size", None) is not None
+            or (
+                # Parser encodes `T a[]` as base type T with array_size=None.
+                # Treat it as an array only for supported global initializers:
+                # - char/int arrays
+                # - array of structs/unions (nested Initializer lists)
+                getattr(decl, "array_size", None) is None
+                and isinstance(init, Initializer)
+                and (
+                    # Only treat a struct/union as an unsized array if the
+                    # initializer is nested (i.e., looks like {{...},{...}}).
+                    (self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])))
+                    or str(base).strip() in {"char", "unsigned char", "int", "unsigned int"}
+                )
+            )
+        )
+        if is_array_decl:
+            # Handle `T a[N] = {...}` and also `T a[] = {...}` (size inferred
+            # from initializer list length) for supported element types.
+            n0 = getattr(decl, "array_size", None)
+            if n0 is None:
+                inits0 = self._const_initializer_list(init)
+                if inits0 is None:
+                    return None
+                n = len(inits0)
+            else:
+                n = int(n0)
             if isinstance(decl.type, ArrayType):
                 elem_ty = getattr(decl.type, "element_type", None)
                 elem_base = str(getattr(elem_ty, "base", base)).strip()
             else:
                 elem_base = str(base).strip() if base is not None else ""
+            # Unsized array-of-struct declared like `struct S a[] = {...}` is
+            # parsed as a plain Type("struct S") with array_size=None.
+            # In that case, the element type is the struct itself.
+            if self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])):
+                elem_base = str(base).strip()
             if elem_base in {"char", "unsigned char"}:
                 # string literal init
                 inits = self._const_initializer_list(init)
@@ -336,6 +450,57 @@ class IRGenerator:
                     vals.extend([0] * (4 * rem))
                 return "blob:" + "".join(f"{b:02x}" for b in vals)
 
+            # Array of struct/union (subset): nested brace lists where each element
+            # is a constant aggregate initializer.
+            if self._is_struct_or_union_type(elem_base):
+                inits = self._const_initializer_list(init)
+                if inits is None:
+                    return None
+                if self._sema_ctx is None:
+                    return None
+                layout = getattr(self._sema_ctx, "layouts", {}).get(str(elem_base))
+                if layout is None:
+                    return None
+                # Element size must be the struct size.
+                elem_sz = int(getattr(layout, "size", 0))
+                if elem_sz <= 0:
+                    return None
+
+                blob = bytearray([0] * (n * elem_sz))
+
+                members = list(getattr(layout, "member_offsets", {}).keys())
+                offsets = getattr(layout, "member_offsets", {})
+                sizes = getattr(layout, "member_sizes", {})
+
+                # Each array element initializer should be a brace list (InitializerList)
+                # or a scalar (treated as first member initializer).
+                for idx, elem_init in enumerate(inits[:n]):
+                    sub_inits = self._const_initializer_list(elem_init)
+                    if sub_inits is None:
+                        # allow scalar shorthand for first member
+                        sub_inits = [elem_init]
+                    base_off = idx * elem_sz
+                    for midx, m in enumerate(members):
+                        if midx >= len(sub_inits):
+                            break
+                        imm = self._const_expr_to_int(sub_inits[midx])
+                        if imm is None:
+                            return None
+                        off = int(offsets.get(m, 0))
+                        sz = int(sizes.get(m, 4))
+                        v = int(imm)
+                        for i in range(min(sz, 8)):
+                            blob[base_off + off + i] = (v >> (8 * i)) & 0xFF
+
+                return "blob:" + blob.hex()
+
+            # Unsized array-of-struct declared like `struct S a[] = {...}` is
+            # recorded with decl.array_size=None and decl.type.base="struct S".
+            # We handle it here by inferring element count from initializer.
+            if self._is_struct_or_union_type(elem_base) and getattr(decl, "array_size", None) is None:
+                # (Already covered above if we inferred `n`.) Keep for clarity.
+                pass
+
             return None
 
         # Struct/union
@@ -352,24 +517,72 @@ class IRGenerator:
             size = int(getattr(layout, "size", 0))
             blob = bytearray([0] * size)
 
-            # member-order init
-            # Semantic layout stores offsets/sizes keyed by member name.
-            # Preserve declared member order by iterating the dict insertion order.
             members = list(getattr(layout, "member_offsets", {}).keys())
             offsets = getattr(layout, "member_offsets", {})
             sizes = getattr(layout, "member_sizes", {})
 
-            for idx, m in enumerate(members):
-                if idx >= len(inits):
+            # If semantics doesn't encode padding (e.g. offsets are 0,4 for two ints
+            # but struct size is 16), fall back to ABI-like packing using member_types.
+            need_fallback = False
+            try:
+                if members and size > 0:
+                    # For 2x int, expected size is 8; if larger, offsets likely wrong.
+                    max_end = 0
+                    for m in members:
+                        off = int(offsets.get(m, 0))
+                        sz = int(sizes.get(m, 4))
+                        max_end = max(max_end, off + sz)
+                    if max_end > 0 and size > max_end:
+                        # If the gap is bigger than trailing padding (>=4), suspect missing padding.
+                        if (size - max_end) >= 4 and any(int(offsets.get(m, 0)) == 4 for m in members):
+                            need_fallback = True
+            except Exception:
+                need_fallback = False
+
+            if need_fallback:
+                mtypes = getattr(layout, "member_types", None)
+                if not isinstance(mtypes, dict):
+                    return None
+                out = bytearray()
+                cur = 0
+                for midx, m in enumerate(members):
+                    if midx >= len(inits):
+                        break
+                    mty = mtypes.get(m)
+                    if not isinstance(mty, str):
+                        return None
+                    align = _type_align(mty)
+                    sz = _type_size(mty)
+                    if align > 1:
+                        pad = (-cur) % align
+                        if pad:
+                            out.extend(b"\x00" * pad)
+                            cur += pad
+                    imm = self._const_expr_to_int(inits[midx])
+                    if imm is None:
+                        return None
+                    v = int(imm)
+                    for i in range(min(sz, 8)):
+                        out.append((v >> (8 * i)) & 0xFF)
+                    cur += sz
+                if len(out) < size:
+                    out.extend(b"\x00" * (size - len(out)))
+                return "blob:" + out.hex()
+
+            # Normal case: use semantics-provided member offsets/sizes.
+            for midx, m in enumerate(members):
+                if midx >= len(inits):
                     break
-                imm = self._const_expr_to_int(inits[idx])
+                imm = self._const_expr_to_int(inits[midx])
                 if imm is None:
                     return None
                 off = int(offsets.get(m, 0))
                 sz = int(sizes.get(m, 4))
                 v = int(imm)
                 for i in range(min(sz, 8)):
-                    blob[off + i] = (v >> (8 * i)) & 0xFF
+                    if off + i < len(blob):
+                        blob[off + i] = (v >> (8 * i)) & 0xFF
+
             return "blob:" + blob.hex()
 
         return None
@@ -1299,6 +1512,37 @@ class IRGenerator:
         if isinstance(expr, ArrayAccess):
             base = self._gen_expr(expr.array)
             idx = self._gen_expr(expr.index)
+            # If indexing yields an aggregate (struct/union), we must produce an
+            # lvalue address, not load a scalar value.
+            try:
+                if self._sema_ctx is not None and isinstance(base, str):
+                    # Infer element type from the base symbol's recorded type.
+                    bty = self._var_types.get(base)
+                    if (bty is None or bty == "") and base.startswith("@"):
+                        bty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
+                    elem_ty = None
+                    if isinstance(bty, str) and bty.strip().startswith("array("):
+                        inner = bty.strip()[len("array(") :]
+                        if inner.endswith(")"):
+                            inner = inner[:-1]
+                        elem_ty = inner.split(",", 1)[0].strip()
+                    elif isinstance(bty, str) and bty.strip().endswith("*"):
+                        elem_ty = bty.strip()[:-1].strip()
+
+                    # Special-case: unsized arrays like `struct S a[] = {...}`
+                    # are recorded in global_types as just "struct S".
+                    if elem_ty is None and isinstance(bty, str) and self._is_struct_or_union_type(bty.strip()):
+                        elem_ty = bty.strip()
+
+                    if isinstance(elem_ty, str) and self._is_struct_or_union_type(elem_ty):
+                        taddr = self._new_temp()
+                        self.instructions.append(IRInstruction(op="addr_index", result=taddr, operand1=base, operand2=idx))
+                        # Preserve pointer type for later member access.
+                        self._var_types[taddr] = f"{elem_ty}*"
+                        return taddr
+            except Exception:
+                pass
+
             t = self._new_temp()
             self.instructions.append(IRInstruction(op="load_index", result=t, operand1=base, operand2=idx))
             return t

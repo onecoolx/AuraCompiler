@@ -17,9 +17,8 @@ def _compile_and_run(tmp_path, code: str) -> int:
 
 
 def test_array_of_struct_initializer_and_zero_fill(tmp_path):
-    # NOTE: Current compiler only supports constant global initializers for
-    # scalar values and simple aggregate blobs (no array-of-struct brace lists).
-    # Keep this as an executable reminder without failing CI.
+  # Global array-of-struct brace initializer should be emitted as a constant
+  # data blob with per-element zero-fill.
     code = r"""
 struct S { int a; int b; };
 
@@ -41,10 +40,4 @@ int main(void) {
   return 0;
 }
 """
-    try:
-        rc = _compile_and_run(tmp_path, code)
-    except AssertionError as e:
-        # Expected until global array-of-struct aggregate initializers are implemented.
-        assert "unsupported global initializer" in str(e)
-        return
-    assert rc == 0
+    assert _compile_and_run(tmp_path, code) == 0
