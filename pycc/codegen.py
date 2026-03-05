@@ -239,6 +239,37 @@ class CodeGenerator:
             return off2
         return 0
 
+    def _resolve_member_type(self, base: str, member: str) -> Optional[str]:
+        """Best-effort resolve the declared type of a struct/union member.
+
+        Uses semantic information (sema_ctx.layouts + sema_ctx.global_types) to
+        determine whether a byte-sized member is `signed char` vs `unsigned char`
+        or plain `char`.
+
+        Returns a type string (e.g. "signed char") or None.
+        """
+
+        if self._sema_ctx is None:
+            return None
+
+        ty = self._var_types.get(base)
+        if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@"):
+            ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
+
+        if not isinstance(ty, str) or not ty:
+            return None
+
+        layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
+        if layout is None:
+            return None
+
+        mtypes = getattr(layout, "member_types", None)
+        if isinstance(mtypes, dict):
+            mt = mtypes.get(member)
+            if isinstance(mt, str):
+                return mt
+        return None
+
     # -----------------
     # Function framing
     # -----------------
@@ -1097,10 +1128,24 @@ class CodeGenerator:
                 self._emit(f"  addq ${off}, %rax")
             # load based on member size
             if sz == 1:
-                # Treat plain `char` members as unsigned bytes for now.
-                # (We don't yet carry signedness for plain `char` through IR.)
-                self._emit("  movzbl (%rax), %eax")
-                self._emit("  movl %eax, %eax")
+                # Best-effort signedness for 1-byte members.
+                #
+                # If semantic member type info is available, use it.
+                # Otherwise default to signed extension: this matches C89
+                # semantics for explicitly-declared `signed char` and avoids
+                # wrong-code in common promotion paths (e.g. `s.sc >> 1`).
+                mem_ty = None
+                try:
+                    mem_ty = self._resolve_member_type(base, member)
+                except Exception:
+                    mem_ty = None
+
+                if mem_ty is None or (isinstance(mem_ty, str) and mem_ty.strip().lower().startswith("signed char")):
+                    self._emit("  movsbl (%rax), %eax")
+                    self._emit("  movslq %eax, %rax")
+                else:
+                    self._emit("  movzbl (%rax), %eax")
+                    self._emit("  movl %eax, %eax")
             elif sz == 4:
                 # IMPORTANT: treat 4-byte member loads as unsigned-agnostic here.
                 # Use zero-extend; signedness for comparisons is handled elsewhere.
@@ -1120,8 +1165,18 @@ class CodeGenerator:
             if off:
                 self._emit(f"  addq ${off}, %rax")
             if sz == 1:
-                self._emit("  movzbl (%rax), %eax")
-                self._emit("  movl %eax, %eax")
+                mem_ty = None
+                try:
+                    mem_ty = self._resolve_member_type(base, member)
+                except Exception:
+                    mem_ty = None
+
+                if mem_ty is None or (isinstance(mem_ty, str) and mem_ty.strip().lower().startswith("signed char")):
+                    self._emit("  movsbl (%rax), %eax")
+                    self._emit("  movslq %eax, %rax")
+                else:
+                    self._emit("  movzbl (%rax), %eax")
+                    self._emit("  movl %eax, %eax")
             elif sz == 4:
                 self._emit("  movl (%rax), %eax")
                 self._emit("  movl %eax, %eax")
