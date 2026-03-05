@@ -64,8 +64,17 @@ When updating this snapshot, include:
 ### Tests-first and quality gates
 
 - Write/extend a failing test first when adding or fixing behavior.
-- **All changes must pass** `pytest -q` **before any commit**.
+- Fast iteration policy:
+  - For most commits, run **only impacted tests** for the changed modules.
+  - For **docs-only** updates (`README.md`, `docs/**`), **skip tests**.
+  - At a **milestone** (or before publishing), run the **full suite**: `pytest -q`.
 - Prefer small, reviewable steps.
+
+Impacted test selection is path-based and automated by:
+
+```
+python scripts/run_impact_tests.py
+```
 
 ### Where to fix a bug (preferred order)
 
