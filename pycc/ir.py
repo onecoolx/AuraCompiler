@@ -425,6 +425,142 @@ class IRGenerator:
                         return True
         return False
 
+    def _normalize_int_type(self, ty: str) -> str:
+        if not isinstance(ty, str):
+            return ""
+        t = ty.strip().lower()
+        # collapse enum to int for arithmetic in this milestone
+        if t.startswith("enum "):
+            return "int"
+        # normalize common spellings
+        if t in {"signed", "signed int"}:
+            return "int"
+        if t in {"unsigned", "unsigned int"}:
+            return "unsigned int"
+        if t.startswith("signed char"):
+            return "signed char"
+        if t == "char":
+            return "char"
+        if t.startswith("unsigned char"):
+            return "unsigned char"
+        if t.startswith("short") and not t.startswith("unsigned"):
+            return "short"
+        if t.startswith("unsigned short"):
+            return "unsigned short"
+        if t.startswith("long") and not t.startswith("unsigned"):
+            return "long"
+        if t.startswith("unsigned long"):
+            return "unsigned long"
+        if t.startswith("int"):
+            return "int"
+        return t
+
+    def _is_int_like_type(self, ty: str) -> bool:
+        t = self._normalize_int_type(ty)
+        if not t:
+            return False
+        if "*" in t:
+            return False
+        return t in {
+            "char",
+            "signed char",
+            "unsigned char",
+            "short",
+            "unsigned short",
+            "int",
+            "unsigned int",
+            "long",
+            "unsigned long",
+        }
+
+    def _int_rank(self, ty: str) -> int:
+        t = self._normalize_int_type(ty)
+        return {
+            "char": 1,
+            "signed char": 1,
+            "unsigned char": 1,
+            "short": 2,
+            "unsigned short": 2,
+            "int": 3,
+            "unsigned int": 3,
+            "long": 4,
+            "unsigned long": 4,
+        }.get(t, 0)
+
+    def _is_unsigned_type(self, ty: str) -> bool:
+        t = self._normalize_int_type(ty)
+        return t.startswith("unsigned ")
+
+    def _integer_promote(self, ty: str) -> str:
+        """C89 integer promotions (simplified for current model)."""
+        t = self._normalize_int_type(ty)
+        if t in {"char", "signed char", "unsigned char", "short"}:
+            # On x86-64 SysV (int is 32-bit), these promote to int.
+            return "int"
+        if t in {"unsigned short"}:
+            # Keep unsignedness in this compiler's current model; promotes to unsigned int.
+            return "unsigned int"
+        if t in {"int", "unsigned int", "long", "unsigned long"}:
+            return t
+        return t
+
+    def _usual_arithmetic_conversion(self, lty: str, rty: str) -> str:
+        """Return common real type for binary op (integer-only subset)."""
+        lt = self._integer_promote(lty)
+        rt = self._integer_promote(rty)
+
+        # If either is unsigned long, result unsigned long.
+        if lt == "unsigned long" or rt == "unsigned long":
+            return "unsigned long"
+        # long with unsigned int: on LP64, long can represent all u32.
+        if (lt == "long" and rt == "unsigned int") or (rt == "long" and lt == "unsigned int"):
+            return "long"
+        # If either is long, result long.
+        if lt == "long" or rt == "long":
+            return "long"
+        # If either is unsigned int, result unsigned int.
+        if lt == "unsigned int" or rt == "unsigned int":
+            return "unsigned int"
+        return "int"
+
+    def _operand_type_string(self, op: str) -> str:
+        if not isinstance(op, str):
+            return ""
+        if op.startswith("%"):
+            return str(getattr(self, "_var_types", {}).get(op, ""))
+        if op.startswith("@"):
+            # locals first
+            ty = getattr(self, "_var_types", {}).get(op, "")
+            if ty:
+                return str(ty)
+            # globals
+            if self._sema_ctx is not None:
+                g = getattr(self._sema_ctx, "global_types", {})
+                return str(g.get(op[1:], ""))
+        return ""
+
+    def _ensure_u32(self, op: str) -> str:
+        """Ensure operand is treated as 32-bit unsigned (zero-extended)."""
+        t = self._new_temp()
+        self._var_types[t] = "unsigned int"
+        self.instructions.append(IRInstruction(op="zext32", result=t, operand1=op))
+        return t
+
+    def _ensure_u64(self, op: str) -> str:
+        """Ensure operand is treated as 64-bit unsigned.
+
+        On x86-64, values are already held in 64-bit registers; we mainly
+        preserve type info for comparisons/division selection in codegen.
+        """
+        if isinstance(op, str) and op.startswith("%"):
+            # Preserve existing temp but annotate as unsigned long.
+            self._var_types[op] = "unsigned long"
+            return op
+        t = self._new_temp()
+        self._var_types[t] = "unsigned long"
+        self.instructions.append(IRInstruction(op="mov", result=t, operand1=op))
+        return t
+
     def _const_initializer_imm(self, init: Any) -> Optional[str]:
         """Return an immediate like "$42" for supported constant initializers."""
         from pycc.ast_nodes import IntLiteral, CharLiteral, UnaryOp
@@ -1286,11 +1422,18 @@ class IRGenerator:
                         self.instructions.append(IRInstruction(op="binop", result=s, operand1=l, operand2=f"${sz}", label="*"))
                         l = s
             t = self._new_temp()
+
             if expr.operator in {"==", "!=", "<", "<=", ">", ">="}:
-                # Preserve comparison signedness in IR (best-effort) so codegen
-                # doesn't need full typing. If either operand is unsigned, use
-                # unsigned condition codes.
-                unsigned = self._is_unsigned_operand(l) or self._is_unsigned_operand(r)
+                # Decide compare signedness based on the common type when known.
+                lty = self._operand_type_string(l)
+                rty = self._operand_type_string(r)
+                unsigned = False
+                if self._is_int_like_type(lty) and self._is_int_like_type(rty):
+                    common = self._usual_arithmetic_conversion(lty, rty)
+                    unsigned = common.startswith("unsigned ")
+                elif self._is_unsigned_operand(l) or self._is_unsigned_operand(r):
+                    # Fallback for cases where one side is an untyped immediate.
+                    unsigned = True
                 cmp_op = f"u{expr.operator}" if unsigned else expr.operator
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=cmp_op))
             else:
