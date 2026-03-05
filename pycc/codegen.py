@@ -78,7 +78,10 @@ class CodeGenerator:
                 # extern declaration: no storage emitted in this TU
                 if gd.label == "extern":
                     continue
-                if isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
+                if isinstance(ty, str) and (ty.startswith("struct ") or ty.startswith("union ")) and self._sema_ctx is not None:
+                    layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
+                    sz = int(getattr(layout, "size", 8)) if layout is not None else 8
+                elif isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
                     sz = 1
                 elif isinstance(ty, str) and (ty == "int" or ty.startswith("int ")):
                     sz = 4
@@ -210,6 +213,28 @@ class CodeGenerator:
         # initial decl list, because IR lowering may introduce decls after
         # the prologue scan.
         return sym in self._locals
+
+    def _resolve_member_offset(self, base: str, member: str) -> int:
+        """Resolve struct/union member offset in bytes.
+
+        Prefers semantic layout (sema_ctx.layouts) when available; falls back to
+        per-function discovered offsets map.
+        """
+
+        # First try semantic layouts using base type info.
+        ty = self._var_types.get(base)
+        if isinstance(ty, str) and self._sema_ctx is not None:
+            layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
+            if layout is not None:
+                off = layout.member_offsets.get(member)
+                if isinstance(off, int):
+                    return off
+
+        # Fall back to per-function cached offsets.
+        off2 = self._member_offsets.get((base, member))
+        if isinstance(off2, int):
+            return off2
+        return 0
 
     # -----------------
     # Function framing
@@ -528,6 +553,22 @@ class CodeGenerator:
                         inner = inner[:-1]
                     base_part = inner.split(",", 1)[0].strip()
                     self._var_types[ins.result] = f"{base_part}*"
+            return
+
+        if op == "addr_of_member":
+            # result = &operand1.member
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            # Load base address into %rax then add member offset.
+            # IMPORTANT: `base` is an lvalue (struct/union object). We must take
+            # its address rather than load its value.
+            self._addr_of_symbol(base, "%rax")
+            off = self._resolve_member_offset(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            self._store_result(ins.result, "%rax")
+            # best-effort propagate pointer type: if base is a struct/union symbol,
+            # treat result as pointer-to-member's scalar size is handled on load/store.
             return
 
         if op == "unop":
@@ -1053,10 +1094,15 @@ class CodeGenerator:
                 self._emit(f"  addq ${off}, %rax")
             # load based on member size
             if sz == 1:
-                self._emit("  movsbl (%rax), %eax")
-                self._emit("  movslq %eax, %rax")
+                # Treat plain `char` members as unsigned bytes for now.
+                # (We don't yet carry signedness for plain `char` through IR.)
+                self._emit("  movzbl (%rax), %eax")
+                self._emit("  movl %eax, %eax")
             elif sz == 4:
-                self._emit("  movslq (%rax), %rax")
+                # IMPORTANT: treat 4-byte member loads as unsigned-agnostic here.
+                # Use zero-extend; signedness for comparisons is handled elsewhere.
+                self._emit("  movl (%rax), %eax")
+                self._emit("  movl %eax, %eax")
             else:
                 self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
@@ -1071,10 +1117,11 @@ class CodeGenerator:
             if off:
                 self._emit(f"  addq ${off}, %rax")
             if sz == 1:
-                self._emit("  movsbl (%rax), %eax")
-                self._emit("  movslq %eax, %rax")
+                self._emit("  movzbl (%rax), %eax")
+                self._emit("  movl %eax, %eax")
             elif sz == 4:
-                self._emit("  movslq (%rax), %rax")
+                self._emit("  movl (%rax), %eax")
+                self._emit("  movl %eax, %eax")
             else:
                 self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
@@ -1266,9 +1313,6 @@ class CodeGenerator:
                 if b == "int" or b.startswith("int ") or b.startswith("enum "):
                     self._emit(f"  movslq -{off}(%rbp), {reg}")
                     return
-                # long/pointers/default
-                self._emit(f"  movq -{off}(%rbp), {reg}")
-                return
                 # unsigned int: load 32-bit and zero-extend
                 if b == "unsigned int" or b.startswith("unsigned int"):
                     # IMPORTANT: load into the requested destination register.
@@ -1533,6 +1577,9 @@ class CodeGenerator:
     def _resolve_member(self, base_sym: str, member: str) -> Tuple[int, int]:
         """Return (offset, size_bytes) for `base_sym.member` using semantic layouts when available."""
         decl_ty = self._var_types.get(base_sym)
+        # For globals, type info often lives only in semantic context.
+        if not decl_ty and isinstance(base_sym, str) and base_sym.startswith("@") and self._sema_ctx is not None:
+            decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
         if self._sema_ctx is not None and decl_ty and hasattr(self._sema_ctx, "layouts"):
             layouts = getattr(self._sema_ctx, "layouts")
             layout = layouts.get(decl_ty)

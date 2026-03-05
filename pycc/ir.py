@@ -1223,6 +1223,20 @@ class IRGenerator:
                 IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member)
             )
             return t
+        # Address-of a member: &obj.member
+        if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, MemberAccess):
+            ma = expr.operand
+            base = self._gen_expr(ma.object)
+            t = self._new_temp()
+            self.instructions.append(IRInstruction(op="addr_of_member", result=t, operand1=base, operand2=ma.member))
+            # best-effort: preserve pointer type for codegen width decisions
+            try:
+                if self._sema_ctx is not None and isinstance(getattr(ma.object, "type", None), Type):
+                    # fallback: we don't have full typing; leave var_types unset
+                    pass
+            except Exception:
+                pass
+            return t
         if isinstance(expr, ArrayAccess):
             base = self._gen_expr(expr.array)
             idx = self._gen_expr(expr.index)

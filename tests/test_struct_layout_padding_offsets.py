@@ -1,16 +1,33 @@
-"""Deprecated test placeholder.
+from pycc.compiler import Compiler
 
-This module previously attempted to validate struct member byte offsets using
-`(char*)&s.b - (char*)&s`, which depends on correct `char*` pointer arithmetic
-and pointer subtraction.
 
-That behavior is not part of the current subset under test, so this test is
-disabled for now.
-"""
+def _compile_and_run(tmp_path, code: str) -> int:
+    import subprocess
+
+    c_path = tmp_path / "t.c"
+    out_path = tmp_path / "t"
+    c_path.write_text(code)
+
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(c_path), str(out_path))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+
+    p = subprocess.run([str(out_path)], check=False)
+    return p.returncode
 
 
 def test_struct_member_offsets_char_int_char(tmp_path):
-    # Placeholder: validating member byte offsets requires correct semantics
-    # for pointer subtraction on `char*`, which isn't currently in the tested
-    # subset.
-    pass
+    src = r"""
+struct S { char a; int b; char c; };
+int main(void) {
+  struct S s;
+  char *base = (char*)&s;
+  int off_b = (int)((char*)&s.b - base);
+  int off_c = (int)((char*)&s.c - base);
+  /* Expect: b at 4, c at 8 */
+  if (off_b != 4) return 1;
+  if (off_c != 8) return 2;
+  return 0;
+}
+"""
+    assert _compile_and_run(tmp_path, src) == 0
