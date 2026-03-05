@@ -120,11 +120,11 @@ ASTNode (base class)
 14. Assignment: =, +=, -=, *=, /=, %=, <<=, >>=, &=, ^=, |=
 15. Comma: ,
 
-### 2.3 Semantic Analysis (semantics.py, symbol_table.py)
+### 2.3 Semantic Analysis (`semantics.py`)
 
 **Purpose**: Type checking, symbol resolution, and semantic validation.
 
-**Symbol Table**:
+**Symbol Table / Scopes**:
 - Manages scope (global, function, block)
 - Stores variable/function declarations
 - Tracks type information
@@ -350,7 +350,11 @@ class Type:
     struct_name: Optional[str]
 ```
 
-### 3.4 Symbol Table Entry
+### 3.4 Symbol Table Entry (illustrative)
+
+This is a **conceptual sketch** of the metadata AuraCompiler tracks for declared objects.
+The concrete representation may differ from this document and is implemented in `pycc/semantics.py`.
+
 ```python
 @dataclass
 class Symbol:
@@ -358,8 +362,8 @@ class Symbol:
     type: Type
     kind: str           # 'variable', 'function', 'typedef', etc.
     scope: int          # Scope depth
-    offset: int         # Memory offset (for local variables)
-    is_extern: bool
+    offset: int         # Frame offset (locals) when applicable
+    storage: str        # 'auto' | 'static' | 'extern' | ... (subset)
     initializer: Optional[Expression]
 ```
 

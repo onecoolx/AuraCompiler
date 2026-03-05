@@ -38,7 +38,6 @@ pycc/
 │   ├── parser.py                 # Syntax analysis & AST
 │   ├── ast_nodes.py              # AST node definitions
 │   ├── semantics.py              # Semantic analysis & type checking
-│   ├── symbol_table.py           # Symbol table management
 │   ├── ir.py                     # Intermediate representation (3-address code)
 │   ├── optimizer.py              # IR optimization passes
 │   ├── codegen.py                # x86-64 code generation
@@ -79,7 +78,20 @@ python pycc.py -o output.o input.c
 
 # Compile + link to executable
 python pycc.py -o a.out input.c
+
+# Preprocess only (emit preprocessed C to stdout)
+python pycc.py -E input.c
+
+# Prefer system preprocessor (recommended for glibc headers)
+python pycc.py --use-system-cpp -o a.out input.c
 ```
+
+Preprocessor-related options:
+
+- `-E` preprocess only (write to stdout or `-o`)
+- `--use-system-cpp` preprocess via system `gcc -E` (recommended for system headers)
+- `-I DIR` add include directory (affects both preprocessors)
+- `-D NAME[=VALUE]` / `-U NAME` define/undefine macros
 
 Toolchain overrides:
 
@@ -124,10 +136,22 @@ else:
 ## Notes / current limitations
 
 - Not a full C89 implementation yet (work in progress).
-- No preprocessor (`#include`, macros).
+- Preprocessor exists but is incomplete; see `docs/PREPROCESSOR_C89_CHECKLIST.md`.
 - Type system is partial (integer promotions/usual arithmetic conversions not fully modeled).
 - `&&`/`||` are short-circuiting.
 - No floating point.
+
+## Preprocessing modes (recommended)
+
+AuraCompiler supports two practical ways to handle preprocessing; keeping both makes the tool behave closer to a “real” toolchain:
+
+1) **System preprocessor mode** (recommended for system headers)
+  - Use your platform's `cpp` to expand headers/macros, then compile the preprocessed output.
+  - This offers the best compatibility with glibc headers.
+
+2) **Built-in preprocessor mode** (portable subset)
+  - Uses `pycc/preprocessor.py`.
+  - Supports a broad subset but is not a full C preprocessor; some macro corner cases are intentionally unsupported.
 
 ## Development status
 
