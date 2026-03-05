@@ -673,14 +673,30 @@ class CodeGenerator:
                 self._emit("  setne %al")
                 self._emit("  movzbq %al, %rax")
             elif bop == "&":
-                self._emit("  andq %rcx, %rax")
+                if u32_arith:
+                    self._emit("  andl %ecx, %eax")
+                    self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  andq %rcx, %rax")
             elif bop == "|":
-                self._emit("  orq %rcx, %rax")
+                if u32_arith:
+                    self._emit("  orl %ecx, %eax")
+                    self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  orq %rcx, %rax")
             elif bop == "^":
-                self._emit("  xorq %rcx, %rax")
+                if u32_arith:
+                    self._emit("  xorl %ecx, %eax")
+                    self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  xorq %rcx, %rax")
             elif bop == "<<":
                 self._emit("  movb %cl, %cl")
-                self._emit("  shlq %cl, %rax")
+                if u32_arith:
+                    self._emit("  shll %cl, %eax")
+                    self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  shlq %cl, %rax")
             elif bop == ">>":
                 self._emit("  movb %cl, %cl")
                 # Best-effort: if the left operand is declared unsigned, use logical shift.
@@ -688,10 +704,19 @@ class CodeGenerator:
                 lty = self._var_types.get(ins.operand1, "")
                 if not lty and isinstance(ins.operand1, str) and ins.operand1.startswith("@") and self._sema_ctx is not None:
                     lty = getattr(self._sema_ctx, "global_types", {}).get(ins.operand1[1:], "")
-                if isinstance(lty, str) and lty.strip().startswith("unsigned "):
-                    self._emit("  shrq %cl, %rax")
+                unsigned_left = isinstance(lty, str) and lty.strip().startswith("unsigned ")
+                if u32_arith:
+                    # For unsigned 32-bit, prefer logical shift; otherwise arithmetic.
+                    if unsigned_left:
+                        self._emit("  shrl %cl, %eax")
+                    else:
+                        self._emit("  sarl %cl, %eax")
+                    self._emit("  movl %eax, %eax")
                 else:
-                    self._emit("  sarq %cl, %rax")
+                    if unsigned_left:
+                        self._emit("  shrq %cl, %rax")
+                    else:
+                        self._emit("  sarq %cl, %rax")
             else:
                 # unsupported operator
                 pass
