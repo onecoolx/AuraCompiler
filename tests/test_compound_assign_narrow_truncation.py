@@ -115,3 +115,60 @@ int main(){
 }
 """
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_char_compound_and_assign_truncates(tmp_path: Path) -> None:
+        code = r"""
+int main(){
+    unsigned char c = 0xFF;
+    c &= 0x1FE; /* 0xFE after truncation */
+    return (c == (unsigned char)0xFE) ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_char_compound_xor_assign_truncates(tmp_path: Path) -> None:
+        code = r"""
+int main(){
+    unsigned char c = 0x0F;
+    c ^= 0x1F0; /* (0x0F ^ 0xF0) == 0xFF after truncation */
+    return (c == (unsigned char)0xFF) ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_char_compound_rshift_assign_is_logical(tmp_path: Path) -> None:
+        code = r"""
+int main(){
+    unsigned char c = (unsigned char)0xFF;
+    c >>= 1;
+    return (c == (unsigned char)0x7F) ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_unsigned_short_compound_rshift_assign_is_logical(tmp_path: Path) -> None:
+        code = r"""
+int main(){
+    unsigned short s = (unsigned short)0xFFFF;
+    s >>= 1;
+    return (s == (unsigned short)0x7FFF) ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_narrow_compound_assign_then_widen_load_is_consistent(tmp_path: Path) -> None:
+        # Ensure store truncation + subsequent load promotion are consistent.
+        code = r"""
+int main(){
+    unsigned char c = 255;
+    c += 2; /* 1 */
+    int x = c;
+    return (x == 1) ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
