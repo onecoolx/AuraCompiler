@@ -382,11 +382,11 @@ class IRGenerator:
             return int(expr.value)
         if isinstance(expr, CharLiteral):
             return ord(expr.value)
-        if isinstance(expr, UnaryOp) and expr.op in {"+", "-"}:
+        if isinstance(expr, UnaryOp) and expr.operator in {"+", "-"}:
             v = self._const_expr_to_int(expr.operand)
             if v is None:
                 return None
-            return v if expr.op == "+" else -v
+            return v if expr.operator == "+" else -v
         return None
 
     def _is_unsigned_operand(self, op: str) -> bool:
@@ -435,12 +435,12 @@ class IRGenerator:
             # CharLiteral.value is a single-character string (e.g. "h").
             # Use its code point as the integer value.
             return f"${ord(init.value)}"
-        if isinstance(init, UnaryOp) and init.op in {"+", "-"}:
+        if isinstance(init, UnaryOp) and init.operator in {"+", "-"}:
             inner = self._const_initializer_imm(init.operand)
             if inner is None:
                 return None
             v = int(inner.lstrip("$"))
-            if init.op == "-":
+            if init.operator == "-":
                 v = -v
             return f"${v}"
         return None
