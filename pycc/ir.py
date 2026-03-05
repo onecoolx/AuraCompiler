@@ -1270,6 +1270,49 @@ class IRGenerator:
                 self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
                 return dst
 
+            # handle pointer deref compound assign: *p op= rhs
+            if (
+                isinstance(expr.target, UnaryOp)
+                and expr.target.operator == "*"
+                and expr.operator != "="
+            ):
+                addr = self._gen_expr(expr.target.operand)
+                # propagate pointer type from operand to the computed address
+                try:
+                    op_ty = getattr(self, "_var_types", {}).get(addr)
+                    if not op_ty and isinstance(expr.target.operand, Identifier):
+                        op_ty = getattr(self, "_var_types", {}).get(f"@{expr.target.operand.name}")
+                    if isinstance(op_ty, str) and "*" in op_ty:
+                        self._var_types[addr] = op_ty
+                except Exception:
+                    op_ty = None
+
+                # Load current value at *addr, do operation, then store back.
+                cur = self._new_temp()
+                self.instructions.append(IRInstruction(op="load", result=cur, operand1=addr))
+
+                bop = expr.operator[:-1]
+                cty = getattr(self, "_var_types", {}).get(cur)
+                rty = getattr(self, "_var_types", {}).get(rhs)
+
+                # Best-effort pointer compound arithmetic scaling.
+                if bop in {"+", "-"} and isinstance(cty, str) and "*" in cty and not (
+                    isinstance(rty, str) and "*" in rty
+                ):
+                    sz = _type_size(cty.split("*", 1)[0].strip())
+                    if sz != 1:
+                        s = self._new_temp()
+                        self.instructions.append(
+                            IRInstruction(op="binop", result=s, operand1=rhs, operand2=f"${sz}", label="*")
+                        )
+                        rhs = s
+
+                t = self._new_temp()
+                self.instructions.append(IRInstruction(op="binop", result=t, operand1=cur, operand2=rhs, label=bop))
+                # Store truncation/width is handled by codegen based on addr type.
+                self.instructions.append(IRInstruction(op="store", result=t, operand1=addr))
+                return t
+
             # handle pointer deref store: *p = rhs
             if expr.operator == "=" and isinstance(expr.target, UnaryOp) and expr.target.operator == "*":
                 addr = self._gen_expr(expr.target.operand)

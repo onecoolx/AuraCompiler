@@ -33,6 +33,20 @@ from typing import Iterable, List, Set
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def _glob_exists(pattern: str) -> bool:
+    # pytest errors out if a command-line arg doesn't match any path.
+    # For globs, check whether they match at least one file.
+    p = REPO_ROOT / pattern
+    has_glob = any(ch in pattern for ch in ("*", "?", "["))
+    if not has_glob:
+        return p.exists()
+
+    # pytest doesn't expand globs; we must resolve them ourselves.
+    # Treat patterns with directory parts as workspace-relative.
+    matches = list(REPO_ROOT.glob(pattern))
+    return bool(matches)
+
+
 def _run(cmd: List[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -176,6 +190,14 @@ def main(argv: List[str] | None = None) -> int:
         return 0
 
     tests = _select_tests(paths)
+    # Expand globs into concrete files; drop any patterns that match nothing.
+    expanded: List[str] = []
+    for t in tests:
+        if any(ch in t for ch in ("*", "?", "[")):
+            expanded.extend(sorted(str(p.relative_to(REPO_ROOT)) for p in REPO_ROOT.glob(t)))
+        elif (REPO_ROOT / t).exists():
+            expanded.append(t)
+    tests = sorted(set(expanded))
     cmd = [sys.executable, "-m", "pytest", "-q", *tests, *args.pytest_args]
 
     if args.dry_run:
