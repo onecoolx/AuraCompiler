@@ -223,6 +223,9 @@ class CodeGenerator:
 
         # First try semantic layouts using base type info.
         ty = self._var_types.get(base)
+        if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@") and self._sema_ctx is not None:
+            ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
+
         if isinstance(ty, str) and self._sema_ctx is not None:
             layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
             if layout is not None:

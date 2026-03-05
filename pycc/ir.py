@@ -1170,12 +1170,16 @@ class IRGenerator:
             v = self._gen_expr(expr.expression)
             # Best-effort: record cast destination type for later signedness decisions.
             try:
-                dst_ty = getattr(expr, "to_type", None)
+                dst_ty = getattr(expr, "type", None)
                 dst_str = getattr(dst_ty, "base", None) if dst_ty is not None else None
             except Exception:
                 dst_str = None
             if isinstance(dst_str, str):
-                self._var_types[v] = dst_str
+                # Preserve pointer-ness in casted values.
+                if getattr(dst_ty, "is_pointer", False) and "*" not in dst_str:
+                    self._var_types[v] = f"{dst_str}*"
+                else:
+                    self._var_types[v] = dst_str
             # If casting to pointer, allow integer literal 0 to stay 0; otherwise passthrough.
             return v
         if isinstance(expr, Identifier):
@@ -1229,6 +1233,15 @@ class IRGenerator:
             base = self._gen_expr(ma.object)
             t = self._new_temp()
             self.instructions.append(IRInstruction(op="addr_of_member", result=t, operand1=base, operand2=ma.member))
+            # Preserve base type on the lvalue symbol so codegen can resolve
+            # offsets/sizes even for globals.
+            try:
+                if isinstance(base, str) and base.startswith("@") and self._sema_ctx is not None:
+                    bty = getattr(self._sema_ctx, "global_types", {}).get(base[1:])
+                    if isinstance(bty, str):
+                        self._var_types[base] = bty
+            except Exception:
+                pass
             # best-effort: preserve pointer type for codegen width decisions
             try:
                 if self._sema_ctx is not None and isinstance(getattr(ma.object, "type", None), Type):
@@ -1258,6 +1271,14 @@ class IRGenerator:
                 else:
                     dst = f"@{expr.target.name}"
                 if expr.operator == "=":
+                    # Preserve pointer type on the destination when assigning
+                    # from a pointer-typed value.
+                    try:
+                        rty = getattr(self, "_var_types", {}).get(rhs)
+                        if isinstance(rty, str) and "*" in rty:
+                            self._var_types[dst] = rty
+                    except Exception:
+                        pass
                     self.instructions.append(IRInstruction(op="mov", result=dst, operand1=rhs))
                     return dst
                 # compound assigns: a += b => a = a + b
@@ -1283,6 +1304,8 @@ class IRGenerator:
                     self._var_types[dst] = cty
                 self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
                 return dst
+
+
 
             # handle pointer deref compound assign: *p op= rhs
             if (
