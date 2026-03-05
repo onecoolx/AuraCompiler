@@ -638,6 +638,14 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "sext8":
+            # Sign-extend low 8 bits to 64 bits.
+            self._load_operand(ins.operand1, "%rax")
+            self._emit("  movsbl %al, %eax")
+            self._emit("  movslq %eax, %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
         if op == "binop":
             self._load_operand(ins.operand1, "%rax")
             self._load_operand(ins.operand2, "%rcx")
@@ -1353,8 +1361,8 @@ class CodeGenerator:
                 if isinstance(b, str) and "*" in b:
                     self._emit(f"  movq -{off}(%rbp), {reg}")
                     return
-                # signed/unsigned char
-                if b == "char" or b.startswith("char "):
+                # signed char / char (treat plain `char` as signed in this backend)
+                if b == "char" or b == "signed char" or b.startswith("char ") or b.startswith("signed char"):
                     self._emit(f"  movsbq -{off}(%rbp), {reg}")
                     return
                 if b == "unsigned char" or b.startswith("unsigned char"):

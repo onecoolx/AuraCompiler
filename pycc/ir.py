@@ -798,7 +798,18 @@ class IRGenerator:
                             self._local_arrays.add(item.name)
                             self._var_types[f"@{item.name}"] = str(op1)
                         else:
+                            # Preserve explicit signedness for narrow integer types.
+                            # Parser keeps `base` as "char" and stores qualifiers
+                            # in Type flags.
                             decl_op1 = item.type.base
+                            try:
+                                if decl_op1 == "char":
+                                    if getattr(item.type, "is_signed", False):
+                                        decl_op1 = "signed char"
+                                    elif getattr(item.type, "is_unsigned", False):
+                                        decl_op1 = "unsigned char"
+                            except Exception:
+                                pass
                             if getattr(item.type, "is_pointer", False):
                                 decl_op1 = f"{decl_op1}*"
                             self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
@@ -1175,6 +1186,41 @@ class IRGenerator:
             except Exception:
                 dst_str = None
             if isinstance(dst_str, str):
+                # Narrow integer casts must truncate/extend, otherwise expressions like
+                # `(unsigned char)x` won't behave correctly (e.g. after a sign-extended
+                # byte load).
+                dst_norm = dst_str.strip().lower()
+                # Parser encodes explicit signedness via Type flags while keeping
+                # base == "char".
+                if dst_norm == "char" and dst_ty is not None:
+                    try:
+                        if getattr(dst_ty, "is_signed", False):
+                            dst_norm = "signed char"
+                            dst_str = "signed char"
+                        elif getattr(dst_ty, "is_unsigned", False):
+                            dst_norm = "unsigned char"
+                            dst_str = "unsigned char"
+                    except Exception:
+                        pass
+                if dst_norm in {"unsigned char", "char"} and not getattr(dst_ty, "is_pointer", False):
+                    # Truncate to 8 bits (zero-extend on read by masking).
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$255", label="&"))
+                    self._var_types[t] = dst_str
+                    v = t
+                elif dst_norm == "signed char":
+                    # Truncate to 8 bits then sign-extend back to the IR's
+                    # working width.
+                    #
+                    # This is required for cases like:
+                    #   x == (signed char)-116
+                    # where the RHS constant must compare as -116, not 140.
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$255", label="&"))
+                    t2 = self._new_temp()
+                    self.instructions.append(IRInstruction(op="sext8", result=t2, operand1=t))
+                    self._var_types[t2] = dst_str
+                    v = t2
                 # Preserve pointer-ness in casted values.
                 if getattr(dst_ty, "is_pointer", False) and "*" not in dst_str:
                     self._var_types[v] = f"{dst_str}*"
