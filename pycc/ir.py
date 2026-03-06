@@ -899,6 +899,12 @@ class IRGenerator:
             # accidentally spill pointer args using 8/16/32-bit stores.
             # (Our type system is still stringly-typed in later stages.)
             base = str(getattr(t, "base", ""))
+            # Preserve full struct/union tag spelling.
+            try:
+                if isinstance(base, str) and (base.strip().startswith("struct ") or base.strip().startswith("union ")):
+                    base = base.strip()
+            except Exception:
+                pass
             if getattr(t, "is_pointer", False):
                 return f"{base}*"
             return base
@@ -988,7 +994,13 @@ class IRGenerator:
                     # 1) struct/union
                     # 2) arrays (known or inferred)
                     # 3) scalars
-                    if self._is_struct_or_union_type(item.type.base):
+                    # If this is an array with known/inferred size, record it
+                    # as an array type even when element type is struct/union.
+                    if op1 is not None:
+                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
+                        self._local_arrays.add(item.name)
+                        self._var_types[f"@{item.name}"] = str(op1)
+                    elif self._is_struct_or_union_type(item.type.base):
                         decl_op1 = str(item.type.base)
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
                         self._var_types[f"@{item.name}"] = decl_op1
@@ -1006,11 +1018,7 @@ class IRGenerator:
                                     except Exception:
                                         pass
 
-                        if op1 is not None:
-                            self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
-                            self._local_arrays.add(item.name)
-                            self._var_types[f"@{item.name}"] = str(op1)
-                        else:
+                        if op1 is None:
                             # Preserve explicit signedness for narrow integer types.
                             # Parser keeps `base` as "char" and stores qualifiers
                             # in Type flags.
@@ -1024,11 +1032,24 @@ class IRGenerator:
                             except Exception:
                                 pass
                             if getattr(item.type, "is_pointer", False):
-                                decl_op1 = f"{decl_op1}*"
+                                decl_base = str(decl_op1).strip()
+                                if decl_base.startswith("struct ") or decl_base.startswith("union "):
+                                    decl_op1 = f"{decl_base}*"
+                                else:
+                                    decl_op1 = f"{decl_op1}*"
                             self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
                             self._var_types[f"@{item.name}"] = str(decl_op1)
 
                     # Local struct/union brace init (subset)
+                    # If this is a pointer variable, record its declared pointee
+                    # type so pointer arithmetic can scale correctly.
+                    try:
+                        if getattr(item.type, "is_pointer", False):
+                            base = str(getattr(item.type, "base", "")).strip()
+                            if base:
+                                self._var_types[f"@{item.name}"] = f"{base}*"
+                    except Exception:
+                        pass
                     if self._lower_local_struct_initializer(item):
                         continue
                     if item.initializer is not None:
@@ -1474,6 +1495,15 @@ class IRGenerator:
                 except Exception:
                     pass
                 return t
+            # If this identifier is known to be a pointer variable, preserve
+            # its type on the symbol reference so later ops (ptr arith, loads)
+            # can make sizing decisions.
+            try:
+                ty = getattr(self, "_var_types", {}).get(sym)
+                if isinstance(ty, str):
+                    self._var_types[sym] = ty
+            except Exception:
+                pass
             return sym
         if isinstance(expr, FunctionDecl):
             # Function designator in expression context decays to a function
@@ -1565,8 +1595,39 @@ class IRGenerator:
                     # from a pointer-typed value.
                     try:
                         rty = getattr(self, "_var_types", {}).get(rhs)
+                        # If RHS is a decayed local array address, it might not
+                        # have a pointer type recorded; derive it from the array.
+                        if not (isinstance(rty, str) and "*" in rty) and hasattr(self, "_local_arrays"):
+                            for name in self._local_arrays:
+                                aty = self._var_types.get(f"@{name}")
+                                if not (isinstance(aty, str) and aty.strip().startswith("array(")):
+                                    continue
+                                inner = aty.strip()[len("array(") :]
+                                if inner.endswith(")"):
+                                    inner = inner[:-1]
+                                base_part = inner.split(",", 1)[0].strip()
+                                # Best-effort: if dst is pointer (or unknown),
+                                # and RHS is from some local array decay, use
+                                # that array's element type.
+                                if dst not in self._var_types or self._var_types.get(dst) in {None, "", "char*"}:
+                                    rty = f"{base_part}*"
+                                    break
+
                         if isinstance(rty, str) and "*" in rty:
                             self._var_types[dst] = rty
+                        # If we have semantic type info for the LHS identifier,
+                        # prefer it. This is required for cases like:
+                        #   struct S *p = arr;
+                        # where the RHS is an address temp typed as `char*`
+                        # (array-to-pointer decay currently only carries basic
+                        # element types).
+                        if self._sema_ctx is not None:
+                            sym = dst[1:] if dst.startswith("@") else dst
+                            ty = getattr(self._sema_ctx, "var_types", {}).get(sym)
+                            if ty is None:
+                                ty = getattr(self._sema_ctx, "global_types", {}).get(sym)
+                            if ty is not None:
+                                self._var_types[dst] = str(ty)
                     except Exception:
                         pass
                     self.instructions.append(IRInstruction(op="mov", result=dst, operand1=rhs))
@@ -1777,6 +1838,12 @@ class IRGenerator:
                     if not isinstance(ptr_ty, str) or "*" not in ptr_ty:
                         return 1
                     base = ptr_ty.split("*", 1)[0].strip()
+                    # Use semantic layout for aggregates (e.g. `struct S*`).
+                    if self._sema_ctx is not None:
+                        try:
+                            return _type_size_bytes(self._sema_ctx, base)
+                        except Exception:
+                            pass
                     return _type_size(base)
 
                 if isinstance(lty0, str) and "*" in lty0 and not (isinstance(rty0, str) and "*" in rty0):

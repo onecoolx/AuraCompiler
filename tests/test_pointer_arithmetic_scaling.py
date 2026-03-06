@@ -90,3 +90,19 @@ int main(void) {
 }
 """
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_ptr_add_scales_with_non_int_element(tmp_path: Path):
+        # Verify scaling uses sizeof(*p) for non-int element types.
+        code = r"""
+struct S { char a; int b; };
+
+int main(void) {
+    struct S arr[4];
+    struct S *p = arr;
+    long d = (long)((char*)(p + 1) - (char*)p);
+    /* expected sizeof(struct S) == 8 under LP64 SysV */
+    return d == 8 ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
