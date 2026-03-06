@@ -1468,6 +1468,20 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(op="sext8", result=t2, operand1=t))
                     self._var_types[t2] = dst_str
                     v = t2
+                elif dst_norm in {"unsigned short", "short"} and not getattr(dst_ty, "is_pointer", False):
+                    # Truncate to 16 bits.
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
+                    self._var_types[t] = dst_str
+                    v = t
+                elif dst_norm == "signed short" and not getattr(dst_ty, "is_pointer", False):
+                    # Truncate to 16 bits then sign-extend.
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
+                    t2 = self._new_temp()
+                    self.instructions.append(IRInstruction(op="sext16", result=t2, operand1=t))
+                    self._var_types[t2] = dst_str
+                    v = t2
                 # Preserve pointer-ness in casted values.
                 if getattr(dst_ty, "is_pointer", False) and "*" not in dst_str:
                     self._var_types[v] = f"{dst_str}*"

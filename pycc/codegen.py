@@ -734,6 +734,14 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "sext16":
+            # Sign-extend low 16 bits to 64 bits.
+            self._load_operand(ins.operand1, "%rax")
+            self._emit("  movswl %ax, %eax")
+            self._emit("  movslq %eax, %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
         if op == "binop":
             self._load_operand(ins.operand1, "%rax")
             self._load_operand(ins.operand2, "%rcx")

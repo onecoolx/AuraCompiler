@@ -38,7 +38,7 @@ int main(void){
 """.lstrip()
     import pytest
 
-    pytest.xfail("TODO: implement integer promotions across ?: and comparisons")
+    pytest.xfail("TODO: integer promotions for short/unsigned short in ?: arms")
     assert _compile_and_run(tmp_path, code) == 0
 
 
