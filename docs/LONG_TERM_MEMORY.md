@@ -76,6 +76,10 @@ Project rule of thumb: keep iteration fast while preserving correctness.
   - If full-suite regressions occur: fix them first, restore green, then commit
     following the same workflow.
 
+- **只要完成一次测试执行（无论是 impacted 还是 full suite），并且结果全绿通过，就必须提交一次代码。**
+  - 使用：`../ap.sh "<commitlint msg>"`
+  - 目的：确保“绿测试”与“可回溯提交”一一对应，避免出现通过测试但未落盘的状态。
+
 ### 4.2 Suggested loop
 
 1) Make a small, scoped change.

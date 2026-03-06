@@ -991,9 +991,27 @@ class IRGenerator:
 
                     # Emit decl and record type info.
                     # Priority:
-                    # 1) struct/union
-                    # 2) arrays (known or inferred)
-                    # 3) scalars
+                    # 1) arrays (known or inferred)
+                    # 2) struct/union scalar objects
+                    # 3) scalars (incl pointers)
+                    #
+                    # NOTE: we must infer `T[]` length *before* choosing the
+                    # array vs struct branch, otherwise `int a[] = {...}` will
+                    # never become an array.
+
+                    # Infer `T[]` element count from brace initializer.
+                    # e.g. `int a[] = {1,2,3};`
+                    if op1 is None and getattr(item, "array_size", None) is None and item.initializer is not None:
+                        inits0 = self._const_initializer_list(item.initializer)
+                        if inits0 is not None and isinstance(item.type.base, str) and item.type.base in {"int", "char", "unsigned char"}:
+                            if all(isinstance(e, (IntLiteral, CharLiteral, UnaryOp)) for e in inits0):
+                                n0 = len(inits0)
+                                op1 = f"array({item.type.base},${n0})"
+                                try:
+                                    item.array_size = n0
+                                except Exception:
+                                    pass
+
                     # If this is an array with known/inferred size, record it
                     # as an array type even when element type is struct/union.
                     if op1 is not None:
@@ -1007,17 +1025,6 @@ class IRGenerator:
                     else:
                         # Infer `T[]` element count from brace initializer.
                         # e.g. `int a[] = {1,2,3};`
-                        if op1 is None and getattr(item, "array_size", None) is None and item.initializer is not None:
-                            inits0 = self._const_initializer_list(item.initializer)
-                            if inits0 is not None and isinstance(item.type.base, str) and item.type.base in {"int", "char", "unsigned char"}:
-                                if all(isinstance(e, (IntLiteral, CharLiteral, UnaryOp)) for e in inits0):
-                                    n0 = len(inits0)
-                                    op1 = f"array({item.type.base},${n0})"
-                                    try:
-                                        item.array_size = n0
-                                    except Exception:
-                                        pass
-
                         if op1 is None:
                             # Preserve explicit signedness for narrow integer types.
                             # Parser keeps `base` as "char" and stores qualifiers
