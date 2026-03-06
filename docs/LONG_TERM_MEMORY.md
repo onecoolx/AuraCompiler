@@ -59,6 +59,36 @@ When updating this snapshot, include:
 - any newly supported feature and the test file proving it
 - any important known gaps/regressions
 
+## 4) Engineering workflow rules (fast iteration)
+
+Project rule of thumb: keep iteration fast while preserving correctness.
+
+### 4.1 Per-commit test policy
+
+- **Normal iterations (most commits): run impacted unit tests only.**
+  - Use: `python scripts/run_impact_tests.py --since HEAD`
+  - Rationale: avoid running the full suite on every small change.
+  - This script maps changed file paths to relevant pytest test globs and runs
+    the union.
+
+- **Milestones / larger phases: run the full test suite once.**
+  - Use: `python scripts/run_impact_tests.py --all` (equivalent to `pytest -q`)
+  - If full-suite regressions occur: fix them first, restore green, then commit
+    following the same workflow.
+
+### 4.2 Suggested loop
+
+1) Make a small, scoped change.
+2) Run impacted tests:
+   - `python scripts/run_impact_tests.py --since HEAD`
+3) Commit.
+4) At milestone boundaries: run full suite once:
+   - `python scripts/run_impact_tests.py --all`
+
+Notes:
+- For docs-only changes, impacted tests may be empty; this is OK.
+- Prefer multiple small commits over one large commit.
+
 ## 4) Engineering workflow (implementation rules)
 
 ### Tests-first and quality gates
