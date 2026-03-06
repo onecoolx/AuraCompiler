@@ -482,7 +482,7 @@ int main(){
 """.lstrip()
                 import pytest
 
-                pytest.xfail("TODO: sign-extension semantics for short after truncation in compound assign")
+                pytest.xfail("TODO: unify signedness/width of masked short temps in comparisons")
                 assert _compile_and_run(tmp_path, code) == 0
 
 

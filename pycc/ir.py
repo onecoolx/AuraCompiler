@@ -128,7 +128,7 @@ def _type_size(ty: Optional[object]) -> int:
         return 8
     # Allow passing stringly-typed types like "int", "char", "unsigned int".
     if isinstance(ty, str):
-        b = ty.strip()
+        b = " ".join(ty.strip().split())
         if "*" in b:
             return 8
         if b in {"char", "unsigned char", "signed char"}:
@@ -146,7 +146,7 @@ def _type_size(ty: Optional[object]) -> int:
     if isinstance(base, str):
         if getattr(ty, "is_pointer", False):
             return 8
-        b = base.strip()
+        b = " ".join(base.strip().split())
         if b == "char" or b == "unsigned char" or b == "signed char":
             return 1
         if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
@@ -342,6 +342,45 @@ class IRGenerator:
                             )
                         )
         return self.instructions
+
+    def _canon_int_type(self, ty: object | None) -> str:
+        """Canonicalize a best-effort integer type string.
+
+        This project uses stringly-typed ints in IR/codegen. Normalizing to a
+        small set reduces mismatches like "short int" vs "short".
+        """
+
+        if ty is None:
+            return ""
+        if isinstance(ty, str):
+            s = " ".join(ty.strip().lower().split())
+        else:
+            try:
+                s = " ".join(str(ty).strip().lower().split())
+            except Exception:
+                return ""
+
+        # normalize common spellings
+        if s in {"short int", "short"}:
+            return "short"
+        if s in {"signed short", "signed short int"}:
+            return "short"
+        if s in {"unsigned short", "unsigned short int"}:
+            return "unsigned short"
+        if s in {"int", "signed int"}:
+            return "int"
+        if s in {"unsigned int"}:
+            return "unsigned int"
+        if s in {"long", "long int", "signed long", "signed long int"}:
+            return "long"
+        if s in {"unsigned long", "unsigned long int"}:
+            return "unsigned long"
+        if s in {"char", "signed char"}:
+            return "char"
+        if s in {"unsigned char"}:
+            return "unsigned char"
+
+        return s
 
     def _const_initializer_blob(self, decl: Declaration) -> Optional[str]:
         """Return a blob initializer string for a global aggregate, or None.
@@ -1463,6 +1502,10 @@ class IRGenerator:
                 #   "unsigned unsigned short"
                 if dst_norm.startswith("unsigned unsigned "):
                     dst_norm = dst_norm.replace("unsigned unsigned ", "unsigned ", 1)
+
+                # Keep dst_str in sync with the normalized spelling for later
+                # _var_types recording.
+                dst_str = dst_norm
                 if dst_norm in {"unsigned char", "char"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 8 bits (zero-extend on read by masking).
                     t = self._new_temp()
@@ -1486,7 +1529,7 @@ class IRGenerator:
                     # Truncate to 16 bits.
                     t = self._new_temp()
                     self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
-                    self._var_types[t] = dst_str
+                    self._var_types[t] = self._canon_int_type(dst_str)
                     v = t
                 elif dst_norm in {"signed short", "signed short int"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 16 bits then sign-extend.
@@ -1494,7 +1537,7 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
                     t2 = self._new_temp()
                     self.instructions.append(IRInstruction(op="sext16", result=t2, operand1=t))
-                    self._var_types[t2] = dst_str
+                    self._var_types[t2] = self._canon_int_type(dst_str)
                     v = t2
                 # Preserve pointer-ness in casted values.
                 if getattr(dst_ty, "is_pointer", False) and "*" not in dst_str:
@@ -1697,12 +1740,14 @@ class IRGenerator:
                 # For narrow integer lvalues (char/short), compound assignment
                 # must convert the computed int result back to the lvalue type.
                 # Best-effort: truncate to 16 bits for short.
-                elif isinstance(cty, str) and cty.strip() in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+                elif isinstance(cty, str) and self._canon_int_type(cty) in {"short", "unsigned short"}:
                     t2 = self._new_temp()
                     self.instructions.append(IRInstruction(op="binop", result=t2, operand1=t, operand2="$65535", label="&"))
                     # Preserve signedness on the temp for later loads.
-                    self._var_types[t2] = cty
+                    self._var_types[t2] = self._canon_int_type(cty)
                     t = t2
+                    # Ensure the destination keeps its narrow type.
+                    self._var_types[dst] = self._canon_int_type(cty)
                 self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
                 return dst
 
@@ -1918,6 +1963,23 @@ class IRGenerator:
                 if self._is_int_like_type(lty) and self._is_int_like_type(rty):
                     common = self._usual_arithmetic_conversion(lty, rty)
                     unsigned = common.startswith("unsigned ")
+                    # If either side is a promoted signed short/char value,
+                    # ensure it is sign-extended to 64-bit before a 64-bit cmp.
+                    # (We represent many narrow computations via masking.)
+                    if common == "int":
+                        for side, ty in (("l", lty), ("r", rty)):
+                            tyn = self._canon_int_type(ty)
+                            if tyn in {"short", "char"}:
+                                if side == "l":
+                                    s = self._new_temp()
+                                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=l))
+                                    self._var_types[s] = "int"
+                                    l = s
+                                else:
+                                    s = self._new_temp()
+                                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=r))
+                                    self._var_types[s] = "int"
+                                    r = s
                 elif self._is_unsigned_operand(l) or self._is_unsigned_operand(r):
                     # Fallback for cases where one side is an untyped immediate.
                     unsigned = True
