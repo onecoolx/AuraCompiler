@@ -1429,14 +1429,16 @@ class IRGenerator:
             # Best-effort: record cast destination type for later signedness decisions.
             try:
                 dst_ty = getattr(expr, "type", None)
-                dst_str = getattr(dst_ty, "base", None) if dst_ty is not None else None
+                dst_str = str(dst_ty) if dst_ty is not None else None
             except Exception:
+                dst_ty = None
                 dst_str = None
             if isinstance(dst_str, str):
                 # Narrow integer casts must truncate/extend, otherwise expressions like
                 # `(unsigned char)x` won't behave correctly (e.g. after a sign-extended
                 # byte load).
-                dst_norm = dst_str.strip().lower()
+                # Normalize spaces to make downstream string checks stable.
+                dst_norm = " ".join(dst_str.strip().lower().split())
                 # Parser encodes explicit signedness via Type flags while keeping
                 # base == "char".
                 if dst_norm == "char" and dst_ty is not None:
@@ -1449,6 +1451,18 @@ class IRGenerator:
                             dst_str = "unsigned char"
                     except Exception:
                         pass
+                # Unify common spellings.
+                if dst_norm == "unsigned short int":
+                    dst_norm = "unsigned short"
+                if dst_norm in {"signed short int", "signed signed short"}:
+                    dst_norm = "signed short"
+                if dst_norm == "short int":
+                    dst_norm = "short"
+                # Some parser paths may redundantly encode unsigned in both the
+                # base string and the flag, yielding strings like:
+                #   "unsigned unsigned short"
+                if dst_norm.startswith("unsigned unsigned "):
+                    dst_norm = dst_norm.replace("unsigned unsigned ", "unsigned ", 1)
                 if dst_norm in {"unsigned char", "char"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 8 bits (zero-extend on read by masking).
                     t = self._new_temp()
@@ -1468,13 +1482,13 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(op="sext8", result=t2, operand1=t))
                     self._var_types[t2] = dst_str
                     v = t2
-                elif dst_norm in {"unsigned short", "short"} and not getattr(dst_ty, "is_pointer", False):
+                elif dst_norm in {"unsigned short", "unsigned short int", "short", "short int"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 16 bits.
                     t = self._new_temp()
                     self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
                     self._var_types[t] = dst_str
                     v = t
-                elif dst_norm == "signed short" and not getattr(dst_ty, "is_pointer", False):
+                elif dst_norm in {"signed short", "signed short int"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 16 bits then sign-extend.
                     t = self._new_temp()
                     self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
@@ -1680,6 +1694,15 @@ class IRGenerator:
                 if isinstance(cty, str) and "*" in cty:
                     self._var_types[t] = cty
                     self._var_types[dst] = cty
+                # For narrow integer lvalues (char/short), compound assignment
+                # must convert the computed int result back to the lvalue type.
+                # Best-effort: truncate to 16 bits for short.
+                elif isinstance(cty, str) and cty.strip() in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+                    t2 = self._new_temp()
+                    self.instructions.append(IRInstruction(op="binop", result=t2, operand1=t, operand2="$65535", label="&"))
+                    # Preserve signedness on the temp for later loads.
+                    self._var_types[t2] = cty
+                    t = t2
                 self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
                 return dst
 
