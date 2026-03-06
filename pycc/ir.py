@@ -1943,18 +1943,15 @@ class IRGenerator:
             ty_fv = getattr(self, "_var_types", {}).get(fv, "")
             ty_tv_n = ty_tv.strip().lower() if isinstance(ty_tv, str) else ""
             ty_fv_n = ty_fv.strip().lower() if isinstance(ty_fv, str) else ""
-            if self._is_unsigned_operand(tv) or self._is_unsigned_operand(fv):
-                # Pick a representative unsigned type to help later comparisons.
-                # Prefer unsigned long if either side is unsigned long.
-                if ty_tv_n.startswith("unsigned long") or ty_fv_n.startswith("unsigned long"):
-                    self._var_types[t] = "unsigned long"
-                else:
-                    self._var_types[t] = "unsigned int"
-            elif (ty_tv_n.startswith("long") and ty_fv_n.startswith("unsigned long")) or (
-                ty_tv_n.startswith("unsigned long") and ty_fv_n.startswith("long")
-            ):
-                # Usual arithmetic conversions: long vs unsigned long -> unsigned long.
-                self._var_types[t] = "unsigned long"
+            # Determine result type using the same usual arithmetic conversion
+            # helper used by binary arithmetic/comparisons (integer-only subset).
+            try:
+                if self._is_int_like_type(ty_tv) and self._is_int_like_type(ty_fv):
+                    common = self._usual_arithmetic_conversion(ty_tv, ty_fv)
+                    if isinstance(common, str) and common:
+                        self._var_types[t] = common
+            except Exception:
+                pass
 
             # If the result is unsigned long, preserve unsignedness for later
             # comparisons. (No width change on x86-64; this is just type info.)

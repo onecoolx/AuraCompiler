@@ -799,9 +799,23 @@ class CodeGenerator:
                     self._emit("  idivq %rcx")
                     self._emit("  movq %rdx, %rax")
             elif bop in {"==", "!=", "<", "<=", ">", ">=", "u<", "u<=", "u>", "u>=", "u==", "u!="}:
-                self._emit("  cmpq %rcx, %rax")
-                # Signedness is decided in IR for the current milestone.
+                # Compare width matters: `unsigned int` values must be compared
+                # in 32-bit to avoid treating zero-extended UINT32 as signed 64-bit.
+                # Prefer 32-bit compare if either operand is known to be unsigned int.
                 unsigned = bop.startswith("u")
+                lty = self._var_types.get(ins.operand1 or "", "") if hasattr(self, "_var_types") else ""
+                rty = self._var_types.get(ins.operand2 or "", "") if hasattr(self, "_var_types") else ""
+                lty_n = lty.strip().lower() if isinstance(lty, str) else ""
+                rty_n = rty.strip().lower() if isinstance(rty, str) else ""
+                u32_cmp = (lty_n == "unsigned int") or (rty_n == "unsigned int")
+
+                if u32_cmp:
+                    # Use 32-bit registers for compare.
+                    self._emit("  cmpl %ecx, %eax")
+                else:
+                    self._emit("  cmpq %rcx, %rax")
+
+                # Signedness is decided in IR.
                 core = bop[1:] if unsigned else bop
                 if unsigned:
                     cc = {
