@@ -64,3 +64,29 @@ int main(void) {
 }
 """
         assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_ptr_sub_scales_address_difference(tmp_path: Path):
+        code = r"""
+int main(void) {
+    int a[4];
+    int *p = a + 2;
+    long d = (long)((char*)(p - 1) - (char*)p);
+    return d == -4 ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_ptr_ptr_sub_yields_element_count(tmp_path: Path):
+        # Minimal subset: pointers within the same array.
+        code = r"""
+int main(void) {
+    int a[4];
+    int *p = a + 3;
+    int *q = a + 1;
+    long d = (long)(p - q);
+    return d == 2 ? 0 : 1;
+}
+"""
+        assert _compile_and_run(tmp_path, code) == 0
