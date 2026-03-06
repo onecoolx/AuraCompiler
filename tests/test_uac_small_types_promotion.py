@@ -21,11 +21,9 @@ def _compile_and_run(tmp_path: Path, c_src: str) -> int:
 
 
 def test_uac_unsigned_short_vs_int_select_short_neg_one(tmp_path: Path) -> None:
-    # NOTE: This is currently an expected gap: our compiler does not yet fully
-    # materialize integer promotions (e.g. sign-extension of promoted `short`)
-    # across `?:` and subsequent comparisons.
-    #
-    # Keep this test as a placeholder to enable once promotions are wired end-to-end.
+    # Mixed small integer types in `?:` should undergo integer promotions.
+    # In particular, `short` promotes to `int` (sign-extended) before the
+    # result is compared to 0.
     code = r"""
 int main(void){
   unsigned short us = 1;
@@ -36,9 +34,6 @@ int main(void){
     return ((cond ? us : s) < 0) ? 0 : 1;
 }
 """.lstrip()
-    import pytest
-
-    pytest.xfail("TODO: integer promotions for short/unsigned short in ?: arms")
     assert _compile_and_run(tmp_path, code) == 0
 
 

@@ -750,8 +750,9 @@ class IRGenerator:
             # On x86-64 SysV (int is 32-bit), these promote to int.
             return "int"
         if t in {"unsigned short"}:
-            # Keep unsignedness in this compiler's current model; promotes to unsigned int.
-            return "unsigned int"
+            # On this target, unsigned short promotes to int because int
+            # can represent all values of unsigned short.
+            return "int"
         if t in {"int", "unsigned int", "long", "unsigned long"}:
             return t
         return t
@@ -2000,6 +2001,11 @@ class IRGenerator:
                     if common == "int":
                         l = _materialize_int_promotion(l, lty)
                         r = _materialize_int_promotion(r, rty)
+                    elif common == "unsigned int":
+                        # Ensure narrow unsigned values are zero-extended so
+                        # codegen can reliably select a 32-bit unsigned compare.
+                        l = _materialize_int_promotion(l, lty)
+                        r = _materialize_int_promotion(r, rty)
                 elif self._is_unsigned_operand(l) or self._is_unsigned_operand(r):
                     # Fallback for cases where one side is an untyped immediate.
                     unsigned = True
@@ -2075,8 +2081,10 @@ class IRGenerator:
             # comparisons.
             tv = self._gen_expr(expr.true_expr)
             fv = self._gen_expr(expr.false_expr)
-            ty_tv = getattr(self, "_var_types", {}).get(tv, "")
-            ty_fv = getattr(self, "_var_types", {}).get(fv, "")
+            # Use the operand type lookup helper so we also get declared
+            # types for locals/globals (e.g. '@s' is 'short', not '').
+            ty_tv = self._operand_type_string(tv)
+            ty_fv = self._operand_type_string(fv)
             ty_tv_n = ty_tv.strip().lower() if isinstance(ty_tv, str) else ""
             ty_fv_n = ty_fv.strip().lower() if isinstance(ty_fv, str) else ""
             # Determine result type using the same usual arithmetic conversion
@@ -2088,6 +2096,13 @@ class IRGenerator:
                         self._var_types[t] = common
             except Exception:
                 pass
+
+            # If the usual arithmetic conversion decided on int/unsigned int,
+            # materialize promotions on the *arms* right away.
+            # Otherwise the selected value can carry a masked 16-bit form into
+            # later comparisons and force unsigned condition codes.
+            res_ty = getattr(self, "_var_types", {}).get(t, "")
+            res_ty_n = res_ty.strip().lower() if isinstance(res_ty, str) else ""
 
             # Materialize integer promotions for `?:` when the common type is
             # int. This fixes cases where one arm is a masked short temp that
@@ -2107,19 +2122,21 @@ class IRGenerator:
                 if tyn in {"unsigned char", "unsigned short"}:
                     s = self._new_temp()
                     self.instructions.append(IRInstruction(op="zext32", result=s, operand1=opnd))
-                    self._var_types[s] = "int"
+                    # Integer promotions for unsigned short/char yield an
+                    # unsigned int in our model.
+                    self._var_types[s] = "unsigned int"
                     return s
                 return opnd
 
-            # If the result is int, ensure both arms are sign-extended to 64-bit.
-            # This prevents cases like (cond ? (unsigned short)1 : (short)-1)
-            # from producing a 16-bit/32-bit value that later compares as
-            # unsigned due to missing sign extension.
-            res_ty = getattr(self, "_var_types", {}).get(t, "")
-            res_ty_n = res_ty.strip().lower() if isinstance(res_ty, str) else ""
-            if res_ty_n == "int":
+            if res_ty_n in {"int", "unsigned int"}:
                 tv = _materialize_int_promotion(tv, ty_tv)
                 fv = _materialize_int_promotion(fv, ty_fv)
+
+            # IMPORTANT: Don't override the computed common type here.
+            # `unsigned short` and `short` both integer-promote to `int` on
+            # this target, so the conditional operator result is `int`.
+            # The previous code tried to special-case this but was inverted
+            # and could force unsigned compares.
 
             # If the result is unsigned long, preserve unsignedness for later
             # comparisons. (No width change on x86-64; this is just type info.)

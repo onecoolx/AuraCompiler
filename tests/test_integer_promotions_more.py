@@ -62,10 +62,8 @@ int main(){
 
 
 def test_comparison_after_promotion_unsigned_short_vs_int(tmp_path):
-    # This compiler currently models unsignedness as a property of the IR operand,
-    # and uses unsigned condition codes if either operand is unsigned.
-    # With u=65535 and i=-1, the implementation treats the compare as unsigned,
-    # so 65535 > (unsigned)-1 is false.
+    # Integer promotions: unsigned short promotes to int on this target.
+    # So 65535 > -1 is true.
     code = r"""
 int main(){
   unsigned short u = 65535;
@@ -73,4 +71,4 @@ int main(){
   return (u > i) ? 0 : 1;
 }
 """.lstrip()
-    assert _compile_and_run(tmp_path, code) == 1
+    assert _compile_and_run(tmp_path, code) == 0
