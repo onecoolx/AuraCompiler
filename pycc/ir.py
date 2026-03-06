@@ -1922,6 +1922,24 @@ class IRGenerator:
             l = self._gen_expr(expr.left)
             r = self._gen_expr(expr.right)
 
+            # Materialize integer promotions (C89): many operations promote
+            # smaller integer types (char/short) to int (or unsigned int).
+            # Our codegen executes ops in 64-bit, so we must explicitly
+            # sign/zero-extend masked/narrow temps to preserve semantics.
+            def _materialize_int_promotion(opnd: str, ty: object) -> str:
+                tyn = self._canon_int_type(ty)
+                if tyn in {"char", "short"}:
+                    s = self._new_temp()
+                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=opnd))
+                    self._var_types[s] = "int"
+                    return s
+                if tyn in {"unsigned char", "unsigned short"}:
+                    s = self._new_temp()
+                    self.instructions.append(IRInstruction(op="zext32", result=s, operand1=opnd))
+                    self._var_types[s] = "int"  # value-range fits in int on this target
+                    return s
+                return opnd
+
             # Best-effort pointer arithmetic scaling: if one operand is a
             # pointer and the other is an integer, scale the integer by the
             # pointer's pointee size before add/sub.
@@ -1963,29 +1981,26 @@ class IRGenerator:
                 if self._is_int_like_type(lty) and self._is_int_like_type(rty):
                     common = self._usual_arithmetic_conversion(lty, rty)
                     unsigned = common.startswith("unsigned ")
-                    # If either side is a promoted signed short/char value,
-                    # ensure it is sign-extended to 64-bit before a 64-bit cmp.
-                    # (We represent many narrow computations via masking.)
                     if common == "int":
-                        for side, ty in (("l", lty), ("r", rty)):
-                            tyn = self._canon_int_type(ty)
-                            if tyn in {"short", "char"}:
-                                if side == "l":
-                                    s = self._new_temp()
-                                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=l))
-                                    self._var_types[s] = "int"
-                                    l = s
-                                else:
-                                    s = self._new_temp()
-                                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=r))
-                                    self._var_types[s] = "int"
-                                    r = s
+                        l = _materialize_int_promotion(l, lty)
+                        r = _materialize_int_promotion(r, rty)
                 elif self._is_unsigned_operand(l) or self._is_unsigned_operand(r):
                     # Fallback for cases where one side is an untyped immediate.
                     unsigned = True
                 cmp_op = f"u{expr.operator}" if unsigned else expr.operator
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=cmp_op))
             else:
+                # For arithmetic/bitwise ops, apply integer promotions up-front
+                # so 64-bit ops don't accidentally treat narrow values as
+                # already-extended (e.g. masked short temps).
+                if expr.operator in {"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"}:
+                    lty = self._operand_type_string(l)
+                    rty = self._operand_type_string(r)
+                    if self._is_int_like_type(lty) and self._is_int_like_type(rty):
+                        common = self._usual_arithmetic_conversion(lty, rty)
+                        if common == "int":
+                            l = _materialize_int_promotion(l, lty)
+                            r = _materialize_int_promotion(r, rty)
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator))
 
             # Best-effort: preserve pointer type when doing pointer +/- integer.
@@ -2058,6 +2073,23 @@ class IRGenerator:
             except Exception:
                 pass
 
+            # Materialize integer promotions for `?:` when the common type is
+            # int. This fixes cases where one arm is a masked short temp that
+            # later compares as positive without sign-extension.
+            def _materialize_int_promotion(opnd: str, ty: object) -> str:
+                tyn = self._canon_int_type(ty)
+                if tyn in {"char", "short"}:
+                    s = self._new_temp()
+                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=opnd))
+                    self._var_types[s] = "int"
+                    return s
+                if tyn in {"unsigned char", "unsigned short"}:
+                    s = self._new_temp()
+                    self.instructions.append(IRInstruction(op="zext32", result=s, operand1=opnd))
+                    self._var_types[s] = "int"
+                    return s
+                return opnd
+
             # If the result is int, ensure both arms are sign-extended to 64-bit.
             # This prevents cases like (cond ? (unsigned short)1 : (short)-1)
             # from producing a 16-bit/32-bit value that later compares as
@@ -2065,13 +2097,8 @@ class IRGenerator:
             res_ty = getattr(self, "_var_types", {}).get(t, "")
             res_ty_n = res_ty.strip().lower() if isinstance(res_ty, str) else ""
             if res_ty_n == "int":
-                tv2 = self._new_temp()
-                fv2 = self._new_temp()
-                self._var_types[tv2] = "int"
-                self._var_types[fv2] = "int"
-                self.instructions.append(IRInstruction(op="sext32", result=tv2, operand1=tv))
-                self.instructions.append(IRInstruction(op="sext32", result=fv2, operand1=fv))
-                tv, fv = tv2, fv2
+                tv = _materialize_int_promotion(tv, ty_tv)
+                fv = _materialize_int_promotion(fv, ty_fv)
 
             # If the result is unsigned long, preserve unsignedness for later
             # comparisons. (No width change on x86-64; this is just type info.)
