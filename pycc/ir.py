@@ -1743,11 +1743,22 @@ class IRGenerator:
                 elif isinstance(cty, str) and self._canon_int_type(cty) in {"short", "unsigned short"}:
                     t2 = self._new_temp()
                     self.instructions.append(IRInstruction(op="binop", result=t2, operand1=t, operand2="$65535", label="&"))
+                    cty_n = self._canon_int_type(cty)
                     # Preserve signedness on the temp for later loads.
-                    self._var_types[t2] = self._canon_int_type(cty)
-                    t = t2
+                    self._var_types[t2] = cty_n
+
+                    # If the lvalue is signed short, the stored value should
+                    # behave like a promoted short in later expressions.
+                    # Masking yields 0..65535, so materialize sign via sext16.
+                    if cty_n == "short":
+                        t3 = self._new_temp()
+                        self.instructions.append(IRInstruction(op="sext16", result=t3, operand1=t2))
+                        self._var_types[t3] = "short"
+                        t = t3
+                    else:
+                        t = t2
                     # Ensure the destination keeps its narrow type.
-                    self._var_types[dst] = self._canon_int_type(cty)
+                    self._var_types[dst] = cty_n
                 self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
                 return dst
 
@@ -1928,9 +1939,14 @@ class IRGenerator:
             # sign/zero-extend masked/narrow temps to preserve semantics.
             def _materialize_int_promotion(opnd: str, ty: object) -> str:
                 tyn = self._canon_int_type(ty)
-                if tyn in {"char", "short"}:
+                if tyn == "char":
                     s = self._new_temp()
-                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=opnd))
+                    self.instructions.append(IRInstruction(op="sext8", result=s, operand1=opnd))
+                    self._var_types[s] = "int"
+                    return s
+                if tyn == "short":
+                    s = self._new_temp()
+                    self.instructions.append(IRInstruction(op="sext16", result=s, operand1=opnd))
                     self._var_types[s] = "int"
                     return s
                 if tyn in {"unsigned char", "unsigned short"}:
@@ -2078,9 +2094,14 @@ class IRGenerator:
             # later compares as positive without sign-extension.
             def _materialize_int_promotion(opnd: str, ty: object) -> str:
                 tyn = self._canon_int_type(ty)
-                if tyn in {"char", "short"}:
+                if tyn == "char":
                     s = self._new_temp()
-                    self.instructions.append(IRInstruction(op="sext32", result=s, operand1=opnd))
+                    self.instructions.append(IRInstruction(op="sext8", result=s, operand1=opnd))
+                    self._var_types[s] = "int"
+                    return s
+                if tyn == "short":
+                    s = self._new_temp()
+                    self.instructions.append(IRInstruction(op="sext16", result=s, operand1=opnd))
                     self._var_types[s] = "int"
                     return s
                 if tyn in {"unsigned char", "unsigned short"}:
