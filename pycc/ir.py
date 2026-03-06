@@ -722,6 +722,12 @@ class IRGenerator:
         lt = self._integer_promote(lty)
         rt = self._integer_promote(rty)
 
+        # After integer promotions, if both types are the same, keep it.
+        # This matters for (unsigned short ? ... : ...) where both arms promote
+        # to int on typical targets.
+        if lt == rt:
+            return lt
+
         # If either is unsigned long, result unsigned long.
         if lt == "unsigned long" or rt == "unsigned long":
             return "unsigned long"
@@ -1952,6 +1958,21 @@ class IRGenerator:
                         self._var_types[t] = common
             except Exception:
                 pass
+
+            # If the result is int, ensure both arms are sign-extended to 64-bit.
+            # This prevents cases like (cond ? (unsigned short)1 : (short)-1)
+            # from producing a 16-bit/32-bit value that later compares as
+            # unsigned due to missing sign extension.
+            res_ty = getattr(self, "_var_types", {}).get(t, "")
+            res_ty_n = res_ty.strip().lower() if isinstance(res_ty, str) else ""
+            if res_ty_n == "int":
+                tv2 = self._new_temp()
+                fv2 = self._new_temp()
+                self._var_types[tv2] = "int"
+                self._var_types[fv2] = "int"
+                self.instructions.append(IRInstruction(op="sext32", result=tv2, operand1=tv))
+                self.instructions.append(IRInstruction(op="sext32", result=fv2, operand1=fv))
+                tv, fv = tv2, fv2
 
             # If the result is unsigned long, preserve unsignedness for later
             # comparisons. (No width change on x86-64; this is just type info.)
