@@ -194,12 +194,64 @@ class Preprocessor:
         - parentheses
         """
 
-        tokens = self._tokenize_if_expr(expr)
+        # Best-effort: expand object-like macros inside #if expressions.
+        # IMPORTANT: `defined(NAME)` argument is NOT macro-expanded per C rules,
+        # so avoid expanding identifiers that are immediate arguments to
+        # `defined`.
+        expr2 = self._expand_object_like_macros_in_if_expr(expr, macros)
+        tokens = self._tokenize_if_expr(expr2)
         p = self._IfExprParser(tokens=tokens, macros=macros)
         val = p.parse_expr()
         if not p.at_end():
             raise RuntimeError(f"unsupported #if expression: trailing tokens in {expr!r}")
         return bool(val)
+
+    def _expand_object_like_macros_in_if_expr(self, expr: str, macros: Dict[str, str]) -> str:
+        """Expand object-like macros in a #if/#elif expression, except `defined` args."""
+
+        # Tokenize on a small subset sufficient to protect `defined` arguments.
+        toks = self._tokenize_if_expr(expr)
+        out: List[str] = []
+        i = 0
+        while i < len(toks):
+            t = toks[i]
+            if t == "defined":
+                out.append(t)
+                i += 1
+                # Copy optional parenthesis form: defined ( NAME )
+                if i < len(toks) and toks[i] == "(":
+                    out.append("(")
+                    i += 1
+                    # tolerate an extra '(' if present
+                    if i < len(toks) and toks[i] == "(":
+                        out.append("(")
+                        i += 1
+                    if i < len(toks):
+                        out.append(toks[i])  # NAME (do not expand)
+                        i += 1
+                    # close parens if present
+                    if i < len(toks) and toks[i] == ")":
+                        out.append(")")
+                        i += 1
+                    if i < len(toks) and toks[i] == ")":
+                        out.append(")")
+                        i += 1
+                else:
+                    # defined NAME
+                    if i < len(toks):
+                        out.append(toks[i])
+                        i += 1
+                continue
+
+            # Expand single identifier tokens (object-like only).
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", t) and t in macros:
+                repl = macros[t]
+                out.append(repl)
+            else:
+                out.append(t)
+            i += 1
+
+        return " ".join(out)
 
     def _eval_if_expr_strict_01(self, expr: str, macros: Dict[str, str]) -> bool:
         """Strict legacy subset for `#if NAME` / `#elif NAME`.
@@ -572,6 +624,11 @@ class Preprocessor:
                 if self._eat("("):
                     # Skip whitespace-like tokens are not present here; tolerate
                     # parentheses form defined ( NAME ) where NAME may be a macro.
+                    # Allow `defined ( NAME )` with optional whitespace in the
+                    # original source, which after tokenization may appear as
+                    # `defined ( NAME` i.e. an extra `(` token.
+                    if self._peek() == "(":
+                        self._i += 1
                     name = self._peek()
                     if not name:
                         raise RuntimeError("unsupported #if expression: defined expects an identifier")

@@ -59,7 +59,13 @@ class Compiler:
         self.assembler = os.environ.get("PYCC_AS", "as")
         self.linker = os.environ.get("PYCC_LD", "ld")
     
-    def compile_file(self, source_file: str, output_file: Optional[str] = None) -> CompilationResult:
+    def compile_file(
+        self,
+        source_file: str,
+        output_file: Optional[str] = None,
+        *,
+        preprocess_only: bool = False,
+    ) -> CompilationResult:
         """Compile a source file.
 
         If output_file endswith:
@@ -86,6 +92,11 @@ class Compiler:
                     source_code = pres.text
                 except Exception as e:
                     return CompilationResult(success=False, errors=[f"Preprocess failed: {e}"])
+
+            if preprocess_only:
+                # For -E style calls, return preprocessed text in `assembly`
+                # to match existing tests.
+                return CompilationResult(success=True, output_file=None, assembly=source_code)
 
             return self.compile_code(source_code, output_file, source_path=source_file)
         except IOError as e:
