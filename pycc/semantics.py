@@ -81,6 +81,8 @@ class SemanticContext:
     # Best-effort function signature info (subset)
     # name -> (return_base, param_count or None, is_variadic)
     function_sigs: Dict[str, tuple[str, Optional[int], bool]]
+    # Global arrays: name -> (element_base, element_count)
+    global_arrays: Dict[str, tuple[str, int]]
 
 
 class SemanticError(Exception):
@@ -119,6 +121,7 @@ class SemanticAnalyzer:
         # Preserve Type nodes for globals so we can check qualifiers like const.
         self._global_decl_types: Dict[str, Type] = {}
         self._enum_constants: Dict[str, int] = {}
+        self._global_arrays: Dict[str, tuple[str, int]] = {}
 
         seen_globals: Dict[str, str] = {}
         # Minimal function redeclaration compatibility tracking (C89 subset).
@@ -235,6 +238,25 @@ class SemanticAnalyzer:
                 except Exception:
                     self._global_types[decl.name] = "int"
 
+                # Record global array element type and count when available.
+                # Parser encodes arrays via Declaration.array_size.
+                try:
+                    n = getattr(decl, "array_size", None)
+                    if n is not None:
+                        self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "int")), int(n))
+                    # Infer `char s[] = "...";` size when unsized and initialized.
+                    if (
+                        n is None
+                        and not getattr(decl.type, "is_pointer", False)
+                        and getattr(decl.type, "base", None) in {"char", "unsigned char"}
+                        and getattr(decl, "initializer", None) is not None
+                    ):
+                        init = getattr(decl, "initializer")
+                        if isinstance(init, StringLiteral):
+                            self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "char")), len(init.value) + 1)
+                except Exception:
+                    pass
+
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl) and decl.body is not None:
                 self._analyze_function(decl)
@@ -257,6 +279,7 @@ class SemanticAnalyzer:
             global_linkage=dict(self._global_linkage),
             global_kinds=dict(self._global_kinds),
             function_sigs=dict(self._function_sigs),
+            global_arrays=dict(self._global_arrays),
         )
 
     def _register_enum_decl(self, decl: EnumDecl) -> None:

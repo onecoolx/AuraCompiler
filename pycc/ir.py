@@ -336,6 +336,34 @@ class IRGenerator:
                             raise Exception(
                                 f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
                             )
+
+                        # Special-case: `char s[] = "...";` at file scope is an
+                        # aggregate initializer for a character array, not a
+                        # pointer initializer.
+                        # The parser encodes unsized arrays as `array_size=None`.
+                        if (
+                            imm is None
+                            and isinstance(ptr, str)
+                            and ptr.startswith("=str:")
+                            and getattr(decl, "array_size", None) is None
+                            and getattr(getattr(decl, "type", None), "base", None) in {"char", "unsigned char"}
+                            and not getattr(getattr(decl, "type", None), "is_pointer", False)
+                        ):
+                            s = ptr[len("=str:") :]
+                            # include trailing NUL
+                            bs = [ord(c) & 0xFF for c in s] + [0]
+                            blob2 = "blob:" + "".join(f"{b:02x}" for b in bs)
+                            self.instructions.append(
+                                IRInstruction(
+                                    op="gdef_blob",
+                                    result=f"@{decl.name}",
+                                    operand1=decl.type.base,
+                                    operand2=blob2,
+                                    label=sc,
+                                )
+                            )
+                            continue
+
                         self.instructions.append(
                             IRInstruction(
                                 op="gdef",
@@ -453,7 +481,9 @@ class IRGenerator:
                 if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
                     s = inits[0].value
                     bytes_vals = [ord(c) for c in s]
-                    if len(bytes_vals) < n:
+                    # C89: string literal used to initialize a character array
+                    # includes the terminating '\0' (when space permits).
+                    if len(bytes_vals) + 1 <= n:
                         bytes_vals.append(0)
                     if len(bytes_vals) > n:
                         bytes_vals = bytes_vals[:n]
@@ -1500,6 +1530,16 @@ class IRGenerator:
                             except Exception:
                                 n = 1
                         return f"${_type_size(base_part) * max(0, n)}"
+                # Global arrays: infer total byte size using semantic context
+                # (we record declared array sizes for globals when known).
+                try:
+                    if self._sema_ctx is not None:
+                        ga = getattr(self._sema_ctx, "global_arrays", {})
+                        if isinstance(ga, dict) and op.name in ga:
+                            base_s, n = ga[op.name]
+                            return f"${_type_size(str(base_s)) * int(n)}"
+                except Exception:
+                    pass
                 # Use declared local/global type when available.
                 ty_s = self._operand_type_string(f"@{op.name}")
                 if isinstance(ty_s, str) and ty_s:

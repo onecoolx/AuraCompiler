@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from pycc.compiler import Compiler
+
+
+def _compile_and_run(tmp_path, code: str) -> int:
+    import subprocess
+
+    c_path = tmp_path / "t.c"
+    out_path = tmp_path / "t"
+    c_path.write_text(code)
+
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(c_path), str(out_path))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
+
+    p = subprocess.run([str(out_path)], check=False)
+    return p.returncode
+
+
+def test_global_char_array_string_initializer(tmp_path):
+    code = r'''
+char s[] = "hi";
+int main(void){
+  return (sizeof(s)==3 && s[0]=='h' && s[1]=='i' && s[2]==0) ? 0 : 1;
+}
+'''
+    assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_global_int_array_brace_initializer_partial_zero(tmp_path):
+    code = r'''
+int a[5] = {1,2};
+int main(void){
+  return (a[0]==1 && a[1]==2 && a[2]==0 && a[3]==0 && a[4]==0) ? 0 : 1;
+}
+'''
+    assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_global_struct_brace_initializer(tmp_path):
+    code = r'''
+struct P { int x; int y; };
+struct P p = {1,2};
+int main(void){
+  return (p.x==1 && p.y==2) ? 0 : 1;
+}
+'''
+    assert _compile_and_run(tmp_path, code) == 0
