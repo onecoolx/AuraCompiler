@@ -741,6 +741,19 @@ class Parser:
         while self._match(TokenType.STAR):
             ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
 
+        # array declarator: name[expr]
+        # NOTE: this parser milestone supports only a single array suffix.
+        # Multi-dimensional arrays will be supported later once type and
+        # initializer lowering can represent nested array shapes.
+        array_size_val = None
+        if self._match(TokenType.LBRACKET):
+            size_expr = None
+            if not self._at(TokenType.RBRACKET):
+                size_expr = self._parse_expression()
+            self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+            if isinstance(size_expr, IntLiteral):
+                array_size_val = size_expr.value
+
         # function declarator: name(params)
         # Minimal support for function pointer declarations where the type is a
         # pointer, but the declarator has a trailing parameter list.
@@ -763,17 +776,6 @@ class Parser:
             ty = Type(base=f"{ty.base} (*)()", is_pointer=True, line=ty.line, column=ty.column)
 
         initializer = None
-
-        # array declarator: name[expr]
-        array_size_val = None
-        if self._match(TokenType.LBRACKET):
-            size_expr = None
-            if not self._at(TokenType.RBRACKET):
-                size_expr = self._parse_expression()
-            self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
-            # If the size is a simple integer literal, record it on the declaration
-            if isinstance(size_expr, IntLiteral):
-                array_size_val = size_expr.value
 
         if self._match(TokenType.ASSIGN):
             # Support brace initializer lists for C89 aggregates.
