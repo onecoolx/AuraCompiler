@@ -1462,11 +1462,20 @@ class IRGenerator:
             op = expr.operand
             if op is None:
                 return "$8"
+            # If semantics has already attached a type to the operand
+            # expression, use it.
+            try:
+                op_ty = getattr(op, "type", None)
+                if op_ty is not None:
+                    return f"${_type_size(op_ty)}"
+            except Exception:
+                pass
             from pycc.ast_nodes import (
                 Identifier as ASTIdentifier,
                 ArrayAccess as ASTArrayAccess,
                 MemberAccess as ASTMemberAccess,
                 PointerMemberAccess as ASTPointerMemberAccess,
+                UnaryOp as ASTUnaryOp,
             )
             if isinstance(op, ASTIdentifier):
                 # Best-effort: if identifier is a known local array, return its
@@ -1487,8 +1496,19 @@ class IRGenerator:
                             except Exception:
                                 n = 1
                         return f"${_type_size(base_part) * max(0, n)}"
-                # Without full typing in IR, assume int.
+                # Use declared local/global type when available.
+                ty_s = self._operand_type_string(f"@{op.name}")
+                if isinstance(ty_s, str) and ty_s:
+                    return f"${_type_size(ty_s)}"
+                # fallback
                 return "$4"
+            if isinstance(op, ASTUnaryOp) and op.operator == "*":
+                # sizeof(*p) == sizeof(pointee)
+                base = op.operand
+                if isinstance(base, ASTIdentifier):
+                    pty = self._operand_type_string(f"@{base.name}")
+                    if isinstance(pty, str) and "*" in pty:
+                        return f"${_type_size(pty.split('*', 1)[0].strip())}"
             if isinstance(op, ASTArrayAccess):
                 # element size: int arrays are 4, char* indexing is 1. Default to 4.
                 return "$4"
