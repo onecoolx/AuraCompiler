@@ -82,7 +82,10 @@ class SemanticContext:
     # name -> (return_base, param_count or None, is_variadic)
     function_sigs: Dict[str, tuple[str, Optional[int], bool]]
     # Global arrays: name -> (element_base, element_count)
-    global_arrays: Dict[str, tuple[str, int]]
+    # For globals that are arrays, we track element base type and either:
+    # - an int element count (1D), or
+    # - a list of dimensions (outer->inner) for multi-dimensional arrays.
+    global_arrays: Dict[str, tuple[str, object]]
 
 
 class SemanticError(Exception):
@@ -239,9 +242,15 @@ class SemanticAnalyzer:
                     self._global_types[decl.name] = "int"
 
                 # Record global array element type and count when available.
-                # Parser encodes arrays via Declaration.array_size.
+                # Parser encodes arrays via Declaration.array_size, and multi-dim arrays
+                # via Declaration.array_dims.
                 try:
                     n = getattr(decl, "array_size", None)
+                    dims = getattr(decl, "array_dims", None)
+                    if dims:
+                        # Preserve full dims (outer->inner). We'll use this in sizeof and
+                        # later nested initializer lowering.
+                        self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "int")), [int(x) if x is not None else None for x in dims])
                     if n is not None:
                         self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "int")), int(n))
                     # Infer `char s[] = "...";` size when unsized and initialized.

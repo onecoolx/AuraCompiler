@@ -1536,7 +1536,20 @@ class IRGenerator:
                     if self._sema_ctx is not None:
                         ga = getattr(self._sema_ctx, "global_arrays", {})
                         if isinstance(ga, dict) and op.name in ga:
-                            base_s, n = ga[op.name]
+                            base_s, shape = ga[op.name]
+                            # shape can be an int (1D element count) or a list of dims.
+                            if isinstance(shape, int):
+                                n = int(shape)
+                            elif isinstance(shape, (list, tuple)):
+                                n = 1
+                                for d in shape:
+                                    if d is None:
+                                        # unknown size -> best-effort: treat as 0
+                                        n = 0
+                                        break
+                                    n *= int(d)
+                            else:
+                                n = 0
                             return f"${_type_size(str(base_s)) * int(n)}"
                 except Exception:
                     pass
