@@ -8,6 +8,27 @@ Current status: `pytest -q` is the source of truth. For detailed tracking:
 - C89 language roadmap: `docs/C89_ROADMAP.md`
 - Preprocessor checklist (quantified): `docs/PREPROCESSOR_C89_CHECKLIST.md`
 
+## Engineering Rules (Long-term Memory)
+
+### Commit Policy (Required)
+
+All commits **must** follow the repository commit policy:
+
+1. **Commit message format:** use **commitlint / Conventional Commits**.
+  - Pattern: `<type>(<scope>): <subject>`
+  - Examples:
+    - `feat(compiler): add multi-TU compile_files driver`
+    - `fix(codegen): correct short sign-extension on load`
+    - `test(multi-tu): add cross-TU linkage compatibility tests`
+    - `docs(process): document commit policy`
+
+2. **Commit command:** do **not** run `git commit` directly.
+  Use the project helper script from the repo root:
+  - `../ap.sh "<msg>"`
+
+3. **If violated:** rewrite the commit(s) (reset while keeping changes), then
+  re-commit using `../ap.sh` with a commitlint-compliant message.
+
 ## Status Summary (Reality)
 
 The compiler already works end-to-end for a practical C89 subset:
