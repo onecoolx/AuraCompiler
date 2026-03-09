@@ -48,6 +48,8 @@ class CodeGenerator:
         self._locals: Dict[str, int] = {}
         self._arrays: Dict[str, int] = {}
         self._stack_size = 0
+        self._fn_name: Optional[str] = None
+        self._fn_ret_ty: str = ""
         # Fixed spill area for temporaries (to avoid dynamic %rsp adjustment).
         self._spill_capacity = 0
         self._spill_used = 0
@@ -156,6 +158,21 @@ class CodeGenerator:
                 continue
             if ins.op == "func_begin":
                 fn_name = ins.label or ""
+                self._fn_name = fn_name
+                # Seed return type (if known) for ABI-sensitive `ret`.
+                self._fn_ret_ty = ""
+                try:
+                    if getattr(self, "_sema_ctx", None) is not None and fn_name:
+                        fn_ty = getattr(self._sema_ctx, "global_types", {}).get(fn_name)
+                        if fn_ty is not None:
+                            s = str(fn_ty)
+                            if s.startswith("function "):
+                                rest = s[len("function ") :].strip()
+                                if "(" in rest:
+                                    rest = rest.split("(", 1)[0].strip()
+                                self._fn_ret_ty = rest
+                except Exception:
+                    self._fn_ret_ty = ""
                 # Seed best-effort type info for temps/symbols used in this function.
                 # IR sometimes annotates types via prior "decl" ops for locals,
                 # but temps like %t0 (from addr_index) may never appear in decls.
@@ -169,11 +186,17 @@ class CodeGenerator:
                         if d.result not in self._var_types:
                             self._var_types[d.result] = "ptr"
                     j += 1
-                # collect decls/params until non-decl-ish instruction
+                # collect decls/params (and optional func_ret marker) until the
+                # first non-prologue instruction. IR commonly emits:
+                #   func_begin
+                #   func_ret
+                #   param...
+                # so we must skip func_ret when building the prologue decl list.
                 body_start = i + 1
                 decls: List[IRInstruction] = []
-                while body_start < len(instructions) and instructions[body_start].op in {"decl", "param"}:
-                    decls.append(instructions[body_start])
+                while body_start < len(instructions) and instructions[body_start].op in {"decl", "param", "func_ret"}:
+                    if instructions[body_start].op in {"decl", "param"}:
+                        decls.append(instructions[body_start])
                     body_start += 1
 
                 # Compute stack frame layout for locals/params
@@ -190,8 +213,16 @@ class CodeGenerator:
                 i = body_start
                 continue
 
+            if ins.op == "func_ret":
+                # Per-function return type hint from IR.
+                self._fn_ret_ty = (ins.operand1 or "")
+                i += 1
+                continue
+
             if ins.op == "func_end":
                 # function epilogue already emitted on ret; emit a safety label
+                self._fn_name = None
+                self._fn_ret_ty = ""
                 i += 1
                 continue
 
@@ -390,8 +421,16 @@ class CodeGenerator:
             stack += 8
         self._stack_size = stack
 
-        self._emit(f".globl {name}")
-        self._emit(f"{name}:")
+        # IR may tag internal-linkage functions as "name@static".
+        emit_name = name
+        is_static_fn = False
+        if isinstance(name, str) and name.endswith("@static"):
+            emit_name = name[: -len("@static")]
+            is_static_fn = True
+
+        if not is_static_fn:
+            self._emit(f".globl {emit_name}")
+        self._emit(f"{emit_name}:")
         self._emit("  pushq %rbp")
         self._emit("  movq %rsp, %rbp")
         if self._stack_size:
@@ -514,6 +553,11 @@ class CodeGenerator:
         if op == "label":
             self._emit(f"{ins.label}:")
             return
+
+        # NOTE: Don't blindly rewrite bare identifiers to '@name' here.
+        # Bare identifiers may legally be extern/global symbols or macro
+        # expanded string-literals (e.g. NAME -> "ok"). Params/locals should
+        # already be '@name' once prologue scanning assigns stack slots.
         if op == "jmp":
             self._emit(f"  jmp {ins.label}")
             return
@@ -543,6 +587,14 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "sext16":
+            # result = sign_extend_16(operand1)
+            self._load_operand(ins.operand1, "%rax")
+            self._emit("  movswl %ax, %eax")
+            self._emit("  movslq %eax, %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
         if op == "load":
             # result = *(operand1)
             # Best-effort: choose width based on pointer pointee type.
@@ -553,6 +605,11 @@ class CodeGenerator:
                 base_ty = self._var_types.get(addr)
                 if base_ty is None and addr.startswith("@") and self._sema_ctx is not None:
                     base_ty = getattr(self._sema_ctx, "global_types", {}).get(addr[1:], None)
+                # If this is a temp holding a pointer but we didn't record its
+                # type, default to a generic byte pointer so we don't accidentally
+                # read 4 bytes (elem_sz=4) for a char dereference.
+                if (base_ty is None or base_ty == "") and addr.startswith("%t"):
+                    base_ty = "char*"
             if isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
 
@@ -569,8 +626,20 @@ class CodeGenerator:
                     self._emit("  movzwq (%rax), %rax")
                 else:
                     self._emit("  movswq (%rax), %rax")
+                # Track loaded value type so later ops (e.g. >>) can choose
+                # signed vs unsigned behavior correctly.
+                try:
+                    if ins.result:
+                        self._var_types[ins.result] = "unsigned short" if self._pointee_is_unsigned(base_ty) else "short"
+                except Exception:
+                    pass
             elif elem_sz == 4:
-                self._emit("  movslq (%rax), %rax")
+                # Integer loads must respect signedness of the pointee.
+                if self._pointee_is_unsigned(base_ty):
+                    self._emit("  movl (%rax), %eax")
+                    self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  movslq (%rax), %rax")
             else:
                 self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
@@ -815,6 +884,7 @@ class CodeGenerator:
                 rty = self._var_types.get(ins.operand2 or "", "") if hasattr(self, "_var_types") else ""
                 lty_n = lty.strip().lower() if isinstance(lty, str) else ""
                 rty_n = rty.strip().lower() if isinstance(rty, str) else ""
+
                 u32_cmp = (lty_n == "unsigned int") or (rty_n == "unsigned int")
 
                 if u32_cmp:
@@ -1078,9 +1148,6 @@ class CodeGenerator:
             target_name = (ins.operand1 or "")
             if target_name.startswith("@"):  # symbol
                 target_name = target_name[1:]
-            if target_name in {"vsnprintf", "vprintf", "vfprintf", "vsprintf", "vasprintf", "vdprintf"}:
-                if ins.args and len(ins.args) >= 4:
-                    pass
 
             # SysV AMD64 ABI: for variadic calls, %al must contain the number
             # of vector registers used to pass arguments. We don't pass any
@@ -1144,6 +1211,11 @@ class CodeGenerator:
                         # If it's not a known global variable, treat as a function symbol.
                         # This allows extern prototypes across translation units.
                         is_func = sym not in getattr(self._sema_ctx, "global_linkage", {})
+                # If we don't have semantic info, still treat unknown @symbols
+                # as functions by default. This avoids generating
+                # `movslq foo(%rip), %rax; call *%rax` for extern functions.
+                if not is_func and self._sema_ctx is None:
+                    is_func = True
                 if is_func:
                     self._emit(f"  call {sym}")
                 else:
@@ -1224,8 +1296,16 @@ class CodeGenerator:
             self._emit("  addq %rcx, %rax")
             # load with width based on element size
             if elem_sz == 1:
-                self._emit("  movsbl (%rax), %eax")
-                self._emit("  movslq %eax, %rax")
+                # char loads: choose sign/zero extension based on pointee type.
+                unsigned_char = False
+                if isinstance(base_ty, str) and "unsigned" in base_ty and "char" in base_ty:
+                    unsigned_char = True
+                if unsigned_char:
+                    self._emit("  movzbl (%rax), %eax")
+                    self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  movsbl (%rax), %eax")
+                    self._emit("  movslq %eax, %rax")
             elif elem_sz == 2:
                 self._emit("  movswq (%rax), %rax")
             elif elem_sz == 4:
@@ -1380,7 +1460,32 @@ class CodeGenerator:
             return
 
         if op == "ret":
+            # SysV ABI: integer return values are in %rax.
+            # For narrow integer return types (char/short), the value must be
+            # properly sign/zero-extended as if converted to int.
             self._load_operand(ins.operand1, "%rax")
+
+            # Prefer cached function return type; fallback to operand type.
+            rty = getattr(self, "_fn_ret_ty", "") or ""
+            if not rty:
+                try:
+                    rty = (self._var_types.get(ins.operand1 or "", "") if hasattr(self, "_var_types") else "")
+                except Exception:
+                    rty = ""
+
+            rty_n = rty.strip().lower() if isinstance(rty, str) else ""
+            if rty_n in {"short", "signed short"}:
+                self._emit("  movswl %ax, %eax")
+                self._emit("  movslq %eax, %rax")
+            elif rty_n == "unsigned short":
+                self._emit("  movzwl %ax, %eax")
+                self._emit("  movl %eax, %eax")
+            elif rty_n in {"char", "signed char"}:
+                self._emit("  movsbl %al, %eax")
+                self._emit("  movslq %eax, %rax")
+            elif rty_n == "unsigned char":
+                self._emit("  movzbl %al, %eax")
+                self._emit("  movl %eax, %eax")
             self._emit("  leave")
             self._emit("  ret")
             return
@@ -1445,6 +1550,11 @@ class CodeGenerator:
         if operand.startswith("$"):
             self._emit(f"  movq {operand}, {reg}")
             return
+        # If we ever see a bare identifier here, only treat it as a local if we
+        # already have a stack slot for '@name'. Otherwise, keep it bare so it
+        # can refer to a global symbol (or be handled by other cases).
+        if operand.isidentifier() and self._is_local(f"@{operand}"):
+            operand = f"@{operand}"
         if operand.startswith("%t"):
             # temps are also stack allocated lazily
             off = self._ensure_local(operand)
@@ -1572,6 +1682,13 @@ class CodeGenerator:
             if sym in getattr(self, "_functions", set()):
                 self._emit(f"  leaq {sym}(%rip), {reg}")
                 return
+            # If semantic analysis says this symbol is a function, load its
+            # address (not its contents).
+            if self._sema_ctx is not None:
+                gty = getattr(self._sema_ctx, "global_types", {}).get(sym)
+                if isinstance(gty, str) and gty.strip().startswith("function"):
+                    self._emit(f"  leaq {sym}(%rip), {reg}")
+                    return
             # Global objects: load based on what was declared in this TU.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
             if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
@@ -1723,6 +1840,7 @@ class CodeGenerator:
     def _ensure_local(self, sym: str) -> int:
         if sym in self._locals:
             return self._locals[sym]
+
 
         # If we discover a new user-local (@name) after the initial decl scan,
         # allocate it after the declared locals AND after the fixed spill area.

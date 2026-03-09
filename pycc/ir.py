@@ -932,7 +932,29 @@ class IRGenerator:
 
     def _gen_function(self, fn: FunctionDecl) -> None:
         self._fn_name = fn.name
-        self.instructions.append(IRInstruction(op="func_begin", label=fn.name))
+        # Best-effort: function return type string for ABI-sensitive returns.
+        # FunctionDecl uses `.return_type` in this codebase.
+        try:
+            rt0 = getattr(fn, "return_type", "")
+            rt_base = getattr(rt0, "base", rt0)
+            self._fn_ret_type = self._canon_int_type(str(rt_base))
+        except Exception:
+            self._fn_ret_type = ""
+        # Preserve internal linkage for `static` functions: do not emit them as
+        # global symbols, otherwise the linker may treat parameter names as
+        # unresolved externs if they are mis-lowered.
+        # Codegen understands the label suffix "@static".
+        fn_label = fn.name
+        try:
+            if getattr(fn, "storage_class", None) == "static":
+                fn_label = f"{fn.name}@static"
+        except Exception:
+            pass
+
+        self.instructions.append(IRInstruction(op="func_begin", label=fn_label))
+        # Record function return type for codegen (used by `ret`).
+        if self._fn_ret_type:
+            self.instructions.append(IRInstruction(op="func_ret", operand1=self._fn_ret_type))
         # reset per-function array set
         self._local_arrays = set()
         # Track declared types of locals/params for signedness decisions.
@@ -965,6 +987,7 @@ class IRGenerator:
         self.instructions.append(IRInstruction(op="ret", operand1="$0"))
         self.instructions.append(IRInstruction(op="func_end", label=fn.name))
         self._fn_name = None
+        self._fn_ret_type = None
 
     def _current_function_name(self) -> str:
         return str(getattr(self, "_fn_name", ""))
@@ -1395,6 +1418,18 @@ class IRGenerator:
                 self.instructions.append(IRInstruction(op="ret", operand1="$0"))
             else:
                 v = self._gen_expr(stmt.value)
+
+                # Best-effort: annotate return-value temp with the function's
+                # declared return type so codegen can apply ABI-required
+                # sign/zero extension for narrow integer returns.
+                try:
+                    if isinstance(v, str) and v.startswith("%") and hasattr(self, "_fn_ret_type") and self._fn_ret_type:
+                        rt = str(self._fn_ret_type)
+                        rtn = rt.strip().lower()
+                        if rtn in {"short", "unsigned short", "signed short", "char", "unsigned char", "signed char"}:
+                            self._var_types[v] = rt
+                except Exception:
+                    pass
                 self.instructions.append(IRInstruction(op="ret", operand1=v))
             return
 
@@ -1528,10 +1563,19 @@ class IRGenerator:
                     v = t2
                 elif dst_norm in {"unsigned short", "unsigned short int", "short", "short int"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 16 bits.
+                    # For signed `short`, also sign-extend so comparisons use
+                    # the same representation as loads (which are sign-extended).
                     t = self._new_temp()
                     self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
-                    self._var_types[t] = self._canon_int_type(dst_str)
-                    v = t
+                    dst_canon = self._canon_int_type(dst_str)
+                    self._var_types[t] = dst_canon
+                    if dst_canon == "short":
+                        t2 = self._new_temp()
+                        self.instructions.append(IRInstruction(op="sext16", result=t2, operand1=t))
+                        self._var_types[t2] = "short"
+                        v = t2
+                    else:
+                        v = t
                 elif dst_norm in {"signed short", "signed short int"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 16 bits then sign-extend.
                     t = self._new_temp()
@@ -1541,8 +1585,12 @@ class IRGenerator:
                     self._var_types[t2] = self._canon_int_type(dst_str)
                     v = t2
                 # Preserve pointer-ness in casted values.
-                if getattr(dst_ty, "is_pointer", False) and "*" not in dst_str:
-                    self._var_types[v] = f"{dst_str}*"
+                if getattr(dst_ty, "is_pointer", False):
+                    # Keep pointer type spelling stable for downstream codegen.
+                    if "*" in dst_str:
+                        self._var_types[v] = dst_str
+                    else:
+                        self._var_types[v] = f"{dst_str}*"
                 else:
                     self._var_types[v] = dst_str
             # If casting to pointer, allow integer literal 0 to stay 0; otherwise passthrough.
@@ -1786,6 +1834,16 @@ class IRGenerator:
                 cur = self._new_temp()
                 self.instructions.append(IRInstruction(op="load", result=cur, operand1=addr))
 
+                # Best-effort: propagate pointee scalar type onto the loaded temp.
+                # This is needed so later ops like `>>` can choose signed vs unsigned.
+                addr_ty = getattr(self, "_var_types", {}).get(addr, "")
+                addr_ty_n = addr_ty.strip().lower() if isinstance(addr_ty, str) else ""
+                if isinstance(addr_ty_n, str) and "*" in addr_ty_n:
+                    pointee = addr_ty_n.split("*", 1)[0].strip()
+                    pointee = self._canon_int_type(pointee)
+                    if pointee in {"char", "unsigned char", "short", "unsigned short", "int", "unsigned int"}:
+                        self._var_types[cur] = pointee
+
                 bop = expr.operator[:-1]
                 cty = getattr(self, "_var_types", {}).get(cur)
                 rty = getattr(self, "_var_types", {}).get(rhs)
@@ -1804,7 +1862,23 @@ class IRGenerator:
 
                 t = self._new_temp()
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=cur, operand2=rhs, label=bop))
-                # Store truncation/width is handled by codegen based on addr type.
+                # For narrow integer pointees, store width is handled by codegen,
+                # but we still need to materialize truncation and (for signed
+                # short/char) sign extension so later loads/compares match C.
+                addr_ty = getattr(self, "_var_types", {}).get(addr, "")
+                addr_ty_n = addr_ty.strip().lower() if isinstance(addr_ty, str) else ""
+                if isinstance(addr_ty_n, str) and "*" in addr_ty_n:
+                    pointee = addr_ty_n.split("*", 1)[0].strip()
+                    pointee = self._canon_int_type(pointee)
+                    if pointee in {"short", "unsigned short"}:
+                        t2 = self._new_temp()
+                        self.instructions.append(IRInstruction(op="binop", result=t2, operand1=t, operand2="$65535", label="&"))
+                        if pointee == "short":
+                            t3 = self._new_temp()
+                            self.instructions.append(IRInstruction(op="sext16", result=t3, operand1=t2))
+                            t = t3
+                        else:
+                            t = t2
                 self.instructions.append(IRInstruction(op="store", result=t, operand1=addr))
                 return t
 
@@ -2068,6 +2142,20 @@ class IRGenerator:
             # function symbol anyway (C89 implicit decl fallback).
             if isinstance(expr.function, Identifier):
                 fn = f"@{expr.function.name}"
+
+            # System-cpp header paths sometimes leave argument identifiers
+            # as bare names (no '@' prefix). Ensure all identifier arguments
+            # are treated as locals.
+            try:
+                fixed_args: list[str] = []
+                for a in args:
+                    if isinstance(a, str) and not a.startswith(("$", "@", "%", ".L")) and a.isidentifier():
+                        fixed_args.append(f"@{a}")
+                    else:
+                        fixed_args.append(a)
+                args = fixed_args
+            except Exception:
+                pass
 
             self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
             return t

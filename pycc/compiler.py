@@ -265,7 +265,11 @@ class Compiler:
 
             else:
                 # link to ELF using binutils (as + ld) and a C runtime (glibc dev preferred; fallback newlib)
-                with tempfile.TemporaryDirectory() as td:
+                # Keep temp files if requested to simplify debugging.
+                keep_temps = os.environ.get("PYCC_KEEP_TEMPS") in {"1", "true", "yes"}
+                td_ctx = tempfile.TemporaryDirectory() if not keep_temps else None
+                td = td_ctx.name if td_ctx is not None else tempfile.mkdtemp(prefix="pycc-")
+                try:
                     s_path = os.path.join(td, "out.s")
                     o_path = os.path.join(td, "out.o")
                     try:
@@ -283,6 +287,9 @@ class Compiler:
                                     errors=[f"Linking failed: {e}\n{detail}"],
                                 )
                         return CompilationResult(success=False, errors=[f"Linking failed: {e}"])
+                finally:
+                    if td_ctx is not None:
+                        td_ctx.cleanup()
         
         return CompilationResult(
             success=True,
