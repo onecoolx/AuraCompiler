@@ -92,6 +92,10 @@ class Declaration(ASTNode):
     is_typedef: bool = False
     # For array declarators: number of elements (int) when known
     array_size: Optional[int] = None
+    # For multi-dimensional arrays: outer-to-inner dimensions.
+    # Example: `char a[2][4];` => [2, 4]
+    # Unknown/unsized dimensions are encoded as None.
+    array_dims: Optional[List[Optional[int]]] = None
 
 
 @dataclass

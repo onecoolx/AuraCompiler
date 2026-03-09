@@ -746,13 +746,21 @@ class Parser:
         # Multi-dimensional arrays will be supported later once type and
         # initializer lowering can represent nested array shapes.
         array_size_val = None
-        if self._match(TokenType.LBRACKET):
+        array_dims: List[Optional[int]] = []
+        while self._match(TokenType.LBRACKET):
             size_expr = None
             if not self._at(TokenType.RBRACKET):
                 size_expr = self._parse_expression()
             self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+
+            dim: Optional[int] = None
             if isinstance(size_expr, IntLiteral):
-                array_size_val = size_expr.value
+                dim = size_expr.value
+            array_dims.append(dim)
+
+            # Preserve backwards-compat: `array_size` is the *outermost* dim.
+            if array_size_val is None:
+                array_size_val = dim
 
         # function declarator: name(params)
         # Minimal support for function pointer declarations where the type is a
@@ -791,6 +799,7 @@ class Parser:
             line=name_tok.line,
             column=name_tok.column,
             array_size=array_size_val,
+            array_dims=array_dims if array_dims else None,
         )
 
     def _parse_initializer(self) -> Expression:
