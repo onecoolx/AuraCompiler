@@ -28,6 +28,26 @@ int main(void){
     assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_global_fixed_size_char_array_string_initializer_pads_zeros(tmp_path):
+        code = r'''
+char s[5] = "hi";
+int main(void){
+    return (sizeof(s)==5 && s[0]=='h' && s[1]=='i' && s[2]==0 && s[3]==0 && s[4]==0) ? 0 : 1;
+}
+'''
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_global_too_small_char_array_string_initializer_truncates(tmp_path):
+        code = r'''
+char s[2] = "hi";
+int main(void){
+    return (sizeof(s)==2 && s[0]=='h' && s[1]=='i') ? 0 : 1;
+}
+'''
+        assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_global_int_array_brace_initializer_partial_zero(tmp_path):
     code = r'''
 int a[5] = {1,2};
