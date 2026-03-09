@@ -48,6 +48,26 @@ int main(void){
         assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_global_unsigned_char_array_string_initializer(tmp_path):
+        code = r'''
+unsigned char s[4] = "hi";
+int main(void){
+    return (sizeof(s)==4 && s[0]=='h' && s[1]=='i' && s[2]==0 && s[3]==0) ? 0 : 1;
+}
+'''
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_global_braced_string_initializer_for_char_array(tmp_path):
+        code = r'''
+char s[4] = {"hi"};
+int main(void){
+    return (sizeof(s)==4 && s[0]=='h' && s[1]=='i' && s[2]==0 && s[3]==0) ? 0 : 1;
+}
+'''
+        assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_global_int_array_brace_initializer_partial_zero(tmp_path):
     code = r'''
 int a[5] = {1,2};
