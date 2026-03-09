@@ -72,6 +72,15 @@ class SemanticContext:
     layouts: Dict[str, StructLayout]  # key: "struct Tag" / "union Tag"
     global_types: Dict[str, str]
     global_linkage: Dict[str, str]
+    # Kind of global declaration/definition per TU (subset):
+    # - "extern_decl": `extern int g;`
+    # - "tentative": `int g;`
+    # - "definition": `int g = 1;`
+    # - "internal": `static int g;` (any form)
+    global_kinds: Dict[str, str]
+    # Best-effort function signature info (subset)
+    # name -> (return_base, param_count or None, is_variadic)
+    function_sigs: Dict[str, tuple[str, Optional[int], bool]]
 
 
 class SemanticError(Exception):
@@ -104,6 +113,7 @@ class SemanticAnalyzer:
         self._typedefs = [{}]
         self._layouts = {}
         self._global_linkage: Dict[str, str] = {}
+        self._global_kinds: Dict[str, str] = {}
 
         self._global_types: Dict[str, str] = {}
         # Preserve Type nodes for globals so we can check qualifiers like const.
@@ -114,6 +124,7 @@ class SemanticAnalyzer:
         # Minimal function redeclaration compatibility tracking (C89 subset).
         # Map: function name -> (return_type_base, param_count or None if unspecified)
         func_sigs: Dict[str, tuple[str, Optional[int]]] = {}
+        self._function_sigs: Dict[str, tuple[str, Optional[int], bool]] = {}
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
@@ -139,6 +150,19 @@ class SemanticAnalyzer:
                 # Record function type for codegen. We don't model full
                 # prototypes yet, but we need to know whether it's variadic.
                 # Encode as a simple string so codegen can check for "...".
+
+                # Record function signature info for multi-TU driver checks.
+                try:
+                    ret_base = getattr(decl, "return_type", None)
+                    ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
+                    params = getattr(decl, "parameters", []) or []
+                    param_count: Optional[int] = len(params)
+                    is_variadic = bool(getattr(decl, "is_variadic", False)) or any(
+                        getattr(p, "name", None) == "..." for p in params
+                    )
+                    self._function_sigs[decl.name] = (str(ret_base_s), param_count, is_variadic)
+                except Exception:
+                    self._function_sigs[decl.name] = ("int", None, False)
                 try:
                     ret_base = getattr(decl, "return_type", None)
                     ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
@@ -147,7 +171,7 @@ class SemanticAnalyzer:
                         getattr(p, "name", None) == "..." for p in params
                     )
                     self._global_types[decl.name] = (
-                        f"function {ret_base_s}(...)" if is_variadic else f"function {ret_base_s}"
+                        f"function {ret_base_s}(... )" if is_variadic else f"function {ret_base_s}"
                     )
                 except Exception:
                     self._global_types[decl.name] = "function int"
@@ -190,6 +214,14 @@ class SemanticAnalyzer:
                     self._global_linkage[decl.name] = "internal"
                 else:
                     self._global_linkage[decl.name] = "external"
+
+                # Record kind for multi-TU validation (subset).
+                if sc == "static":
+                    self._global_kinds[decl.name] = "internal"
+                elif sc == "extern":
+                    self._global_kinds[decl.name] = "extern_decl"
+                else:
+                    self._global_kinds[decl.name] = "definition" if getattr(decl, "initializer", None) is not None else "tentative"
                 # record declared base type string for codegen (e.g. "int", "char", "struct S*", etc.)
                 try:
                     # `decl.type` is a Type node; its `is_pointer` determines pointer-ness.
@@ -223,6 +255,8 @@ class SemanticAnalyzer:
             layouts=dict(self._layouts),
             global_types=dict(self._global_types),
             global_linkage=dict(self._global_linkage),
+            global_kinds=dict(self._global_kinds),
+            function_sigs=dict(self._function_sigs),
         )
 
     def _register_enum_decl(self, decl: EnumDecl) -> None:

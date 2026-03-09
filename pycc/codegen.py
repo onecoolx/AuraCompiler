@@ -84,6 +84,10 @@ class CodeGenerator:
                 # extern declaration: no storage emitted in this TU
                 if gd.label == "extern":
                     continue
+                # Only emit tentative definitions as common symbols.
+                # (Other labels are ignored for now.)
+                if gd.label not in {None, "", "tentative"}:
+                    continue
                 if isinstance(ty, str) and (ty.startswith("struct ") or ty.startswith("union ")) and self._sema_ctx is not None:
                     layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
                     sz = int(getattr(layout, "size", 8)) if layout is not None else 8

@@ -105,6 +105,217 @@ class Compiler:
                 errors=[f"Failed to read source file: {e}"]
             )
 
+    def compile_files(self, source_files: List[str], output_file: str) -> CompilationResult:
+        """Compile and link multiple translation units.
+
+        Current behavior:
+        - Always compiles each input to a temporary `.o` using `compile_file(..., .o)`.
+        - Links all objects into an executable at `output_file` using the existing
+          binutils-based linker pipeline.
+        - Does not support emitting a combined `.s`/`.o` as the final output.
+        """
+
+        if not source_files:
+            return CompilationResult(success=False, errors=["No input files"])
+
+        ext = os.path.splitext(output_file)[1]
+        if ext in {".s", ".o"}:
+            return CompilationResult(
+                success=False,
+                errors=["Multi-input mode only supports linking to an executable output"],
+            )
+
+        keep_temps = os.environ.get("PYCC_KEEP_TEMPS") in {"1", "true", "yes"}
+        td_ctx = tempfile.TemporaryDirectory(prefix="pycc_mf_") if not keep_temps else None
+        td = td_ctx.name if td_ctx is not None else tempfile.mkdtemp(prefix="pycc_mf_")
+        try:
+            # Pre-link cross-TU validation (C89 subset): reject incompatible
+            # external object declarations across translation units.
+            # This makes errors deterministic (not dependent on the system linker).
+
+            def _canon_global_obj_type(ty: str) -> str:
+                """Canonicalize the type string representation for globals.
+
+                The frontend uses stringly-typed bases (e.g. "signed int").
+                For multi-TU compatibility checks we normalize common spellings.
+                """
+                s = " ".join(str(ty).strip().lower().split())
+                # normalize pointer formatting
+                s = s.replace(" *", "*").replace("* ", "*")
+                # normalize common integer spellings
+                if s == "signed":
+                    s = "signed int"
+                if s == "unsigned":
+                    s = "unsigned int"
+                if s in {"signed int", "int"}:
+                    s = "int"
+                if s in {"unsigned int"}:
+                    s = "unsigned int"
+                if s in {"short", "short int", "signed short", "signed short int"}:
+                    s = "short"
+                if s in {"unsigned short", "unsigned short int"}:
+                    s = "unsigned short"
+                if s in {"long", "long int", "signed long", "signed long int"}:
+                    s = "long"
+                if s in {"unsigned long", "unsigned long int"}:
+                    s = "unsigned long"
+                if s in {"char", "signed char"}:
+                    # In this compiler, plain `char` has a platform-defined
+                    # signedness; keep it distinct from `signed char`.
+                    # (So do not fold signed char into char.)
+                    return s
+                return s
+
+            def _parse_function_sig(ty: str) -> Optional[tuple[str, Optional[int], bool]]:
+                """Parse a function type string from SemanticAnalyzer.
+
+                Expected formats (subset):
+                  - "function int"
+                  - "function int(...)"  (variadic)
+                The semantic pass currently does not encode parameter types.
+                We approximate compatibility using return type base + whether
+                it is variadic + parameter count (when available).
+                For now, param count is None unless the semantic pass encodes it.
+                """
+                if not isinstance(ty, str):
+                    return None
+                s = " ".join(ty.strip().split())
+                if not s.startswith("function "):
+                    return None
+                rest = s[len("function ") :].strip()
+                # semantic uses a slightly odd "(... )" spelling; tolerate both.
+                is_variadic = rest.endswith("(...)") or rest.endswith("(... )")
+                if rest.endswith("(... )"):
+                    rest = rest[: -len("(... )")].strip()
+                elif rest.endswith("(...)"):
+                    rest = rest[: -len("(...)")].strip()
+                ret = _canon_global_obj_type(rest)
+                return (ret, None, is_variadic)
+            sym_types: dict[str, str] = {}
+            sym_has_non_extern: dict[str, bool] = {}
+            sym_strong_defs: dict[str, int] = {}
+            fn_sigs: dict[str, tuple[str, Optional[int], bool]] = {}
+            for src in source_files:
+                try:
+                    with open(src, "r", encoding="utf-8") as f:
+                        src_text = f.read()
+                    if self._use_system_cpp:
+                        src_text = self._preprocess_with_system_cpp(src)
+                    else:
+                        pp = Preprocessor(include_paths=self._pp_include_paths)
+                        pres = pp.preprocess(src, initial_macros=self._pp_defines)
+                        if not pres.success:
+                            return CompilationResult(success=False, errors=[f"Preprocess failed: {e}" for e in (pres.errors or [])])
+                        src_text = pres.text
+
+                    tokens = self.get_tokens(src_text)
+                    ast = self.get_ast(tokens)
+                    sema_ctx, _ = self.analyze_semantics(ast)
+                except Exception as e:
+                    # Reuse single-file style message as best-effort.
+                    return CompilationResult(success=False, errors=[f"error: multi-tu: {e}"])
+
+                gtypes = getattr(sema_ctx, "global_types", {}) or {}
+                gkinds = getattr(sema_ctx, "global_kinds", {}) or {}
+                glink = getattr(sema_ctx, "global_linkage", {}) or {}
+                fsigs = getattr(sema_ctx, "function_sigs", {}) or {}
+
+                for name, ty in gtypes.items():
+                    # Functions: check signature compatibility across TUs (subset).
+                    # Prefer explicit function_sigs data (includes param count).
+                    if name in fsigs:
+                        rt, pc, var = fsigs[name]
+                        fn_sig = (_canon_global_obj_type(str(rt)), pc, bool(var))
+                    else:
+                        fn_sig = _parse_function_sig(str(ty))
+                    if fn_sig is not None:
+                        prev_sig = fn_sigs.get(name)
+                        if prev_sig is None:
+                            fn_sigs[name] = fn_sig
+                        else:
+                            if fn_sig != prev_sig:
+                                return CompilationResult(
+                                    success=False,
+                                    errors=[
+                                        f"error: multi-tu: incompatible declarations for function '{name}'"
+                                    ],
+                                )
+                        continue
+                    # Skip internal linkage symbols (static) since they are TU-local.
+                    if glink.get(name) == "internal":
+                        continue
+
+                    kind = gkinds.get(name, "")
+                    is_extern_only = kind == "extern_decl"
+                    if not is_extern_only:
+                        sym_has_non_extern[name] = True
+                    if kind == "definition":
+                        sym_strong_defs[name] = sym_strong_defs.get(name, 0) + 1
+
+                    prev = sym_types.get(name)
+                    if prev is None:
+                        sym_types[name] = _canon_global_obj_type(str(ty))
+                    else:
+                        cty = _canon_global_obj_type(str(ty))
+                        if cty != prev:
+                            return CompilationResult(
+                                success=False,
+                                errors=[f"error: multi-tu: incompatible types for global '{name}': '{prev}' vs '{cty}'"],
+                            )
+
+            # If a name was only ever seen as `extern` declarations, it doesn't
+            # participate in compatibility checks here (no definition in the set).
+            # This matters for deterministic behavior when headers declare symbols
+            # not provided by the current link set.
+            sym_types = {k: v for k, v in sym_types.items() if sym_has_non_extern.get(k)}
+
+            # Deterministic error for multiple strong external definitions.
+            for name, n in sym_strong_defs.items():
+                if n > 1:
+                    return CompilationResult(
+                        success=False,
+                        errors=[f"error: multi-tu: multiple external definitions of global '{name}'"],
+                    )
+
+            obj_paths: List[str] = []
+            for i, src in enumerate(source_files):
+                obj_path = os.path.join(td, f"tu{i}.o")
+                res = self.compile_file(src, obj_path)
+                if not res.success:
+                    return CompilationResult(success=False, errors=list(res.errors or []), warnings=list(res.warnings or []))
+                obj_paths.append(obj_path)
+
+            # Link all objects into the final executable.
+            # We reuse the same default link strategy as single-file mode.
+            cmd: List[str] = [self.linker, "-o", output_file]
+            cmd.extend(obj_paths)
+            # Add libc/crt/etc.
+            # Use a dummy object path just to compute the full cmd, then swap.
+            # (This keeps link behavior identical to the single-TU path.)
+            link_cmd = self._default_link_cmd(o_path=obj_paths[0], out_path=output_file)
+            # link_cmd structure: [ld, -o, out, ...crt..., o_path, ...libs...]
+            # Replace the single o_path occurrence with all obj_paths.
+            try:
+                o_idx = link_cmd.index(obj_paths[0])
+            except ValueError:
+                # Fallback: just append objects.
+                final_cmd = link_cmd + obj_paths[1:]
+            else:
+                final_cmd = link_cmd[:o_idx] + obj_paths + link_cmd[o_idx + 1 :]
+
+            self._run(final_cmd, "link")
+
+            return CompilationResult(success=True, output_file=output_file)
+        except (IOError, subprocess.CalledProcessError) as e:
+            if isinstance(e, subprocess.CalledProcessError):
+                detail = getattr(e, "stderr", None) or getattr(e, "output", None)
+                if detail:
+                    return CompilationResult(success=False, errors=[f"Linking failed: {e}\n{detail}"])
+            return CompilationResult(success=False, errors=[f"Linking failed: {e}"])
+        finally:
+            if td_ctx is not None:
+                td_ctx.cleanup()
+
     def _preprocess_with_system_cpp(self, source_file: str) -> str:
         gcc = shutil.which("gcc")
         if not gcc:

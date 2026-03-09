@@ -307,7 +307,11 @@ class IRGenerator:
                             op="gdecl",
                             result=f"@{decl.name}",
                             operand1=decl.type.base,
-                            label=sc,
+                            # Distinguish `extern int g;` from a tentative
+                            # definition `int g;`.
+                            # C89: a file-scope declaration without initializer
+                            # and without `extern` is a tentative definition.
+                            label="extern" if sc == "extern" else "tentative",
                         )
                     )
                 else:
