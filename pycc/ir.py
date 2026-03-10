@@ -1899,10 +1899,19 @@ class IRGenerator:
                 t2 = self._new_temp()
                 ins2 = IRInstruction(op="load_index", result=t2, operand1=base_row, operand2=idx2)
                 self.instructions.append(ins2)
+                # Preserve element type for codegen width decisions.
                 try:
                     bty = getattr(self, "_var_types", {}).get(base_row)
-                    if isinstance(bty, str) and bty.strip().endswith("*"):
-                        self._var_types[t2] = bty.strip()[:-1].strip()
+                    if isinstance(bty, str) and bty.strip().startswith("array("):
+                        inner = bty.strip()[len("array(") :]
+                        if inner.endswith(")"):
+                            inner = inner[:-1]
+                        base_part = inner.split(",", 1)[0].strip()
+                        if base_part:
+                            self._var_types[t2] = base_part
+                            # Also ensure codegen treats this load as the element type.
+                            # (The IRInstruction schema does not have operand3;
+                            #  rely on `_var_types[t2]` only.)
                 except Exception:
                     pass
                 return t2
@@ -1946,8 +1955,10 @@ class IRGenerator:
                                     # on the row pointer itself.
                                     ins_row.meta["ptr_step_bytes"] = step
                                     self._ptr_step_bytes[row_ptr] = step
-                                    # Row pointer points to the element type.
-                                    self._var_types[row_ptr] = f"{base_part}*"
+                                    # Row pointer points to the row object: element type is
+                                    # the full row (e.g. array(char, $4)), so that later
+                                    # `load_index` on it will not treat it as a scalar pointer.
+                                    self._var_types[row_ptr] = f"array({base_part}, ${int(dims[1])})"
                         except Exception:
                             pass
                         self.instructions.append(ins_row)

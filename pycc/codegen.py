@@ -1334,6 +1334,18 @@ class CodeGenerator:
                     sym = base[1:]
                     base_ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
 
+            # If IR annotated the result temp with a scalar type (e.g. "char"),
+            # prefer that as the element type for width decisions. This is
+            # important for multi-dimensional array indexing where the base can
+            # be a row-object temp.
+            try:
+                if ins.result:
+                    rty = self._var_types.get(str(ins.result))
+                    if isinstance(rty, str) and rty and ("*" not in rty) and not rty.strip().startswith("array("):
+                        elem_sz = self._type_size_bytes(rty.strip())
+            except Exception:
+                pass
+
             if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
                 # array(T,$N)
                 inner = base_ty.strip()[len("array(") :]
@@ -1359,8 +1371,15 @@ class CodeGenerator:
                     # Keep elem_sz as-is.
                     pass
 
-            # A temp base is always treated as a pointer/address value.
-            is_ptr_base = (isinstance(base_ty, str) and "*" in base_ty) or (isinstance(base, str) and base.startswith("%t"))
+            # A temp base is treated as a pointer/address value only when it is
+            # pointer-typed (or explicitly tagged as ptr). Temps that represent
+            # array objects (e.g. row objects in multi-dimensional indexing)
+            # must be addressed, not loaded.
+            is_ptr_temp = False
+            if isinstance(base, str) and base.startswith("%t"):
+                if isinstance(base_ty, str) and ("*" in base_ty or base_ty.strip() == "ptr"):
+                    is_ptr_temp = True
+            is_ptr_base = (isinstance(base_ty, str) and "*" in base_ty) or is_ptr_temp
             # compute address: base + idx*elem_sz
             # - if base is a pointer value, load the pointer value
             # - else treat it as an array object and take its address
