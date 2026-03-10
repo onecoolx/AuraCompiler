@@ -46,13 +46,12 @@ int main(void) {
 
     combined = (res.stdout + res.stderr)
 
-    # NOTE: varargs/va_list ABI is not implemented yet.
-    # This test is intentionally added as a future glibc-compat milestone.
-    # Until then, allow it to be tracked without breaking CI.
+    # If compile succeeded, the produced program should run successfully.
+    # (Historically this was xfailed due to varargs ABI gaps; keep the
+    # diagnostics in case it regresses.)
     if res.returncode == 0:
         run = subprocess.run([str(out)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if run.returncode != 0:
-            pytest.xfail("va_list/varargs ABI not implemented yet (vsnprintf crash)")
+        assert run.returncode == 0, run.stderr
 
     # Treat unsupported system-header constructs as coverage limitations.
     if res.returncode != 0 and "unexpected character" in combined.lower():
