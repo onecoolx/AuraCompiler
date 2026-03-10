@@ -62,7 +62,7 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 |---|---:|---|
 | 2D array decay to pointer-to-row | PARTIAL | `tests/test_multi_dim_array_decay.py` |
 | `sizeof` for local 2D arrays | PARTIAL | `tests/test_sizeof_array_vs_pointer.py` |
-| nested indexing `a[i][j]` | XFAIL | `tests/test_multi_dim_array_init_and_index.py` |
+| nested indexing `a[i][j]` | DONE | `tests/test_multi_dim_array_init_and_index.py` |
 | `<errno.h>` smoke: `errno` read/write | PARTIAL | `tests/test_glibc_smoke_errno_basic.py` |
 | `<string.h>` smoke: `strlen` | PARTIAL | `tests/test_glibc_smoke_string_strlen.py` |
 | `<string.h>` smoke: `memcpy` | PARTIAL | `tests/test_glibc_smoke_string_memcpy.py` |
