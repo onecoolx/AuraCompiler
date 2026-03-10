@@ -1557,12 +1557,33 @@ class IRGenerator:
                         base_part, cnt_part = (inner.split(",", 1) + [""])[:2]
                         base_part = base_part.strip()
                         cnt_part = cnt_part.strip()
+                        # 1D arrays: array(T,$N)
                         n = 1
                         if cnt_part.startswith("$"):
                             try:
                                 n = int(cnt_part[1:])
                             except Exception:
                                 n = 1
+
+                        # Multi-dimensional arrays: parser records dims; compute
+                        # total element count as product of all known dims.
+                        try:
+                            ad = getattr(self, "_local_array_dims", {}).get(op.name)
+                        except Exception:
+                            ad = None
+                        if isinstance(ad, list) and ad:
+                            try:
+                                n2 = 1
+                                for d in ad:
+                                    if d is None:
+                                        # unknown dimension: best-effort treat as outer dim only
+                                        n2 = n
+                                        break
+                                    n2 *= int(d)
+                                n = int(n2)
+                            except Exception:
+                                pass
+
                         return f"${_type_size(base_part) * max(0, n)}"
                     # fallback for local arrays
                     return "$4"
