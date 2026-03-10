@@ -1909,6 +1909,10 @@ class IRGenerator:
                         base_part = inner.split(",", 1)[0].strip()
                         if base_part:
                             self._var_types[t2] = base_part
+                            # Ensure the row temp itself remains typed as an
+                            # array object so codegen addresses it instead of
+                            # loading it as a scalar pointer.
+                            self._var_types[base_row] = bty
                             # Also ensure codegen treats this load as the element type.
                             # (The IRInstruction schema does not have operand3;
                             #  rely on `_var_types[t2]` only.)

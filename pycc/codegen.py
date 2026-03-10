@@ -190,8 +190,19 @@ class CodeGenerator:
                         self._var_types[d.result] = str(d.operand1)
                     # If the IR uses a temp as the result of addr_index, it is a pointer value.
                     if d.op == "addr_index" and d.result:
+                        # IR lowering may annotate the temp type in sema_ctx-like tables
+                        # (CodeGenerator only sees the IR list). Only default to "ptr" when
+                        # we have no type for it.
                         if d.result not in self._var_types:
                             self._var_types[d.result] = "ptr"
+                    # Propagate best-effort result type for temps produced by load_index.
+                    # IRGenerator annotates element type via ins.meta["result_ty"].
+                    if d.op == "load_index" and d.result:
+                        try:
+                            if isinstance(d.meta, dict) and "result_ty" in d.meta and d.result not in self._var_types:
+                                self._var_types[d.result] = str(d.meta["result_ty"])
+                        except Exception:
+                            pass
                     j += 1
                 # collect decls/params (and optional func_ret marker) until the
                 # first non-prologue instruction. IR commonly emits:
@@ -1346,13 +1357,27 @@ class CodeGenerator:
             except Exception:
                 pass
 
+            # Prefer scalar element type hint from IR on the *result temp*.
+            # This must override any base-derived element size (including row
+            # objects in multi-dimensional arrays).
+            try:
+                if ins.result:
+                    rty = self._var_types.get(str(ins.result))
+                    if isinstance(rty, str) and rty.strip() and ("*" not in rty) and not rty.strip().startswith("array("):
+                        elem_sz = self._type_size_bytes(rty.strip())
+            except Exception:
+                pass
+
             if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
                 # array(T,$N)
                 inner = base_ty.strip()[len("array(") :]
                 if inner.endswith(")"):
                     inner = inner[:-1]
                 base_part = inner.split(",", 1)[0].strip()
-                elem_sz = self._type_size_bytes(base_part)
+                # Only compute elem_sz from base when IR didn't provide a more
+                # specific scalar result type.
+                if elem_sz == 4:
+                    elem_sz = self._type_size_bytes(base_part)
             elif isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
             elif isinstance(base_ty, str):
@@ -1902,6 +1927,21 @@ class CodeGenerator:
             return
         if result.startswith("%t"):
             off = self._ensure_local(result)
+            # Store temps with width based on best-effort type info.
+            ty = self._var_types.get(result, "")
+            b = ty.strip() if isinstance(ty, str) else ""
+            if b == "char" or b.startswith("char ") or b == "unsigned char" or b.startswith("unsigned char"):
+                src = "%al" if reg == "%rax" else reg
+                self._emit(f"  movb {src}, -{off}(%rbp)")
+                return
+            if b == "short" or b == "short int" or b.startswith("short") or b == "unsigned short" or b.startswith("unsigned short"):
+                src = "%ax" if reg == "%rax" else reg
+                self._emit(f"  movw {src}, -{off}(%rbp)")
+                return
+            if b == "int" or b.startswith("int ") or b.startswith("enum ") or b == "unsigned int" or b.startswith("unsigned int"):
+                src = "%eax" if reg == "%rax" else reg
+                self._emit(f"  movl {src}, -{off}(%rbp)")
+                return
             self._emit(f"  movq {reg}, -{off}(%rbp)")
             return
         if result.startswith("@"):

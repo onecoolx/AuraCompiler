@@ -91,7 +91,7 @@ pycc/
 - No floating point (`float`/`double`) codegen/type rules
 - C89 integer promotions / usual arithmetic conversions not fully modeled
 - Full declarator/type grammar coverage is incomplete (many edge cases)
-- Initializers are incomplete (especially aggregate initializers); local 2D brace init is partially implemented but nested indexing still fails.
+- Initializers are incomplete (especially aggregate initializers); local 2D brace init is partially implemented and nested indexing is still under active work (guarded by xfail).
 - Translation-unit / multi-file model is still incomplete in general, but a practical multi-TU workflow is implemented and tested.
 - Diagnostics and conformance testing vs `gcc -std=c89` not comprehensive yet
 
