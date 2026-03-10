@@ -1,6 +1,6 @@
 # Long-Term Memory (Project + Workflow)
 
-Last updated: 2026-03-02
+Last updated: 2026-03-10
 
 This document captures durable project context so work can continue smoothly even if conversation context is lost or a different agent takes over.
 
@@ -58,6 +58,20 @@ When updating this snapshot, include:
 - `pytest -q` result summary (counts)
 - any newly supported feature and the test file proving it
 - any important known gaps/regressions
+
+Current snapshot (2026-03-10):
+
+- Tests: `pytest -q` → **596 passed, 1 xfailed**
+- Multi-TU model (practical subset):
+  - tentative globals emitted as `.comm`
+  - `extern` declarations do not allocate storage in a TU
+  - cross-TU conflicts checked in driver tests
+- Multi-dimensional arrays (2D) incremental support:
+  - Parser records `Declaration.array_dims` (outer→inner), keeping backward compat with `array_size`.
+  - 2D array decay to pointer-to-row via IR `meta["ptr_step_bytes"]` and codegen scaling.
+  - `sizeof(local 2D array)` returns total bytes (dims product * element size).
+  - Nested indexing `a[i][j]` is **not correct yet**; guarded by:
+    - `tests/test_multi_dim_array_init_and_index.py` (xfail)
 
 ## 4) Engineering workflow rules (fast iteration)
 
@@ -136,6 +150,13 @@ python scripts/run_impact_tests.py
 ```
 ../ap.sh "<commit message>"
 ```
+
+Practical convention used in this repo (examples):
+
+- `fix(array): ...`
+- `feat(array): ...`
+- `test(stdarg): ...`
+- `docs: ...`
 
 This ensures author metadata is attached consistently.
 

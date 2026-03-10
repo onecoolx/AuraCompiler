@@ -1886,13 +1886,13 @@ class IRGenerator:
                 pass
             return t
         if isinstance(expr, ArrayAccess):
-            # Multi-dimensional array indexing (minimal support):
-            # If `expr.array` is itself an ArrayAccess (i.e. `a[i][j]`), we are
-            # lowering the outer access and must not generate a nested
-            # addr_index here. Instead, we lower the base expression first and
-            # then load_index from that row pointer.
+            # Multi-dimensional array indexing:
+            # - For `a[i]` where `a` is a 2D local array, lower to an lvalue row
+            #   address (a pointer) so outer indexing can proceed.
+            # - For `a[i][j]`, the AST is nested ArrayAccess. The outer index
+            #   consumes the row pointer computed by the inner access.
 
-            # Fast-path: outer access of nested indexing `(...)[j]`.
+            # Outer access of nested indexing: `(...)[j]`.
             if isinstance(expr.array, ArrayAccess):
                 base_row = self._gen_expr(expr.array)
                 idx2 = self._gen_expr(expr.index)
@@ -1920,8 +1920,8 @@ class IRGenerator:
             except Exception:
                 base_step = None
 
-            # If indexing an array yields another array (e.g. `a[i]` where `a`
-            # is a 2D array), produce an lvalue address of the row.
+            # If indexing yields another array (e.g. `a[i]` where `a` is a 2D
+            # local array), produce an lvalue address of the row.
             try:
                 if isinstance(expr.array, Identifier):
                     dims = getattr(self, "_local_array_dims", {}).get(expr.array.name)
@@ -1942,13 +1942,12 @@ class IRGenerator:
                                 elem_sz = _type_size_bytes(self._sema_ctx, base_part)
                                 if isinstance(elem_sz, int) and elem_sz > 0:
                                     step = int(dims[1]) * int(elem_sz)
-                                    # Row pointer: arithmetic should be in bytes (char = 1)
-                                    # for the subsequent `[j]`.
+                                    # Attach the row stride (bytes) for pointer arithmetic
+                                    # on the row pointer itself.
                                     ins_row.meta["ptr_step_bytes"] = step
                                     self._ptr_step_bytes[row_ptr] = step
-                                    # Row pointer points to element type (not base_part*).
-                                    # This ensures the second index uses element size.
-                                    self._var_types[row_ptr] = "char*" if base_part == "char" else f"{base_part}*"
+                                    # Row pointer points to the element type.
+                                    self._var_types[row_ptr] = f"{base_part}*"
                         except Exception:
                             pass
                         self.instructions.append(ins_row)
