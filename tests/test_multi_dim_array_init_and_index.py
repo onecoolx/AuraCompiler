@@ -17,8 +17,6 @@ def _compile_and_run(tmp_path, code: str) -> int:
 
 
 def test_local_2d_char_array_brace_init_and_index(tmp_path):
-    import pytest
-    pytest.xfail("multi-dimensional arrays: nested indexing a[i][j] still incorrect")
     code = r'''
 int main(void){
   char a[2][4] = { {1,2,3,4}, {5,6,7,8} };

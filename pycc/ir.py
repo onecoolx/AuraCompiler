@@ -1896,10 +1896,15 @@ class IRGenerator:
             if isinstance(expr.array, ArrayAccess):
                 base_row = self._gen_expr(expr.array)
                 idx2 = self._gen_expr(expr.index)
+                # Lower as: addr_index(base_row, idx2) then load(addr)
+                # This avoids `load_index` width inference pitfalls.
+                addr = self._new_temp()
+                self.instructions.append(IRInstruction(op="addr_index", result=addr, operand1=base_row, operand2=idx2))
                 t2 = self._new_temp()
-                ins2 = IRInstruction(op="load_index", result=t2, operand1=base_row, operand2=idx2)
-                self.instructions.append(ins2)
-                # Preserve element type for codegen width decisions.
+                ins_load = IRInstruction(op="load", result=t2, operand1=addr)
+
+                # Type hints for correct load width: addr must be a pointer to
+                # element type (e.g. char*).
                 try:
                     bty = getattr(self, "_var_types", {}).get(base_row)
                     if isinstance(bty, str) and bty.strip().startswith("array("):
@@ -1908,16 +1913,30 @@ class IRGenerator:
                             inner = inner[:-1]
                         base_part = inner.split(",", 1)[0].strip()
                         if base_part:
+                            self._var_types[addr] = f"{base_part}*"
                             self._var_types[t2] = base_part
-                            # Ensure the row temp itself remains typed as an
-                            # array object so codegen addresses it instead of
-                            # loading it as a scalar pointer.
-                            self._var_types[base_row] = bty
-                            # Also ensure codegen treats this load as the element type.
-                            # (The IRInstruction schema does not have operand3;
-                            #  rely on `_var_types[t2]` only.)
+                            # Force load width from element type. This makes
+                            # nested `a[i][j]` robust even if codegen's var_type
+                            # propagation is imperfect.
+                            try:
+                                ins_load.meta["load_size_bytes"] = int(_type_size_bytes(self._sema_ctx, base_part))
+                            except Exception:
+                                pass
+                            # Also ensure index scaling uses element size (not the
+                            # row stride carried by the row-pointer temp).
+                            try:
+                                ins_load_addr = self.instructions[-1]
+                                if isinstance(ins_load_addr, IRInstruction) and ins_load_addr.op == "addr_index" and ins_load_addr.result == addr:
+                                    esz = int(_type_size_bytes(self._sema_ctx, base_part))
+                                    if esz > 0:
+                                        ins_load_addr.meta["ptr_step_bytes"] = esz
+                            except Exception:
+                                pass
+                            # load width is selected from the pointer pointee type;
+                            # make sure it is attached to the address temp.
                 except Exception:
                     pass
+                self.instructions.append(ins_load)
                 return t2
 
             base = self._gen_expr(expr.array)

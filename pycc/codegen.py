@@ -639,6 +639,13 @@ class CodeGenerator:
             if isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
 
+            # If IR provided an explicit load size, prefer it.
+            try:
+                if isinstance(ins.meta, dict) and "load_size_bytes" in ins.meta:
+                    elem_sz = int(ins.meta["load_size_bytes"])
+            except Exception:
+                pass
+
             self._load_operand(addr, "%rax")
             if elem_sz == 1:
                 if self._pointee_is_unsigned(base_ty):
@@ -765,11 +772,12 @@ class CodeGenerator:
             else:
                 self._addr_of_symbol(base, "%rax")
             self._load_operand(idx, "%rcx")
-            # Multi-dimensional arrays: when indexing a row-pointer (or when
-            # IR provides an explicit step), scale by that step in bytes.
+            # Multi-dimensional arrays: when IR provides an explicit step,
+            # that value is already a byte stride. Use it directly as the
+            # scaling factor (do not apply another element-size scaling).
             if isinstance(step_override, int) and step_override > 0:
-                self._emit(f"  imulq ${int(step_override)}, %rcx")
-            elif elem_sz != 1:
+                elem_sz = int(step_override)
+            if elem_sz != 1:
                 self._emit(f"  imulq ${elem_sz}, %rcx")
             self._emit("  addq %rcx, %rax")
             self._store_result(ins.result, "%rax")
