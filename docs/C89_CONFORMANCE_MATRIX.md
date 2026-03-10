@@ -1,6 +1,6 @@
 # C89 Conformance Matrix (stub)
 
-Last updated: 2026-03-02
+Last updated: 2026-03-10
 
 Purpose:
 - Provide a **spec-area ↔ tests ↔ status** map.
@@ -54,7 +54,15 @@ Legend: **DONE** / **PARTIAL** / **TODO**.
 | `<stdio.h>` smoke: `puts` | PARTIAL | `tests/test_glibc_smoke_stdio.py` |
 | `<stdio.h>` smoke: `printf` | PARTIAL | `tests/test_glibc_smoke_stdio_printf.py` |
 | `<stdio.h>` smoke: `snprintf` | PARTIAL | `tests/test_glibc_smoke_stdio_snprintf.py` |
-| `<stdarg.h>` smoke: `va_list` + `va_start`/`va_end` + `vsnprintf` | XFAIL (varargs ABI) | `tests/test_glibc_smoke_stdarg_vsnprintf.py` |
+| `<stdarg.h>` smoke: `va_list` + `va_start`/`va_end` + `vsnprintf` | PARTIAL | `tests/test_glibc_smoke_stdarg_vsnprintf.py` |
+
+## Arrays (multi-dimensional)
+
+| Area | Status | Tests / Notes |
+|---|---:|---|
+| 2D array decay to pointer-to-row | PARTIAL | `tests/test_multi_dim_array_decay.py` |
+| `sizeof` for local 2D arrays | PARTIAL | `tests/test_sizeof_array_vs_pointer.py` |
+| nested indexing `a[i][j]` | XFAIL | `tests/test_multi_dim_array_init_and_index.py` |
 | `<errno.h>` smoke: `errno` read/write | PARTIAL | `tests/test_glibc_smoke_errno_basic.py` |
 | `<string.h>` smoke: `strlen` | PARTIAL | `tests/test_glibc_smoke_string_strlen.py` |
 | `<string.h>` smoke: `memcpy` | PARTIAL | `tests/test_glibc_smoke_string_memcpy.py` |

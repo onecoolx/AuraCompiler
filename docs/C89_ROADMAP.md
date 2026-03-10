@@ -1,6 +1,6 @@
 C89 Implementation Roadmap (Living)
 
-Last updated: 2026-03-02
+Last updated: 2026-03-10
 
 目标
 - 以可执行、可验证（tests）方式推进：
@@ -30,8 +30,8 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - **DONE** `&&`/`||` 短路：`tests/test_short_circuit.py`
 - **PARTIAL** 类型系统：整数提升/常见算术转换尚未完全实现（见阶段 2）
 
-补充（2026-03-02 现状）
-- `pytest -q`：**450 passed**（测试为准）。
+补充（2026-03-10 现状）
+- `pytest -q`：**596 passed, 1 xfailed**（测试为准）。
 - 目标平台关键 ABI 点已覆盖并有回归测试：
 	- SysV AMD64 variadic ABI：`printf` 类调用点 `%al` 规则、以及 `va_list` 传递给 libc `v*` 系列（`vsnprintf` 等）。
 	- 相关实现与不变量记录：`docs/ARCHITECTURE.md` → “2.6.1 Variadic functions and `va_list`”。
@@ -54,6 +54,9 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - **TODO** 预处理器：`#include`, `#define`, `#if/#ifdef/...`, `#line`, `#error`
 - **TODO** 多源文件输入 → 生成 `.o` → 链接（使用系统 glibc）
 - **PARTIAL** 全局/静态数据在 `.data`/`.bss`/`.rodata` 的布局与输出
+
+注（现实进展）：
+- 多源文件驱动/链接已具备可用子集并有回归测试；完整 gcc/clang 兼容与更复杂链接情形仍在 TODO。
 
 阶段 4 — 严格 C89 覆盖 + 诊断与优化
 - **TODO** 更严格的语义诊断（兼容声明、无效转换、不完整类型、未初始化使用等）
@@ -82,7 +85,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - `goto`/labels
 - `&&` / `||` 短路
 
-注：上面的“109 tests”已过期；以 `pytest -q` 输出为准（当前 450）。
+注：上面的“109 tests”已过期；以 `pytest -q` 输出为准（当前 596 passed, 1 xfailed）。
 
 引用文件
 - `pycc/parser.py`, `pycc/semantics.py`, `pycc/ast_nodes.py`, `pycc/codegen.py`
