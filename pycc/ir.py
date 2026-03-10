@@ -1886,6 +1886,27 @@ class IRGenerator:
                 pass
             return t
         if isinstance(expr, ArrayAccess):
+            # Multi-dimensional array indexing (minimal support):
+            # If `expr.array` is itself an ArrayAccess (i.e. `a[i][j]`), we are
+            # lowering the outer access and must not generate a nested
+            # addr_index here. Instead, we lower the base expression first and
+            # then load_index from that row pointer.
+
+            # Fast-path: outer access of nested indexing `(...)[j]`.
+            if isinstance(expr.array, ArrayAccess):
+                base_row = self._gen_expr(expr.array)
+                idx2 = self._gen_expr(expr.index)
+                t2 = self._new_temp()
+                ins2 = IRInstruction(op="load_index", result=t2, operand1=base_row, operand2=idx2)
+                self.instructions.append(ins2)
+                try:
+                    bty = getattr(self, "_var_types", {}).get(base_row)
+                    if isinstance(bty, str) and bty.strip().endswith("*"):
+                        self._var_types[t2] = bty.strip()[:-1].strip()
+                except Exception:
+                    pass
+                return t2
+
             base = self._gen_expr(expr.array)
             idx = self._gen_expr(expr.index)
 
@@ -1899,45 +1920,39 @@ class IRGenerator:
             except Exception:
                 base_step = None
 
-            # Multi-dimensional array indexing (minimal support):
-            # For `a[i][j]`, the AST is nested ArrayAccess, so when we are
-            # lowering the outer access `a[i]`, we must produce an lvalue
-            # address (pointer to row) rather than loading a scalar.
-            # The subsequent `[j]` will then index into that row.
+            # If indexing an array yields another array (e.g. `a[i]` where `a`
+            # is a 2D array), produce an lvalue address of the row.
             try:
-                if isinstance(expr.array, ArrayAccess):
-                    taddr = self._new_temp()
-                    ins_ai = IRInstruction(op="addr_index", result=taddr, operand1=base, operand2=idx)
-
-                    # Attach row-step metadata so `load_index` on this temp can
-                    # scale by sizeof(row).
-                    try:
-                        root = expr.array.array
-                        ad = getattr(self, "_local_array_dims", {}).get(root.name) if isinstance(root, Identifier) else None
-                    except Exception:
-                        ad = None
-                    if isinstance(ad, list) and len(ad) >= 2 and isinstance(ad[1], int):
+                if isinstance(expr.array, Identifier):
+                    dims = getattr(self, "_local_array_dims", {}).get(expr.array.name)
+                    sym = f"@{expr.array.name}"
+                    bty = getattr(self, "_var_types", {}).get(sym)
+                    if isinstance(dims, list) and len(dims) >= 2:
+                        row_ptr = self._new_temp()
+                        ins_row = IRInstruction(op="addr_index", result=row_ptr, operand1=base, operand2=idx)
+                        # Step for indexing *rows* is sizeof(row) = dim1 * sizeof(elem)
                         try:
-                            root_sym = f"@{root.name}" if isinstance(root, Identifier) else None
-                            bty2 = getattr(self, "_var_types", {}).get(root_sym, "") if root_sym else ""
                             base_part = None
-                            if isinstance(bty2, str) and bty2.strip().startswith("array("):
-                                inner = bty2.strip()[len("array(") :]
+                            if isinstance(bty, str) and bty.strip().startswith("array("):
+                                inner = bty.strip()[len("array(") :]
                                 if inner.endswith(")"):
                                     inner = inner[:-1]
                                 base_part = inner.split(",", 1)[0].strip()
-                            if isinstance(base_part, str) and base_part:
+                            if isinstance(base_part, str) and base_part and isinstance(dims[1], int):
                                 elem_sz = _type_size_bytes(self._sema_ctx, base_part)
                                 if isinstance(elem_sz, int) and elem_sz > 0:
-                                    step = int(ad[1]) * int(elem_sz)
-                                    ins_ai.meta["ptr_step_bytes"] = step
-                                    self._ptr_step_bytes[taddr] = step
-                                    self._var_types[taddr] = f"{base_part}*"
+                                    step = int(dims[1]) * int(elem_sz)
+                                    # Row pointer: arithmetic should be in bytes (char = 1)
+                                    # for the subsequent `[j]`.
+                                    ins_row.meta["ptr_step_bytes"] = step
+                                    self._ptr_step_bytes[row_ptr] = step
+                                    # Row pointer points to element type (not base_part*).
+                                    # This ensures the second index uses element size.
+                                    self._var_types[row_ptr] = "char*" if base_part == "char" else f"{base_part}*"
                         except Exception:
                             pass
-
-                    self.instructions.append(ins_ai)
-                    return taddr
+                        self.instructions.append(ins_row)
+                        return row_ptr
             except Exception:
                 pass
 

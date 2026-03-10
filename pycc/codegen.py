@@ -726,6 +726,14 @@ class CodeGenerator:
             if (base_ty is None or base_ty == "") and isinstance(base, str) and base.startswith("%t"):
                 base_ty = self._var_types.get(base, "")
             elem_sz = 4
+            step_override = None
+            try:
+                if isinstance(ins.meta, dict) and "ptr_step_bytes" in ins.meta:
+                    step_override = int(ins.meta["ptr_step_bytes"])
+                else:
+                    step_override = self._ptr_step_bytes.get(str(base))
+            except Exception:
+                step_override = None
             if isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
             elif isinstance(base_ty, str) and base_ty.strip().startswith("array("):
@@ -746,7 +754,11 @@ class CodeGenerator:
             else:
                 self._addr_of_symbol(base, "%rax")
             self._load_operand(idx, "%rcx")
-            if elem_sz != 1:
+            # Multi-dimensional arrays: when indexing a row-pointer (or when
+            # IR provides an explicit step), scale by that step in bytes.
+            if isinstance(step_override, int) and step_override > 0:
+                self._emit(f"  imulq ${int(step_override)}, %rcx")
+            elif elem_sz != 1:
                 self._emit(f"  imulq ${elem_sz}, %rcx")
             self._emit("  addq %rcx, %rax")
             self._store_result(ins.result, "%rax")
