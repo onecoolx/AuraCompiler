@@ -45,3 +45,10 @@ int main(){
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_sizeof_2d_array_is_total_bytes(tmp_path):
+    # multi-dimensional arrays not supported yet in the runtime model;
+    # keep as a placeholder for the upcoming milestone.
+    import pytest
+    pytest.xfail("multi-dimensional arrays: sizeof/decay/initializer pending")

@@ -273,6 +273,10 @@ class IRGenerator:
         self.label_counter = 0
         self._break_stack = []
         self._continue_stack = []
+        # Multi-dimensional arrays are not yet supported in the core runtime model.
+        # Keep placeholders (unused) for the upcoming milestone.
+        self._local_array_dims = {}
+        self._local_array_base = {}
 
         # Enum constants are compile-time integers; record them so Identifier
         # lowering can replace them with immediates.
@@ -1115,12 +1119,16 @@ class IRGenerator:
                                 except Exception:
                                     pass
 
+                    # Multi-dimensional arrays are parsed (Declaration.array_dims)
+                    # but not yet supported in IR/type lowering.
+
                     # If this is an array with known/inferred size, record it
                     # as an array type even when element type is struct/union.
                     if op1 is not None:
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
                         self._local_arrays.add(item.name)
                         self._var_types[f"@{item.name}"] = str(op1)
+                        # Multi-dimensional arrays are not yet supported.
                     elif self._is_struct_or_union_type(item.type.base):
                         decl_op1 = str(item.type.base)
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
@@ -1530,6 +1538,8 @@ class IRGenerator:
                             except Exception:
                                 n = 1
                         return f"${_type_size(base_part) * max(0, n)}"
+                    # fallback for local arrays
+                    return "$4"
                 # Global arrays: infer total byte size using semantic context
                 # (we record declared array sizes for globals when known).
                 try:
