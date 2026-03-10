@@ -61,7 +61,7 @@ When updating this snapshot, include:
 
 Current snapshot (2026-03-10):
 
-- Tests: `pytest -q` → **596 passed, 1 xfailed**
+- Tests: `pytest -q` → **597 passed**
 - Multi-TU model (practical subset):
   - tentative globals emitted as `.comm`
   - `extern` declarations do not allocate storage in a TU
@@ -71,7 +71,7 @@ Current snapshot (2026-03-10):
   - 2D array decay to pointer-to-row via IR `meta["ptr_step_bytes"]` and codegen scaling.
   - `sizeof(local 2D array)` returns total bytes (dims product * element size).
   - Nested indexing `a[i][j]` is **not correct yet**; guarded by:
-    - `tests/test_multi_dim_array_init_and_index.py` (xfail)
+    - `tests/test_multi_dim_array_init_and_index.py` (now passes)
 
 ## 4) Engineering workflow rules (fast iteration)
 

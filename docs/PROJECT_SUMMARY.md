@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **596 passed, 1 xfailed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **597 passed**.
 
 ### Recent changes
 
@@ -72,7 +72,7 @@ pycc/
     - Parser records `Declaration.array_dims` (outer→inner).
     - 2D array decay to pointer-to-row uses IR metadata (`ptr_step_bytes`) and codegen scaling.
     - `sizeof(local 2D array)` computes total bytes.
-    - Nested `a[i][j]` is still incomplete; guarded by an xfail test.
+    - Nested `a[i][j]` is implemented and covered by tests.
 
 **Implemented highlights (see tests/):**
 - Globals + initializers (including global `char*` string literal pointer init)
@@ -91,7 +91,7 @@ pycc/
 - No floating point (`float`/`double`) codegen/type rules
 - C89 integer promotions / usual arithmetic conversions not fully modeled
 - Full declarator/type grammar coverage is incomplete (many edge cases)
-- Initializers are incomplete (especially aggregate initializers); local 2D brace init is partially implemented and nested indexing is still under active work (guarded by xfail).
+- Initializers are incomplete (especially aggregate initializers); local 2D brace init + nested indexing are now covered.
 - Translation-unit / multi-file model is still incomplete in general, but a practical multi-TU workflow is implemented and tested.
 - Diagnostics and conformance testing vs `gcc -std=c89` not comprehensive yet
 
