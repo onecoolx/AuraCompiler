@@ -68,6 +68,9 @@ class CodeGenerator:
         # temps like `%t0` produced by `addr_index` so later ops (load_member)
         # know it is a pointer value.
         self._var_types: Dict[str, str] = {}
+        # Optional per-temp pointer arithmetic step overrides (bytes).
+        # Populated from IRInstruction.meta (e.g. for pointer-to-array decay).
+        self._ptr_step_bytes: Dict[str, int] = {}
         # function symbols in this translation unit (for function pointer decay)
         self._functions = {ins.label for ins in instructions if ins.op == "func_begin" and ins.label}
 
@@ -589,6 +592,14 @@ class CodeGenerator:
         if op == "mov":
             self._load_operand(ins.operand1, "%rax")
             self._store_result(ins.result, "%rax")
+            # Propagate pointer arithmetic step metadata through moves.
+            try:
+                if ins.operand1 is not None:
+                    step = self._ptr_step_bytes.get(str(ins.operand1))
+                    if step is not None and ins.result is not None:
+                        self._ptr_step_bytes[str(ins.result)] = int(step)
+            except Exception:
+                pass
             return
 
         if op == "sext16":
@@ -692,6 +703,13 @@ class CodeGenerator:
                         inner = inner[:-1]
                     base_part = inner.split(",", 1)[0].strip()
                     self._var_types[ins.result] = f"{base_part}*"
+            # Carry optional pointer arithmetic scaling overrides (e.g. decay of
+            # multi-dimensional arrays to pointer-to-row).
+            try:
+                if ins.result and isinstance(ins.meta, dict) and "ptr_step_bytes" in ins.meta:
+                    self._ptr_step_bytes[ins.result] = int(ins.meta["ptr_step_bytes"])
+            except Exception:
+                pass
             return
 
         if op == "addr_index":
@@ -819,6 +837,34 @@ class CodeGenerator:
             self._load_operand(ins.operand1, "%rax")
             self._load_operand(ins.operand2, "%rcx")
             bop = ins.label
+
+            # Pointer arithmetic scaling (best-effort): if either operand is a
+            # pointer temp with an explicit step size, scale the integer operand.
+            # This is used for multi-dimensional array decay where (p + 1)
+            # should advance by sizeof(row).
+            try:
+                if bop in {"+", "-"}:
+                    # 1) Temp-based overrides
+                    s1 = self._ptr_step_bytes.get(str(ins.operand1 or ""))
+                    s2 = self._ptr_step_bytes.get(str(ins.operand2 or ""))
+                    # 2) Symbol-based overrides (e.g. local variable holding a
+                    # decayed pointer value): use its declared type if it is
+                    # pointer-typed.
+                    if not s1 and isinstance(ins.operand1, str) and ("*" in self._var_types.get(ins.operand1, "")):
+                        s1 = self._ptr_step_bytes.get(str(ins.operand1))
+                    if not s2 and isinstance(ins.operand2, str) and ("*" in self._var_types.get(ins.operand2, "")):
+                        s2 = self._ptr_step_bytes.get(str(ins.operand2))
+
+                    if s1 and not s2:
+                        step = int(s1)
+                        if step != 1:
+                            self._emit(f"  imulq ${step}, %rcx")
+                    elif s2 and not s1 and bop == "+":
+                        step = int(s2)
+                        if step != 1:
+                            self._emit(f"  imulq ${step}, %rax")
+            except Exception:
+                pass
 
             # Best-effort usual arithmetic conversions for 32-bit unsigned ints:
             # if either operand is an unsigned-32 value, perform arithmetic in

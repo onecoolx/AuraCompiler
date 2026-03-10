@@ -18,7 +18,6 @@ def _compile_and_run(tmp_path, code: str) -> int:
     return p.returncode
 
 
-@pytest.mark.xfail(reason="multi-dimensional arrays: decay to pointer-to-array pending")
 def test_2d_array_decays_to_pointer_to_row_and_scales(tmp_path):
     code = r'''
 int main(void){
@@ -30,7 +29,6 @@ int main(void){
     assert _compile_and_run(tmp_path, code) == 0
 
 
-@pytest.mark.xfail(reason="multi-dimensional arrays: sizeof(*p) pending")
 def test_2d_array_pointer_deref_sizeof_row(tmp_path):
     code = r'''
 int main(void){

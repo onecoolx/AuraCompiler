@@ -762,6 +762,12 @@ class Parser:
             if array_size_val is None:
                 array_size_val = dim
 
+            # If this is a pointer declarator like `char (*p)[4]`, the array suffix
+            # applies to the pointee, not to the object. Do not populate
+            # `Declaration.array_size` (used for array objects) in that case.
+            if getattr(ty, "is_pointer", False):
+                array_size_val = None
+
         # function declarator: name(params)
         # Minimal support for function pointer declarations where the type is a
         # pointer, but the declarator has a trailing parameter list.

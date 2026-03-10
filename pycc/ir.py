@@ -249,10 +249,13 @@ class IRInstruction:
     operand2: Optional[str] = None
     label: Optional[str] = None
     args: Optional[List[str]] = None
+    meta: Optional[dict] = None
 
     def __post_init__(self) -> None:
         if self.args is None:
             self.args = []
+        if self.meta is None:
+            self.meta = {}
 
 
 class IRGenerator:
@@ -276,7 +279,12 @@ class IRGenerator:
         # Multi-dimensional arrays are not yet supported in the core runtime model.
         # Keep placeholders (unused) for the upcoming milestone.
         self._local_array_dims = {}
-        self._local_array_base = {}
+        # Map from temp/symbol -> pointer arithmetic step in bytes.
+        # Used for pointer-to-row (e.g. char (*p)[4]) where (p+1) advances by
+        # sizeof(row) rather than sizeof(char).
+        self._ptr_step_bytes: dict[str, int] = {}
+        # Pointer arithmetic scaling for pointer-to-array decay is carried via
+        # IRInstruction.meta (see Identifier lowering).
 
         # Enum constants are compile-time integers; record them so Identifier
         # lowering can replace them with immediates.
@@ -1128,7 +1136,14 @@ class IRGenerator:
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
                         self._local_arrays.add(item.name)
                         self._var_types[f"@{item.name}"] = str(op1)
-                        # Multi-dimensional arrays are not yet supported.
+                        # Record multi-dimensional array dims for upcoming
+                        # pointer-to-row decay/scaling support.
+                        try:
+                            ad = getattr(item, "array_dims", None)
+                            if isinstance(ad, list) and len(ad) >= 2 and all(isinstance(d, int) for d in ad if d is not None):
+                                self._local_array_dims[item.name] = ad
+                        except Exception:
+                            pass
                     elif self._is_struct_or_union_type(item.type.base):
                         decl_op1 = str(item.type.base)
                         self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
@@ -1198,7 +1213,11 @@ class IRGenerator:
                                 continue
 
                         # Local aggregate initialization for arrays.
-                        if getattr(item, "array_size", None) is not None:
+                        # NOTE: Some declarators (e.g. `char (*p)[4]`) carry
+                        # `array_size` from the parser but are pointer objects
+                        # (not arrays). Only take the array-init path for true
+                        # array objects.
+                        if getattr(item, "array_size", None) is not None and not getattr(item.type, "is_pointer", False):
                             inits = self._const_initializer_list(item.initializer)
                             if inits is None:
                                 raise Exception("unsupported array initializer: expected initializer list")
@@ -1247,12 +1266,19 @@ class IRGenerator:
                         # already handled above when `array_size` is known.
                         # If we reached here and this is an array, it means we don't
                         # support the given initializer form for arrays yet.
-                        if getattr(item, "array_size", None) is not None:
+                        if getattr(item, "array_size", None) is not None and not getattr(item.type, "is_pointer", False):
                             raise Exception("unsupported array initializer")
 
                         # Scalar init (existing path)
                         v = self._gen_expr(item.initializer)
                         self.instructions.append(IRInstruction(op="mov", result=f"@{item.name}", operand1=v))
+                        # Propagate pointer-to-row step metadata from the decay
+                        # temp into the local symbol, so later pointer
+                        # arithmetic (e.g. p+1) can scale correctly.
+                        if isinstance(v, str):
+                            src_step = getattr(self, "_ptr_step_bytes", {}).get(v)
+                            if src_step is not None:
+                                self._ptr_step_bytes[f"@{item.name}"] = src_step
                 else:
                     self._gen_stmt(item)
             return
@@ -1574,6 +1600,15 @@ class IRGenerator:
                 base = op.operand
                 if isinstance(base, ASTIdentifier):
                     pty = self._operand_type_string(f"@{base.name}")
+                    # If this identifier is a pointer-to-row produced by
+                    # multi-dimensional array decay, prefer the row size.
+                    try:
+                        sym = f"@{base.name}"
+                        step = getattr(self, "_ptr_step_bytes", {}).get(sym)
+                        if isinstance(step, int) and step > 0:
+                            return f"${step}"
+                    except Exception:
+                        pass
                     if isinstance(pty, str) and "*" in pty:
                         return f"${_type_size(pty.split('*', 1)[0].strip())}"
             if isinstance(op, ASTArrayAccess):
@@ -1701,7 +1736,7 @@ class IRGenerator:
             # NOTE: `self._local_arrays` stores plain names (without '@').
             if hasattr(self, "_local_arrays") and expr.name in getattr(self, "_local_arrays"):
                 t = self._new_temp()
-                self.instructions.append(IRInstruction(op="mov_addr", result=t, operand1=sym))
+                ins = IRInstruction(op="mov_addr", result=t, operand1=sym)
                 # Preserve array element type info on the decayed pointer temp
                 # so `load_index/store_index` can compute correct element size.
                 try:
@@ -1714,6 +1749,35 @@ class IRGenerator:
                         self._var_types[t] = f"{base_part}*"
                 except Exception:
                     pass
+
+                # If this is a multi-dimensional local array with known inner
+                # dimension, record pointer step bytes for (p + 1) scaling.
+                # We rely on a generator-level map populated during decl lowering.
+                try:
+                    ad = getattr(self, "_local_array_dims", {}).get(expr.name)
+                except Exception:
+                    ad = None
+                if isinstance(ad, list) and len(ad) >= 2 and isinstance(ad[1], int):
+                    base_part = None
+                    try:
+                        ty = self._var_types.get(sym)
+                        if isinstance(ty, str) and ty.strip().startswith("array("):
+                            inner = ty.strip()[len("array(") :]
+                            if inner.endswith(")"):
+                                inner = inner[:-1]
+                            base_part = inner.split(",", 1)[0].strip()
+                    except Exception:
+                        base_part = None
+                    if isinstance(base_part, str) and base_part:
+                        elem_sz = _type_size_bytes(self._sema_ctx, base_part)
+                        if isinstance(elem_sz, int) and elem_sz > 0:
+                            step = int(ad[1]) * int(elem_sz)
+                            ins.meta["ptr_step_bytes"] = step
+                            # Also record it in a generator-level map so it can
+                            # be propagated through moves into local symbols.
+                            self._ptr_step_bytes[t] = step
+
+                self.instructions.append(ins)
                 return t
             # If this identifier is known to be a pointer variable, preserve
             # its type on the symbol reference so later ops (ptr arith, loads)
