@@ -1222,6 +1222,47 @@ class IRGenerator:
                             if inits is None:
                                 raise Exception("unsupported array initializer: expected initializer list")
 
+                            # Minimal multi-dimensional support: if this is a
+                            # 2D array with a nested initializer list, flatten
+                            # and store bytes/ints in row-major order.
+                            try:
+                                ad = getattr(item, "array_dims", None)
+                            except Exception:
+                                ad = None
+                            if isinstance(ad, list) and len(ad) >= 2 and isinstance(ad[0], int) and isinstance(ad[1], int):
+                                # Only handle nested Initializer list form: {{...},{...}}
+                                from pycc.ast_nodes import Initializer as ASTInit
+
+                                if any(isinstance(x, ASTInit) for x in inits):
+                                    flat: list[Expression] = []
+                                    for row in inits:
+                                        if isinstance(row, ASTInit):
+                                            row_elems = [e for (_d, e) in (row.elements or [])]
+                                            flat.extend(row_elems)
+                                        else:
+                                            flat.append(row)
+
+                                    total = int(ad[0]) * int(ad[1])
+                                    for idx in range(total):
+                                        val_ast = flat[idx] if idx < len(flat) else IntLiteral(
+                                            value=0,
+                                            is_hex=False,
+                                            is_octal=False,
+                                            line=item.line,
+                                            column=item.column,
+                                        )
+                                        v = self._gen_expr(val_ast)
+                                        self.instructions.append(
+                                            IRInstruction(
+                                                op="store_index",
+                                                result=v,
+                                                operand1=f"@{item.name}",
+                                                operand2=f"${idx}",
+                                                label="char" if str(item.type.base).strip() in {"char", "unsigned char"} else "int",
+                                            )
+                                        )
+                                    continue
+
                             # int a[N] = {...}
                             n = int(item.array_size)
                             for idx in range(n):
@@ -1847,6 +1888,59 @@ class IRGenerator:
         if isinstance(expr, ArrayAccess):
             base = self._gen_expr(expr.array)
             idx = self._gen_expr(expr.index)
+
+            # If base is a row-pointer temp (from nested indexing), carry its
+            # ptr_step_bytes onto the load_index instruction so codegen can
+            # scale the index correctly.
+            base_step = None
+            try:
+                if isinstance(base, str):
+                    base_step = getattr(self, "_ptr_step_bytes", {}).get(base)
+            except Exception:
+                base_step = None
+
+            # Multi-dimensional array indexing (minimal support):
+            # For `a[i][j]`, the AST is nested ArrayAccess, so when we are
+            # lowering the outer access `a[i]`, we must produce an lvalue
+            # address (pointer to row) rather than loading a scalar.
+            # The subsequent `[j]` will then index into that row.
+            try:
+                if isinstance(expr.array, ArrayAccess):
+                    taddr = self._new_temp()
+                    ins_ai = IRInstruction(op="addr_index", result=taddr, operand1=base, operand2=idx)
+
+                    # Attach row-step metadata so `load_index` on this temp can
+                    # scale by sizeof(row).
+                    try:
+                        root = expr.array.array
+                        ad = getattr(self, "_local_array_dims", {}).get(root.name) if isinstance(root, Identifier) else None
+                    except Exception:
+                        ad = None
+                    if isinstance(ad, list) and len(ad) >= 2 and isinstance(ad[1], int):
+                        try:
+                            root_sym = f"@{root.name}" if isinstance(root, Identifier) else None
+                            bty2 = getattr(self, "_var_types", {}).get(root_sym, "") if root_sym else ""
+                            base_part = None
+                            if isinstance(bty2, str) and bty2.strip().startswith("array("):
+                                inner = bty2.strip()[len("array(") :]
+                                if inner.endswith(")"):
+                                    inner = inner[:-1]
+                                base_part = inner.split(",", 1)[0].strip()
+                            if isinstance(base_part, str) and base_part:
+                                elem_sz = _type_size_bytes(self._sema_ctx, base_part)
+                                if isinstance(elem_sz, int) and elem_sz > 0:
+                                    step = int(ad[1]) * int(elem_sz)
+                                    ins_ai.meta["ptr_step_bytes"] = step
+                                    self._ptr_step_bytes[taddr] = step
+                                    self._var_types[taddr] = f"{base_part}*"
+                        except Exception:
+                            pass
+
+                    self.instructions.append(ins_ai)
+                    return taddr
+            except Exception:
+                pass
+
             # If indexing yields an aggregate (struct/union), we must produce an
             # lvalue address, not load a scalar value.
             try:
@@ -1879,7 +1973,18 @@ class IRGenerator:
                 pass
 
             t = self._new_temp()
-            self.instructions.append(IRInstruction(op="load_index", result=t, operand1=base, operand2=idx))
+            ins = IRInstruction(op="load_index", result=t, operand1=base, operand2=idx)
+            if isinstance(base_step, int) and base_step > 0:
+                ins.meta["ptr_step_bytes"] = int(base_step)
+            self.instructions.append(ins)
+            # If indexing a row pointer temp (from a[i] in a[i][j]), preserve
+            # the element type so codegen can load the correct width.
+            try:
+                bty = getattr(self, "_var_types", {}).get(base)
+                if isinstance(bty, str) and bty.strip().endswith("*"):
+                    self._var_types[t] = bty.strip()[:-1].strip()
+            except Exception:
+                pass
             return t
         if isinstance(expr, PointerMemberAccess):
             base = self._gen_expr(expr.pointer)

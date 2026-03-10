@@ -766,6 +766,14 @@ class CodeGenerator:
                         self._var_types[ins.result] = f"{elem_ty}*"
                     else:
                         self._var_types[ins.result] = "ptr"
+            # Carry optional pointer arithmetic scaling overrides (bytes).
+            # This is used for row pointers produced by multi-dimensional array
+            # indexing lowerings.
+            try:
+                if ins.result and isinstance(ins.meta, dict) and "ptr_step_bytes" in ins.meta:
+                    self._ptr_step_bytes[str(ins.result)] = int(ins.meta["ptr_step_bytes"])
+            except Exception:
+                pass
             return
 
         if op == "addr_of_member":
@@ -1299,6 +1307,15 @@ class CodeGenerator:
             # - For arrays, use base element size.
             elem_sz = 4
             base_ty = None
+            step_override = None
+            try:
+                # Prefer instruction-scoped override (IR meta) when present.
+                if isinstance(ins.meta, dict) and "ptr_step_bytes" in ins.meta:
+                    step_override = int(ins.meta["ptr_step_bytes"])
+                else:
+                    step_override = self._ptr_step_bytes.get(str(base))
+            except Exception:
+                step_override = None
             if isinstance(base, str):
                 base_ty = self._var_types.get(base)
                 if base_ty is None and base.startswith("@"):
@@ -1341,7 +1358,11 @@ class CodeGenerator:
                 # base is an array object or a raw address temp
                 self._addr_of_symbol(base, "%rax")
             self._load_operand(idx, "%rcx")
-            if elem_sz != 1:
+            # Multi-dimensional arrays: when indexing a row-pointer, scale by
+            # the row size (bytes), not by sizeof(element).
+            if isinstance(step_override, int) and step_override > 0:
+                self._emit(f"  imulq ${int(step_override)}, %rcx")
+            elif elem_sz != 1:
                 self._emit(f"  imulq ${elem_sz}, %rcx")
             self._emit("  addq %rcx, %rax")
             # load with width based on element size
