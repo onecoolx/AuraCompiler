@@ -174,9 +174,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     # We implement this by asking Compiler to write sidecar outputs.
     # (Debug dump flags remain separate and can be used independently.)
     if args.save_temps:
+        # Policy B: avoid redundant sidecars.
+        # - always keep preprocessed (.i)
+        # - keep assembly (.s) unless the main output is already .s
+        # - keep object (.o) only for link-to-exe outputs (not when main output is .o)
         os.environ.setdefault("PYCC_PREPROCESSED_OUT", "pycc-tmp.i")
-        os.environ.setdefault("PYCC_ASSEMBLY_OUT", "pycc-tmp.s")
-        os.environ.setdefault("PYCC_OBJECT_OUT", "pycc-tmp.o")
+        if not args.S:
+            os.environ.setdefault("PYCC_ASSEMBLY_OUT", "pycc-tmp.s")
+        if (not args.c) and (not args.S):
+            os.environ.setdefault("PYCC_OBJECT_OUT", "pycc-tmp.o")
 
     # --dump-preprocessed is handled later, after compile_defines is built.
 
