@@ -148,6 +148,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Error: -E currently supports exactly one input file")
             return 1
 
+        # gcc-style: '-' means read source from stdin.
+        # But allow `-- -` to refer to a literal file named '-'.
+        if stdin_dash_allowed and args.source[0] == "-":
+            try:
+                src_text = sys.stdin.read()
+            except Exception as e:
+                print(f"Error: cannot read stdin: {e}")
+                return 1
+            fd, tmp_c = tempfile.mkstemp(prefix="pycc_stdin_", suffix=".c")
+            os.close(fd)
+            try:
+                with open(tmp_c, "w", encoding="utf-8") as f:
+                    f.write(src_text)
+                args.source[0] = tmp_c
+                src_is_temp = True
+            except OSError as e:
+                print(f"Error: cannot write temp source: {e}")
+                try:
+                    os.unlink(tmp_c)
+                except OSError:
+                    pass
+                return 1
+        else:
+            src_is_temp = False
+
         initial_macros: Dict[str, str] = {}
         for item in args.defines:
             if not item:
@@ -194,15 +219,31 @@ def main(argv: Optional[List[str]] = None) -> int:
                 text = res.text
         except Exception as e:
             print(f"Error: {e}")
+            if src_is_temp:
+                try:
+                    os.unlink(src)
+                except OSError:
+                    pass
             return 1
         if args.output:
             try:
                 open(args.output, "w", encoding="utf-8").write(text)
             except OSError as e:
                 print(f"Error: cannot write {args.output}: {e}")
+                if src_is_temp:
+                    try:
+                        os.unlink(src)
+                    except OSError:
+                        pass
                 return 1
         else:
             sys.stdout.write(text)
+
+        if src_is_temp:
+            try:
+                os.unlink(src)
+            except OSError:
+                pass
         return 0
 
     # NOTE: -D/-U/-I are accepted for compilation as well; they are wired into
