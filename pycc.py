@@ -96,6 +96,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Write assembly to pycc-tmp.s (single input only; debug)",
     )
+    ap.add_argument(
+        "--dump-tokens",
+        action="store_true",
+        help="Write lexer tokens to pycc-tmp.tokens (single input only; debug)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -257,6 +262,35 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Error: invalid -U argument")
             return 1
         compile_defines.pop(name, None)
+
+    if args.dump_tokens:
+        if len(args.source) != 1:
+            print("Error: --dump-tokens currently supports exactly one input file")
+            return 1
+        try:
+            src = args.source[0]
+            cc = Compiler(
+                optimize=False,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            pres = cc.compile_file(src, None, preprocess_only=True)
+            if not pres.success:
+                for e in pres.errors:
+                    print("Error:", e)
+                return 1
+            toks = cc.get_tokens(pres.assembly or "")
+            out_t = "pycc-tmp.tokens"
+            with open(out_t, "w", encoding="utf-8") as f:
+                for t in toks:
+                    # Token has a useful __repr__/__str__ in this codebase.
+                    f.write(str(t) + "\n")
+            if args.verbose:
+                print(f"[pycc] tokens: {src} -> {out_t}")
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
 
     if args.dump_asm:
         if len(args.source) != 1:
