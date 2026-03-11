@@ -90,6 +90,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Keep intermediate files (.i/.s/.o) when possible",
     )
     ap.add_argument(
+        "--dump-preprocessed-to",
+        dest="dump_preprocessed_to",
+        metavar="PATH",
+        help="Write preprocessed output to PATH (single input only; debug)",
+    )
+    ap.add_argument(
         "--dump-preprocessed",
         action="store_true",
         help="Write preprocessed output to pycc-tmp.i (single input only)",
@@ -405,7 +411,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Error: {e}")
             return 1
 
-    if args.dump_preprocessed:
+    if args.dump_preprocessed or args.dump_preprocessed_to:
         if len(args.source) != 1:
             print("Error: --dump-preprocessed currently supports exactly one input file")
             return 1
@@ -422,7 +428,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 for e in res.errors:
                     print("Error:", e)
                 return 1
-            out_i = "pycc-tmp.i"
+            out_i = args.dump_preprocessed_to or "pycc-tmp.i"
             with open(out_i, "w", encoding="utf-8") as f:
                 f.write(res.assembly or "")
             if args.verbose:
