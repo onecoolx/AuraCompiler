@@ -118,6 +118,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Write IR to PATH (single input only; debug)",
     )
     ap.add_argument(
+        "--dump-ir-only-to",
+        dest="dump_ir_only_to",
+        metavar="PATH",
+        help="Write IR to PATH and stop (single input only)",
+    )
+    ap.add_argument(
         "--dump-asm",
         action="store_true",
         help="Write assembly to pycc-tmp.s (single input only; debug)",
@@ -129,6 +135,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Write assembly to PATH (single input only; debug)",
     )
     ap.add_argument(
+        "--dump-asm-only-to",
+        dest="dump_asm_only_to",
+        metavar="PATH",
+        help="Write assembly to PATH and stop (single input only)",
+    )
+    ap.add_argument(
         "--dump-tokens",
         action="store_true",
         help="Write lexer tokens to pycc-tmp.tokens (single input only; debug)",
@@ -138,6 +150,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         dest="dump_tokens_to",
         metavar="PATH",
         help="Write lexer tokens to PATH (single input only; debug)",
+    )
+    ap.add_argument(
+        "--dump-tokens-only-to",
+        dest="dump_tokens_only_to",
+        metavar="PATH",
+        help="Write lexer tokens to PATH and stop (single input only)",
     )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
@@ -342,6 +360,34 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         compile_defines.pop(name, None)
 
+    if args.dump_tokens_only_to:
+        if len(args.source) != 1:
+            print("Error: --dump-tokens-only-to currently supports exactly one input file")
+            return 1
+        try:
+            src = args.source[0]
+            cc = Compiler(
+                optimize=False,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            pres = cc.compile_file(src, None, preprocess_only=True)
+            if not pres.success:
+                for e in pres.errors:
+                    print("Error:", e)
+                return 1
+            toks = cc.get_tokens(pres.assembly or "")
+            with open(args.dump_tokens_only_to, "w", encoding="utf-8") as f:
+                for t in toks:
+                    f.write(str(t) + "\n")
+            if args.verbose:
+                print(f"[pycc] tokens: {src} -> {args.dump_tokens_only_to}")
+            return 0
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+
     if args.dump_tokens or args.dump_tokens_to:
         if len(args.source) != 1:
             print("Error: --dump-tokens currently supports exactly one input file")
@@ -371,6 +417,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Error: {e}")
             return 1
 
+    if args.dump_asm_only_to:
+        if len(args.source) != 1:
+            print("Error: --dump-asm-only-to currently supports exactly one input file")
+            return 1
+        # No conflict with output modes needed; we exit before compilation output handling.
+        try:
+            src = args.source[0]
+            cc = Compiler(
+                optimize=not args.no_opt,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            res = cc.compile_file(src, args.dump_asm_only_to)
+            if not res.success:
+                for e in res.errors:
+                    print("Error:", e)
+                return 1
+            if args.verbose:
+                print(f"[pycc] asm: {src} -> {args.dump_asm_only_to}")
+            return 0
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+
     if args.dump_asm or args.dump_asm_to:
         if len(args.source) != 1:
             print("Error: --dump-asm currently supports exactly one input file")
@@ -395,6 +466,41 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 1
             if args.verbose:
                 print(f"[pycc] asm: {src} -> {out_s}")
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+
+    if args.dump_ir_only_to:
+        if len(args.source) != 1:
+            print("Error: --dump-ir-only-to currently supports exactly one input file")
+            return 1
+        try:
+            # Build IR directly to avoid changing the main compiler pipeline.
+            src = args.source[0]
+            c = Compiler(
+                optimize=not args.no_opt,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            pres = c.compile_file(src, None, preprocess_only=True)
+            if not pres.success:
+                for e in pres.errors:
+                    print("Error:", e)
+                return 1
+            text = pres.assembly or ""
+
+            tokens = c.get_tokens(text)
+            ast = c.get_ast(tokens)
+            sema_ctx, _ = c.analyze_semantics(ast)
+            ir_list = c.get_ir(ast, sema_ctx=sema_ctx)
+
+            with open(args.dump_ir_only_to, "w", encoding="utf-8") as f:
+                for ins in ir_list:
+                    f.write(str(ins) + "\n")
+            if args.verbose:
+                print(f"[pycc] ir: {src} -> {args.dump_ir_only_to}")
+            return 0
         except Exception as e:
             print(f"Error: {e}")
             return 1
