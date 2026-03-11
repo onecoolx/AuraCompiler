@@ -81,6 +81,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Keep intermediate files (.i/.s/.o) when possible",
     )
+    ap.add_argument(
+        "--dump-preprocessed",
+        action="store_true",
+        help="Write preprocessed output to pycc-tmp.i (single input only)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -93,6 +98,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.source:
         print("Error: missing input file")
         return 1
+
+    # --dump-preprocessed is handled later, after compile_defines is built.
 
     if args.print_asm:
         # Convenience mode for debugging; does not change Compiler internals.
@@ -240,6 +247,32 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Error: invalid -U argument")
             return 1
         compile_defines.pop(name, None)
+
+    if args.dump_preprocessed:
+        if len(args.source) != 1:
+            print("Error: --dump-preprocessed currently supports exactly one input file")
+            return 1
+        try:
+            c = Compiler(
+                optimize=False,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            # Reuse compile_file preprocessing path but stop after preprocessing.
+            res = c.compile_file(args.source[0], None, preprocess_only=True)
+            if not res.success:
+                for e in res.errors:
+                    print("Error:", e)
+                return 1
+            out_i = "pycc-tmp.i"
+            with open(out_i, "w", encoding="utf-8") as f:
+                f.write(res.assembly or "")
+            if args.verbose:
+                print(f"[pycc] preprocessed: {args.source[0]} -> {out_i}")
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
 
     compiler = Compiler(
         optimize=not args.no_opt,
