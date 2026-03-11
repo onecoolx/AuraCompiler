@@ -26,6 +26,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
+    # argparse supports `--` end-of-options by default. However, this driver also
+    # uses the gcc convention that a lone `-` *as the input file* means "read from
+    # stdin". To allow compiling a literal file named `-`, accept `-- -` and treat
+    # it as a filename.
+    stdin_dash_allowed = True
+    if len(argv) >= 2 and argv[0] == "--" and argv[1] == "-":
+        stdin_dash_allowed = False
+
     ap = argparse.ArgumentParser(prog="pycc", description="AuraCompiler CLI")
     ap.add_argument("source", nargs="*", help="Input C source file(s)")
     ap.add_argument("-E", action="store_true", help="Preprocess only (subset: passthrough)")
@@ -392,7 +400,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Single input: preserve previous behavior.
     if len(args.source) == 1:
         # gcc-style: '-' means read source from stdin.
-        if args.source[0] == "-":
+        # But allow `-- -` to refer to a literal file named '-'.
+        if stdin_dash_allowed and args.source[0] == "-":
             try:
                 src_text = sys.stdin.read()
             except Exception as e:
