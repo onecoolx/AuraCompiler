@@ -91,6 +91,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Write IR to pycc-tmp.ir (single input only; debug)",
     )
+    ap.add_argument(
+        "--dump-asm",
+        action="store_true",
+        help="Write assembly to pycc-tmp.s (single input only; debug)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -252,6 +257,34 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Error: invalid -U argument")
             return 1
         compile_defines.pop(name, None)
+
+    if args.dump_asm:
+        if len(args.source) != 1:
+            print("Error: --dump-asm currently supports exactly one input file")
+            return 1
+        # Do not conflict with explicit output modes.
+        if args.S or args.c or args.print_asm:
+            print("Error: --dump-asm cannot be combined with -S/-c/--print-asm")
+            return 1
+        try:
+            src = args.source[0]
+            out_s = "pycc-tmp.s"
+            cc = Compiler(
+                optimize=not args.no_opt,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            res = cc.compile_file(src, out_s)
+            if not res.success:
+                for e in res.errors:
+                    print("Error:", e)
+                return 1
+            if args.verbose:
+                print(f"[pycc] asm: {src} -> {out_s}")
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
 
     if args.dump_ir:
         if len(args.source) != 1:
