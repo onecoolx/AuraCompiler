@@ -86,6 +86,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Write preprocessed output to pycc-tmp.i (single input only)",
     )
+    ap.add_argument(
+        "--dump-ir",
+        action="store_true",
+        help="Write IR to pycc-tmp.ir (single input only; debug)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -247,6 +252,42 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("Error: invalid -U argument")
             return 1
         compile_defines.pop(name, None)
+
+    if args.dump_ir:
+        if len(args.source) != 1:
+            print("Error: --dump-ir currently supports exactly one input file")
+            return 1
+        try:
+            # Build IR directly to avoid changing the main compiler pipeline.
+            src = args.source[0]
+            c = Compiler(
+                optimize=not args.no_opt,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            # Preprocess
+            pres = c.compile_file(src, None, preprocess_only=True)
+            if not pres.success:
+                for e in pres.errors:
+                    print("Error:", e)
+                return 1
+            text = pres.assembly or ""
+
+            tokens = c.get_tokens(text)
+            ast = c.get_ast(tokens)
+            sema_ctx, _ = c.analyze_semantics(ast)
+            ir_list = c.get_ir(ast, sema_ctx=sema_ctx)
+
+            out_ir = "pycc-tmp.ir"
+            with open(out_ir, "w", encoding="utf-8") as f:
+                for ins in ir_list:
+                    f.write(str(ins) + "\n")
+            if args.verbose:
+                print(f"[pycc] ir: {src} -> {out_ir}")
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
 
     if args.dump_preprocessed:
         if len(args.source) != 1:
