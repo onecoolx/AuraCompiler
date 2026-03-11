@@ -29,6 +29,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="pycc", description="AuraCompiler CLI")
     ap.add_argument("source", nargs="+", help="Input C source file(s)")
     ap.add_argument("-E", action="store_true", help="Preprocess only (subset: passthrough)")
+    ap.add_argument("-S", action="store_true", help="Compile only; emit assembly (.s)")
+    ap.add_argument("-c", action="store_true", help="Compile only; emit object (.o)")
     ap.add_argument(
         "--use-system-cpp",
         action="store_true",
@@ -61,6 +63,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
+
+    if args.S and args.c:
+        print("Error: -S and -c are mutually exclusive")
+        return 1
 
     # Preprocessor stage (subset): passthrough the first input.
     if args.E:
@@ -127,7 +133,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if not args.output:
-        print("Error: -o is required unless -E is used")
+        # gcc/clang default:
+        # - no -o, single input, not -c/-S -> a.out
+        # - no -o, single input, -S -> source basename .s
+        # - no -o, single input, -c -> source basename .o
+        if len(args.source) != 1:
+            print("Error: -o is required for multi-input mode")
+            return 1
+        src0 = args.source[0]
+        base, _ext = os.path.splitext(os.path.basename(src0))
+        if args.S:
+            args.output = base + ".s"
+        elif args.c:
+            args.output = base + ".o"
+        else:
+            args.output = "a.out"
+
+    # If -S/-c were requested, ensure the output extension matches.
+    if args.S and not str(args.output).endswith(".s"):
+        print("Error: -S requires -o <file.s> (or omit -o to use <source>.s)")
+        return 1
+    if args.c and not str(args.output).endswith(".o"):
+        print("Error: -c requires -o <file.o> (or omit -o to use <source>.o)")
         return 1
 
     compile_defines: Dict[str, str] = {}
