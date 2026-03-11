@@ -170,6 +170,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("Error: missing input file")
         return 1
 
+    # Support a gcc-like --save-temps for the main compilation pipeline.
+    # We implement this by asking Compiler to write sidecar outputs.
+    # (Debug dump flags remain separate and can be used independently.)
+    if args.save_temps:
+        os.environ.setdefault("PYCC_PREPROCESSED_OUT", "pycc-tmp.i")
+        os.environ.setdefault("PYCC_ASSEMBLY_OUT", "pycc-tmp.s")
+        os.environ.setdefault("PYCC_OBJECT_OUT", "pycc-tmp.o")
+
     # --dump-preprocessed is handled later, after compile_defines is built.
 
     if args.print_asm:

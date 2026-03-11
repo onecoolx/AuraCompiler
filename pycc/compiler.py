@@ -93,6 +93,17 @@ class Compiler:
                 except Exception as e:
                     return CompilationResult(success=False, errors=[f"Preprocess failed: {e}"])
 
+            # If requested, emit the preprocessed translation unit to a stable
+            # sidecar file. This is useful for debugging without changing the
+            # main pipeline. Driver can set PYCC_PREPROCESSED_OUT.
+            pp_out = os.environ.get("PYCC_PREPROCESSED_OUT")
+            if pp_out:
+                try:
+                    with open(pp_out, "w", encoding="utf-8") as f:
+                        f.write(source_code)
+                except OSError as e:
+                    return CompilationResult(success=False, errors=[f"Failed to write preprocessed output: {e}"])
+
             if preprocess_only:
                 # For -E style calls, return preprocessed text in `assembly`
                 # to match existing tests.
@@ -262,7 +273,6 @@ class Compiler:
                                 success=False,
                                 errors=[f"error: multi-tu: incompatible types for global '{name}': '{prev}' vs '{cty}'"],
                             )
-
             # If a name was only ever seen as `extern` declarations, it doesn't
             # participate in compatibility checks here (no definition in the set).
             # This matters for deterministic behavior when headers declare symbols
@@ -464,6 +474,15 @@ class Compiler:
                 except IOError as e:
                     return CompilationResult(success=False, errors=[f"Failed to write output file: {e}"])
 
+                # Optionally keep a copy of the generated assembly (sidecar).
+                asm_out = os.environ.get("PYCC_ASSEMBLY_OUT")
+                if asm_out and asm_out != out:
+                    try:
+                        with open(asm_out, "w", encoding="utf-8") as f:
+                            f.write(assembly)
+                    except OSError as e:
+                        return CompilationResult(success=False, errors=[f"Failed to write assembly output: {e}"])
+
             elif ext == ".o":
                 with tempfile.TemporaryDirectory() as td:
                     s_path = os.path.join(td, "out.s")
@@ -473,6 +492,21 @@ class Compiler:
                         self._run([self.assembler, "-o", out, s_path], "assemble")
                     except (IOError, subprocess.CalledProcessError) as e:
                         return CompilationResult(success=False, errors=[f"Assembling failed: {e}"])
+
+                # Optionally keep a copy of the generated assembly and/or object.
+                asm_out = os.environ.get("PYCC_ASSEMBLY_OUT")
+                if asm_out:
+                    try:
+                        with open(asm_out, "w", encoding="utf-8") as f:
+                            f.write(assembly)
+                    except OSError as e:
+                        return CompilationResult(success=False, errors=[f"Failed to write assembly output: {e}"])
+                obj_out = os.environ.get("PYCC_OBJECT_OUT")
+                if obj_out and obj_out != out:
+                    try:
+                        shutil.copyfile(out, obj_out)
+                    except OSError as e:
+                        return CompilationResult(success=False, errors=[f"Failed to write object output: {e}"])
 
             else:
                 # link to ELF using binutils (as + ld) and a C runtime (glibc dev preferred; fallback newlib)
@@ -486,7 +520,26 @@ class Compiler:
                     try:
                         with open(s_path, 'w') as f:
                             f.write(assembly)
+
+                        # Optionally keep a copy of the generated assembly.
+                        asm_out = os.environ.get("PYCC_ASSEMBLY_OUT")
+                        if asm_out:
+                            try:
+                                with open(asm_out, "w", encoding="utf-8") as f2:
+                                    f2.write(assembly)
+                            except OSError as e:
+                                return CompilationResult(success=False, errors=[f"Failed to write assembly output: {e}"])
+
                         self._run([self.assembler, "-o", o_path, s_path], "assemble")
+
+                        # Optionally keep a copy of the generated object.
+                        obj_out = os.environ.get("PYCC_OBJECT_OUT")
+                        if obj_out:
+                            try:
+                                shutil.copyfile(o_path, obj_out)
+                            except OSError as e:
+                                return CompilationResult(success=False, errors=[f"Failed to write object output: {e}"])
+
                         link_cmd = self._default_link_cmd(o_path=o_path, out_path=out)
                         self._run(link_cmd, "link")
                     except (IOError, subprocess.CalledProcessError) as e:
