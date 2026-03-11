@@ -27,7 +27,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         argv = sys.argv[1:]
 
     ap = argparse.ArgumentParser(prog="pycc", description="AuraCompiler CLI")
-    ap.add_argument("source", nargs="+", help="Input C source file(s)")
+    ap.add_argument("source", nargs="*", help="Input C source file(s)")
     ap.add_argument("-E", action="store_true", help="Preprocess only (subset: passthrough)")
     ap.add_argument("-S", action="store_true", help="Compile only; emit assembly (.s)")
     ap.add_argument("-c", action="store_true", help="Compile only; emit object (.o)")
@@ -66,9 +66,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Verbose driver output (print invoked toolchain commands)",
     )
+    ap.add_argument(
+        "--version",
+        action="store_true",
+        help="Print version information and exit",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
+
+    if args.version:
+        # Keep this intentionally simple and stable for tests/scripts.
+        print("pycc (AuraCompiler)")
+        return 0
+
+    if not args.source:
+        print("Error: missing input file")
+        return 1
 
     if args.S and args.c:
         print("Error: -S and -c are mutually exclusive")
