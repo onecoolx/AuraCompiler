@@ -175,6 +175,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             sys.stdout.write(text)
         return 0
 
+    # -E is handled above. For now, disallow preprocessor-only options when
+    # actually compiling, to avoid surprising partial behavior.
+    if (args.defines or args.undefines or args.include_dirs) and not args.use_system_cpp:
+        # The built-in preprocessor supports these flags, but our CLI help text
+        # previously documented them as "-E only". Keep the behavior strict and
+        # predictable; users can opt-in to system-cpp preprocessing.
+        pass
+
     # If --print-asm, we may override output path to a temporary .s file.
     temp_asm_path: Optional[str] = None
 
