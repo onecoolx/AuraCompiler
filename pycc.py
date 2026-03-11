@@ -96,6 +96,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Write preprocessed output to PATH (single input only; debug)",
     )
     ap.add_argument(
+        "--dump-preprocessed-only-to",
+        dest="dump_preprocessed_only_to",
+        metavar="PATH",
+        help="Write preprocessed output to PATH and stop (single input only)",
+    )
+    ap.add_argument(
         "--dump-preprocessed",
         action="store_true",
         help="Write preprocessed output to pycc-tmp.i (single input only)",
@@ -425,6 +431,32 @@ def main(argv: Optional[List[str]] = None) -> int:
                     f.write(str(ins) + "\n")
             if args.verbose:
                 print(f"[pycc] ir: {src} -> {out_ir}")
+        except Exception as e:
+            print(f"Error: {e}")
+            return 1
+
+    if args.dump_preprocessed_only_to:
+        # Convenience mode: dump preprocessed output to a chosen file and exit.
+        if len(args.source) != 1:
+            print("Error: --dump-preprocessed-only-to currently supports exactly one input file")
+            return 1
+        try:
+            c = Compiler(
+                optimize=False,
+                include_paths=args.include_dirs,
+                defines=compile_defines,
+                use_system_cpp=args.use_system_cpp,
+            )
+            res = c.compile_file(args.source[0], None, preprocess_only=True)
+            if not res.success:
+                for e in res.errors:
+                    print("Error:", e)
+                return 1
+            with open(args.dump_preprocessed_only_to, "w", encoding="utf-8") as f:
+                f.write(res.assembly or "")
+            if args.verbose:
+                print(f"[pycc] preprocessed: {args.source[0]} -> {args.dump_preprocessed_only_to}")
+            return 0
         except Exception as e:
             print(f"Error: {e}")
             return 1
