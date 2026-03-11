@@ -71,6 +71,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Print version information and exit",
     )
+    ap.add_argument(
+        "--print-asm",
+        action="store_true",
+        help="Print generated assembly to stdout (single input only; implies -S)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -83,6 +88,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.source:
         print("Error: missing input file")
         return 1
+
+    if args.print_asm:
+        # Convenience mode for debugging; does not change Compiler internals.
+        # Only support one input for now.
+        if len(args.source) != 1:
+            print("Error: --print-asm currently supports exactly one input file")
+            return 1
+        # If user also passed -c, reject.
+        if args.c:
+            print("Error: --print-asm cannot be combined with -c")
+            return 1
+        # Force assembly output via a temporary file.
+        args.S = True
 
     if args.S and args.c:
         print("Error: -S and -c are mutually exclusive")
@@ -152,6 +170,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             sys.stdout.write(text)
         return 0
 
+    # If --print-asm, we will override output path to a temporary .s file.
+    temp_asm_path: Optional[str] = None
+
     if not args.output:
         # gcc/clang default:
         # - no -o, single input, not -c/-S -> a.out
@@ -168,6 +189,13 @@ def main(argv: Optional[List[str]] = None) -> int:
             args.output = base + ".o"
         else:
             args.output = "a.out"
+
+    # If --print-asm is set, always compile to a temp `.s`.
+    if args.print_asm:
+        fd, temp = tempfile.mkstemp(prefix="pycc_", suffix=".s")
+        os.close(fd)
+        temp_asm_path = temp
+        args.output = temp_asm_path
 
     # If -S/-c were requested, ensure the output extension matches.
     if args.S and not str(args.output).endswith(".s"):
@@ -216,6 +244,20 @@ def main(argv: Optional[List[str]] = None) -> int:
             for e in result.errors:
                 print("Error:", e)
             return 1
+        if args.print_asm:
+            try:
+                sys.stdout.write(open(args.output, "r", encoding="utf-8").read())
+            except OSError as e:
+                print(f"Error: cannot read {args.output}: {e}")
+                return 1
+            finally:
+                try:
+                    if temp_asm_path:
+                        os.unlink(temp_asm_path)
+                except OSError:
+                    pass
+            return 0
+
         print("Done:", args.output)
         return 0
 
