@@ -60,6 +60,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         metavar="DIR",
         help="Add an include directory for preprocessing (subset; -E only)",
     )
+    ap.add_argument(
+        "-v",
+        dest="verbose",
+        action="store_true",
+        help="Verbose driver output (print invoked toolchain commands)",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -189,6 +195,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Single input: preserve previous behavior.
     if len(args.source) == 1:
+        if args.verbose:
+            print(f"[pycc] compile: {args.source[0]} -> {args.output}")
         result = compiler.compile_file(args.source[0], args.output)
         if not result.success:
             for e in result.errors:
@@ -207,6 +215,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     with tempfile.TemporaryDirectory(prefix="pycc_mf_") as td:
         for i, src in enumerate(args.source):
             obj = os.path.join(td, f"tu{i}.o")
+            if args.verbose:
+                print(f"[pycc] compile: {src} -> {obj}")
             res = compiler.compile_file(src, obj)
             if not res.success:
                 for e in res.errors:
@@ -215,6 +225,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             obj_paths.append(obj)
 
         # Link using system gcc.
+        if args.verbose:
+            print(f"[pycc] link: gcc -no-pie -o {args.output} {' '.join(obj_paths)}")
         link = subprocess.run(["gcc", "-no-pie", "-o", args.output, *obj_paths])
         if link.returncode != 0:
             print("Error: link failed")
