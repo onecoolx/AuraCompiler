@@ -106,14 +106,32 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="Write IR to pycc-tmp.ir (single input only; debug)",
     )
     ap.add_argument(
+        "--dump-ir-to",
+        dest="dump_ir_to",
+        metavar="PATH",
+        help="Write IR to PATH (single input only; debug)",
+    )
+    ap.add_argument(
         "--dump-asm",
         action="store_true",
         help="Write assembly to pycc-tmp.s (single input only; debug)",
     )
     ap.add_argument(
+        "--dump-asm-to",
+        dest="dump_asm_to",
+        metavar="PATH",
+        help="Write assembly to PATH (single input only; debug)",
+    )
+    ap.add_argument(
         "--dump-tokens",
         action="store_true",
         help="Write lexer tokens to pycc-tmp.tokens (single input only; debug)",
+    )
+    ap.add_argument(
+        "--dump-tokens-to",
+        dest="dump_tokens_to",
+        metavar="PATH",
+        help="Write lexer tokens to PATH (single input only; debug)",
     )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
@@ -318,7 +336,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         compile_defines.pop(name, None)
 
-    if args.dump_tokens:
+    if args.dump_tokens or args.dump_tokens_to:
         if len(args.source) != 1:
             print("Error: --dump-tokens currently supports exactly one input file")
             return 1
@@ -336,7 +354,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print("Error:", e)
                 return 1
             toks = cc.get_tokens(pres.assembly or "")
-            out_t = "pycc-tmp.tokens"
+            out_t = args.dump_tokens_to or "pycc-tmp.tokens"
             with open(out_t, "w", encoding="utf-8") as f:
                 for t in toks:
                     # Token has a useful __repr__/__str__ in this codebase.
@@ -347,7 +365,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Error: {e}")
             return 1
 
-    if args.dump_asm:
+    if args.dump_asm or args.dump_asm_to:
         if len(args.source) != 1:
             print("Error: --dump-asm currently supports exactly one input file")
             return 1
@@ -357,7 +375,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 1
         try:
             src = args.source[0]
-            out_s = "pycc-tmp.s"
+            out_s = args.dump_asm_to or "pycc-tmp.s"
             cc = Compiler(
                 optimize=not args.no_opt,
                 include_paths=args.include_dirs,
@@ -375,7 +393,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"Error: {e}")
             return 1
 
-    if args.dump_ir:
+    if args.dump_ir or args.dump_ir_to:
         if len(args.source) != 1:
             print("Error: --dump-ir currently supports exactly one input file")
             return 1
@@ -401,7 +419,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             sema_ctx, _ = c.analyze_semantics(ast)
             ir_list = c.get_ir(ast, sema_ctx=sema_ctx)
 
-            out_ir = "pycc-tmp.ir"
+            out_ir = args.dump_ir_to or "pycc-tmp.ir"
             with open(out_ir, "w", encoding="utf-8") as f:
                 for ins in ir_list:
                     f.write(str(ins) + "\n")
