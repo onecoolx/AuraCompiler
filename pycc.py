@@ -42,7 +42,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="append",
         default=[],
         metavar="NAME[=VALUE]",
-        help="Define a macro for preprocessing (subset; -E only)",
+        help="Define a macro for preprocessing (subset)",
     )
     ap.add_argument(
         "-U",
@@ -50,7 +50,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="append",
         default=[],
         metavar="NAME",
-        help="Undefine a macro for preprocessing (subset; -E only)",
+        help="Undefine a macro for preprocessing (subset)",
     )
     ap.add_argument(
         "-I",
@@ -58,7 +58,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="append",
         default=[],
         metavar="DIR",
-        help="Add an include directory for preprocessing (subset; -E only)",
+        help="Add an include directory for preprocessing (subset)",
     )
     ap.add_argument(
         "-v",
@@ -175,13 +175,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             sys.stdout.write(text)
         return 0
 
-    # -E is handled above. For now, disallow preprocessor-only options when
-    # actually compiling, to avoid surprising partial behavior.
-    if (args.defines or args.undefines or args.include_dirs) and not args.use_system_cpp:
-        # The built-in preprocessor supports these flags, but our CLI help text
-        # previously documented them as "-E only". Keep the behavior strict and
-        # predictable; users can opt-in to system-cpp preprocessing.
-        pass
+    # NOTE: -D/-U/-I are accepted for compilation as well; they are wired into
+    # Compiler(define/include_paths) below. The help text previously said
+    # "-E only"; that is outdated and should be updated in a follow-up.
 
     # If --print-asm, we may override output path to a temporary .s file.
     temp_asm_path: Optional[str] = None
