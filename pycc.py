@@ -76,6 +76,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         action="store_true",
         help="Print generated assembly to stdout (single input only; implies -S)",
     )
+    ap.add_argument(
+        "--save-temps",
+        action="store_true",
+        help="Keep intermediate files (.i/.s/.o) when possible",
+    )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     args = ap.parse_args(argv)
@@ -170,7 +175,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             sys.stdout.write(text)
         return 0
 
-    # If --print-asm, we will override output path to a temporary .s file.
+    # If --print-asm, we may override output path to a temporary .s file.
     temp_asm_path: Optional[str] = None
 
     if not args.output:
@@ -192,10 +197,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # If --print-asm is set, always compile to a temp `.s`.
     if args.print_asm:
-        fd, temp = tempfile.mkstemp(prefix="pycc_", suffix=".s")
-        os.close(fd)
-        temp_asm_path = temp
-        args.output = temp_asm_path
+        if args.save_temps:
+            # Save in current working directory using a stable name.
+            args.output = "pycc-tmp.s"
+        else:
+            fd, temp = tempfile.mkstemp(prefix="pycc_", suffix=".s")
+            os.close(fd)
+            temp_asm_path = temp
+            args.output = temp_asm_path
 
     # If -S/-c were requested, ensure the output extension matches.
     if args.S and not str(args.output).endswith(".s"):
@@ -252,7 +261,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 1
             finally:
                 try:
-                    if temp_asm_path:
+                    if temp_asm_path and not args.save_temps:
                         os.unlink(temp_asm_path)
                 except OSError:
                     pass
