@@ -391,9 +391,35 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Single input: preserve previous behavior.
     if len(args.source) == 1:
-        if args.verbose:
-            print(f"[pycc] compile: {args.source[0]} -> {args.output}")
-        result = compiler.compile_file(args.source[0], args.output)
+        # gcc-style: '-' means read source from stdin.
+        if args.source[0] == "-":
+            try:
+                src_text = sys.stdin.read()
+            except Exception as e:
+                print(f"Error: cannot read stdin: {e}")
+                return 1
+            # Write to a temporary .c file so we can keep using compile_file.
+            try:
+                fd, tmp_c = tempfile.mkstemp(prefix="pycc_stdin_", suffix=".c")
+                os.close(fd)
+                with open(tmp_c, "w", encoding="utf-8") as f:
+                    f.write(src_text)
+            except OSError as e:
+                print(f"Error: cannot create temp source file: {e}")
+                return 1
+            try:
+                if args.verbose:
+                    print(f"[pycc] compile: <stdin> -> {args.output}")
+                result = compiler.compile_file(tmp_c, args.output)
+            finally:
+                try:
+                    os.unlink(tmp_c)
+                except OSError:
+                    pass
+        else:
+            if args.verbose:
+                print(f"[pycc] compile: {args.source[0]} -> {args.output}")
+            result = compiler.compile_file(args.source[0], args.output)
         if not result.success:
             for e in result.errors:
                 print("Error:", e)
