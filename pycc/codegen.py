@@ -1476,18 +1476,22 @@ class CodeGenerator:
             # load based on member size
             if sz == 1:
                 # Best-effort signedness for 1-byte members.
+                # Default C89: plain `char` is implementation-defined. This
+                # backend treats `char` as signed.
                 mem_ty = None
                 try:
                     mem_ty = self._resolve_member_type(base, member)
                 except Exception:
                     mem_ty = None
 
-                if mem_ty is None or (isinstance(mem_ty, str) and mem_ty.strip().lower().startswith("signed char")):
-                    self._emit("  movsbl (%rax), %eax")
-                    self._emit("  movslq %eax, %rax")
-                else:
+                mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
+                is_unsigned = mem_ty_s.startswith("unsigned char")
+                if is_unsigned:
                     self._emit("  movzbl (%rax), %eax")
                     self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  movsbl (%rax), %eax")
+                    self._emit("  movslq %eax, %rax")
             elif sz == 4:
                 self._emit("  movl (%rax), %eax")
                 self._emit("  movl %eax, %eax")
@@ -1515,12 +1519,14 @@ class CodeGenerator:
                     mem_ty = self._resolve_member_type(base, member)
                 except Exception:
                     mem_ty = None
-                if mem_ty is None or (isinstance(mem_ty, str) and mem_ty.strip().lower().startswith("signed char")):
-                    self._emit("  movsbl (%rax), %eax")
-                    self._emit("  movslq %eax, %rax")
-                else:
+                mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
+                is_unsigned = mem_ty_s.startswith("unsigned char")
+                if is_unsigned:
                     self._emit("  movzbl (%rax), %eax")
                     self._emit("  movl %eax, %eax")
+                else:
+                    self._emit("  movsbl (%rax), %eax")
+                    self._emit("  movslq %eax, %rax")
             elif sz == 4:
                 self._emit("  movl (%rax), %eax")
                 self._emit("  movl %eax, %eax")
@@ -1824,12 +1830,16 @@ class CodeGenerator:
                 if isinstance(gty, str) and gty.strip().startswith("function"):
                     self._emit(f"  leaq {sym}(%rip), {reg}")
                     return
-            # Global objects: load based on what was declared in this TU.
+            # Global objects: if this is an aggregate (struct/union/array), then
+            # loading it as a scalar is almost always wrong. Prefer returning
+            # its address so member/index operations can proceed correctly.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-            if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
+            if isinstance(ty, str) and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")):
+                self._emit(f"  leaq {sym}(%rip), {reg}")
+            elif isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
                 self._emit(f"  movq {sym}(%rip), {reg}")
             else:
-                # MVP default: 32-bit signed int
+                # default scalar global: 32-bit signed int
                 self._emit(f"  movslq {sym}(%rip), {reg}")
             return
         # label address?

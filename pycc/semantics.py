@@ -64,6 +64,9 @@ class StructLayout:
     align: int
     member_offsets: Dict[str, int]
     member_sizes: Dict[str, int]
+    # Best-effort type strings for members (e.g. "int", "struct S").
+    # Used by IR/codegen for nested aggregate handling.
+    member_types: Dict[str, str] | None = None
 
 
 @dataclass
@@ -369,15 +372,25 @@ class SemanticAnalyzer:
         # MVP: only handle members of builtin int/char and pointers.
         offsets: Dict[str, int] = {}
         sizes: Dict[str, int] = {}
+        mtypes: Dict[str, str] = {}
 
         def size_align(ty: Type) -> Tuple[int, int]:
             if ty.is_pointer:
                 return 8, 8
+            # Nested aggregates.
+            if isinstance(ty.base, str) and (ty.base.startswith("struct ") or ty.base.startswith("union ")):
+                key = ty.base.strip()
+                lay = self._layouts.get(key)
+                if lay is not None and getattr(lay, "size", 0):
+                    try:
+                        return int(lay.size), int(lay.align or 1)
+                    except Exception:
+                        return int(lay.size), 1
             if ty.base == "int":
                 return 4, 4
             if ty.base == "char":
                 return 1, 1
-            # unknown types treated as 8-byte
+            # unknown types treated as 8-byte aligned scalar
             return 8, 8
 
         off = 0
@@ -386,6 +399,19 @@ class SemanticAnalyzer:
 
         for m in members:
             sz, al = size_align(m.type)
+            # This compiler doesn't currently model `double`/`long double`, but
+            # on x86-64 we still ensure struct alignment is at least 8 when it
+            # contains a pointer or an 8-byte member.
+            if sz >= 8:
+                al = max(al, 8)
+            # Track member base type spelling for downstream (nested) init.
+            try:
+                if getattr(m.type, "is_pointer", False):
+                    mtypes[m.name] = f"{m.type.base}*"
+                else:
+                    mtypes[m.name] = str(m.type.base)
+            except Exception:
+                mtypes[m.name] = str(getattr(m, "type", ""))
             max_align = max(max_align, al)
             if kind == "struct":
                 # align current offset
@@ -406,7 +432,7 @@ class SemanticAnalyzer:
         if kind == "struct" and size % max_align != 0:
             size += (max_align - (size % max_align))
 
-        return StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes)
+        return StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes)
 
     # -----------------
     # Scopes

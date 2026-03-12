@@ -590,14 +590,19 @@ class IRGenerator:
 
         # Struct/union
         if self._is_struct_or_union_type(base):
-            inits = self._const_initializer_list(init)
-            if inits is None:
+            # Support nested initializer lists for structs/unions using
+            # member-order mapping with brace elision and zero-fill.
+            inits0 = self._const_initializer_list(init)
+            if inits0 is None:
                 return None
             if self._sema_ctx is None:
                 return None
             layout = getattr(self._sema_ctx, "layouts", {}).get(str(base))
             if layout is None:
                 return None
+
+            # (We no longer flatten scalars for structs; nested aggregate member
+            # boundaries matter. We'll write directly from the initializer AST.)
 
             size = int(getattr(layout, "size", 0))
             blob = bytearray([0] * size)
@@ -631,7 +636,7 @@ class IRGenerator:
                 out = bytearray()
                 cur = 0
                 for midx, m in enumerate(members):
-                    if midx >= len(inits):
+                    if midx >= len(inits0):
                         break
                     mty = mtypes.get(m)
                     if not isinstance(mty, str):
@@ -643,7 +648,7 @@ class IRGenerator:
                         if pad:
                             out.extend(b"\x00" * pad)
                             cur += pad
-                    imm = self._const_expr_to_int(inits[midx])
+                    imm = self._const_expr_to_int(inits0[midx])
                     if imm is None:
                         return None
                     v = int(imm)
@@ -655,22 +660,125 @@ class IRGenerator:
                 return "blob:" + out.hex()
 
             # Normal case: use semantics-provided member offsets/sizes.
-            for midx, m in enumerate(members):
-                if midx >= len(inits):
-                    break
-                imm = self._const_expr_to_int(inits[midx])
-                if imm is None:
-                    return None
-                off = int(offsets.get(m, 0))
-                sz = int(sizes.get(m, 4))
-                v = int(imm)
-                for i in range(min(sz, 8)):
-                    if off + i < len(blob):
-                        blob[off + i] = (v >> (8 * i)) & 0xFF
+            # For structs/unions, initializer elements map to members in order.
+            # If a member is itself an aggregate, its initializer element must
+            # be handled as a sub-initializer (brace list or scalar with brace
+            # elision), rather than flattening scalars across member boundaries.
+
+            def _write_struct_from_init(ty_name: str, init_any: Any, base_off: int) -> bool:
+                layout3 = getattr(self._sema_ctx, "layouts", {}).get(str(ty_name))
+                if layout3 is None:
+                    return False
+                members3 = list(getattr(layout3, "member_offsets", {}).keys())
+                offsets3 = getattr(layout3, "member_offsets", {})
+                sizes3 = getattr(layout3, "member_sizes", {})
+                mtypes3 = getattr(layout3, "member_types", {})
+
+                elems3 = self._const_initializer_list(init_any)
+                if elems3 is None:
+                    # scalar shorthand initializes first member only
+                    elems3 = [init_any]
+
+                for midx, m in enumerate(members3):
+                    mty = mtypes3.get(m)
+                    member_off = base_off + int(offsets3.get(m, 0))
+
+                    # Arrays are aggregates too. For global/static constant
+                    # initializers, brace elision can apply when the member is an
+                    # array and the initializer element is a scalar.
+                    if isinstance(mty, str) and mty.startswith("array("):
+                        if midx < len(elems3):
+                            sub_any = elems3[midx]
+                            if not isinstance(sub_any, Initializer):
+                                sub_any = Initializer(
+                                    elements=[(None, sub_any)],
+                                    line=getattr(decl, "line", 0),
+                                    column=getattr(decl, "column", 0),
+                                )
+                        else:
+                            sub_any = Initializer(elements=[], line=getattr(decl, "line", 0), column=getattr(decl, "column", 0))
+                        sub_blob = self._const_initializer_blob_for_type(mty, sub_any)
+                        if sub_blob is None:
+                            return False
+                        sub_bytes = bytes.fromhex(sub_blob.split(":", 1)[1])
+                        end = min(len(blob), member_off + len(sub_bytes))
+                        blob[member_off:end] = sub_bytes[: max(0, end - member_off)]
+                        continue
+
+                    if isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                        if midx < len(elems3):
+                            sub = elems3[midx]
+                            if isinstance(sub, Initializer):
+                                sub_init = sub
+                            else:
+                                # Brace elision / implicit subobject consumption:
+                                # If the member is an aggregate and the current
+                                # element is scalar, C allows that scalar to
+                                # initialize the first submember, while
+                                # subsequent top-level elements continue to
+                                # initialize subsequent submembers.
+                                sub_init = Initializer(
+                                    elements=[(None, sub)],
+                                    line=getattr(decl, "line", 0),
+                                    column=getattr(decl, "column", 0),
+                                )
+                                # If there is a next top-level element, treat it
+                                # as the next initializer for the next submember.
+                                if midx + 1 < len(elems3):
+                                    sub_init.elements.append((None, elems3[midx + 1]))
+                        else:
+                            sub_init = Initializer(elements=[], line=getattr(decl, "line", 0), column=getattr(decl, "column", 0))
+                        if not _write_struct_from_init(str(mty), sub_init, member_off):
+                            return False
+                        # If we consumed an extra element for the aggregate member
+                        # (implicit subobject consumption), skip it.
+                        if (midx < len(elems3)) and (not isinstance(elems3[midx], Initializer)) and (midx + 1 < len(elems3)):
+                            # Advance by one additional element.
+                            elems3.pop(midx + 1)
+                        continue
+
+                    # If there's no initializer element for this scalar member,
+                    # it remains zero-filled.
+                    if midx >= len(elems3):
+                        break
+                    # Scalar member cannot be initialized by a brace list.
+                    if isinstance(elems3[midx], Initializer):
+                        return False
+                    imm = self._const_expr_to_int(elems3[midx])
+                    if imm is None:
+                        return False
+                    sz = int(sizes3.get(m, 4))
+                    v = int(imm)
+                    for i in range(min(sz, 8)):
+                        if 0 <= member_off + i < len(blob):
+                            blob[member_off + i] = (v >> (8 * i)) & 0xFF
+                return True
+
+            if not _write_struct_from_init(str(base), init, 0):
+                return None
 
             return "blob:" + blob.hex()
 
         return None
+
+    def _const_initializer_blob_for_type(self, ty_name: str, init_any: Any) -> Optional[str]:
+        """Build a constant initializer blob for an arbitrary type.
+
+        This is a helper for recursive aggregate members (e.g. struct members
+        that are arrays). It is intentionally a small wrapper around the
+        existing declaration-based blob packer.
+        """
+
+        class _FakeDecl:
+            def __init__(self, name: str, type_name: str, initializer: Any):
+                self.name = name
+                self.type = type_name
+                self.initializer = initializer
+                self.line = getattr(initializer, "line", 0)
+                self.column = getattr(initializer, "column", 0)
+
+        fake = _FakeDecl("__pycc_const_init__", str(ty_name), init_any)
+        return self._const_initializer_blob(fake)  # type: ignore[arg-type]
 
     def _const_expr_to_int(self, expr: Any) -> Optional[int]:
         """Best-effort const int evaluator (subset)."""
@@ -902,8 +1010,8 @@ class IRGenerator:
     def _const_initializer_list(self, init: Any) -> Optional[list[Any]]:
         """Decode a non-designated initializer-list into a flat list.
 
-        This is currently used only for *local* aggregate initialization.
-        Global aggregates are deferred to a later milestone.
+        Used by both local aggregate initialization helpers and the global
+        constant-initializer blob packer.
         """
 
         if isinstance(init, Initializer):

@@ -560,6 +560,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         if len(args.source) != 1:
             print("Error: --dump-preprocessed-only-to currently supports exactly one input file")
             return 1
+        # gcc-style: '-' means read source from stdin.
+        # But allow `-- -` to refer to a literal file named '-'.
+        src_is_temp = False
+        if stdin_dash_allowed and args.source[0] == "-":
+            try:
+                src_text = sys.stdin.read()
+            except Exception as e:
+                print(f"Error: cannot read stdin: {e}")
+                return 1
+            fd, tmp_c = tempfile.mkstemp(prefix="pycc_stdin_", suffix=".c")
+            os.close(fd)
+            try:
+                with open(tmp_c, "w", encoding="utf-8") as f:
+                    f.write(src_text)
+                args.source[0] = tmp_c
+                src_is_temp = True
+            except OSError as e:
+                print(f"Error: cannot write temp source: {e}")
+                try:
+                    os.unlink(tmp_c)
+                except OSError:
+                    pass
+                return 1
         try:
             c = Compiler(
                 optimize=False,
@@ -580,6 +603,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         except Exception as e:
             print(f"Error: {e}")
             return 1
+        finally:
+            if src_is_temp:
+                try:
+                    os.unlink(args.source[0])
+                except OSError:
+                    pass
 
     if args.dump_preprocessed or args.dump_preprocessed_to:
         if len(args.source) != 1:
