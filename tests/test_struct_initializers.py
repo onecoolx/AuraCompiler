@@ -38,3 +38,39 @@ int main(){
 }
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
+
+    def test_local_nested_struct_zero_fill(tmp_path):
+        code = r"""
+        struct B { int x; int y; };
+        struct A { int a; struct B b; int c; };
+
+        int main() {
+            struct A s = { 1, { 2 } };
+            if (s.a != 1) return 1;
+            if (s.b.x != 2) return 2;
+            if (s.b.y != 0) return 3;
+            if (s.c != 0) return 4;
+            return 0;
+        }
+        """
+
+        res = _compile_and_run(tmp_path, code)
+        assert res == 0
+
+    def test_local_nested_struct_brace_elision(tmp_path):
+        code = r"""
+        struct B { int x; int y; };
+        struct A { int a; struct B b; int c; };
+
+        int main() {
+            struct A s = { 1, 2, 3 };
+            if (s.a != 1) return 1;
+            if (s.b.x != 2) return 2;
+            if (s.b.y != 3) return 3;
+            if (s.c != 0) return 4;
+            return 0;
+        }
+        """
+
+        res = _compile_and_run(tmp_path, code)
+        assert res == 0

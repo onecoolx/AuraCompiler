@@ -1092,7 +1092,7 @@ class IRGenerator:
 
         Subset:
         - non-designated initializer list
-        - direct fields only (no nested aggregates)
+        - nested aggregates (struct/union) with brace elision
         - remaining fields are zero-filled
 
         Returns True if handled.
@@ -1114,15 +1114,91 @@ class IRGenerator:
         # Preserve declared type on the symbol so codegen can resolve member offsets/sizes.
         self._var_types[f"@{decl.name}"] = str(decl.type.base)
 
-        # Parse initializer list elements in order (designators unsupported here).
-        elems = [e for (_d, e) in (decl.initializer.elements or [])]
-        members = list(layout.member_offsets.keys())
+        def _init_elems(init_any: Any) -> list[Any]:
+            elems0 = self._const_initializer_list(init_any)
+            if elems0 is None:
+                return [init_any]
+            return elems0
 
-        for i, m in enumerate(members):
-            val_expr = elems[i] if i < len(elems) else IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
-            v = self._gen_expr(val_expr)
-            # Use store_member; codegen consults semantic layout for offset/size.
-            self.instructions.append(IRInstruction(op="store_member", result=v, operand1=f"@{decl.name}", operand2=m))
+        def _member_count(ty_name: str) -> int:
+            layout_n = getattr(self._sema_ctx, "layouts", {}).get(str(ty_name))
+            if layout_n is None:
+                return 1
+            return max(1, len(getattr(layout_n, "member_offsets", {}) or {}))
+
+        def _lower_struct_init(base_sym: str, base_is_ptr: bool, ty_name: str, init_any: Any) -> bool:
+            layout_n = getattr(self._sema_ctx, "layouts", {}).get(str(ty_name))
+            if layout_n is None:
+                return False
+            members_n = list(layout_n.member_offsets.keys())
+            mtypes_n = getattr(layout_n, "member_types", {})
+            elems_n = _init_elems(init_any)
+
+            eidx = 0
+            for m in members_n:
+                mty = mtypes_n.get(m)
+
+                # If we ran out of initializer elements, zero-fill remaining members.
+                if eidx >= len(elems_n):
+                    val_expr = IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
+                    if base_is_ptr:
+                        v = self._gen_expr(val_expr)
+                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m))
+                    else:
+                        v = self._gen_expr(val_expr)
+                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m))
+                    continue
+
+                elem0 = elems_n[eidx]
+
+                if isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                    # Aggregate member.
+                    if isinstance(elem0, Initializer):
+                        sub_init = elem0
+                        eidx += 1
+                    else:
+                        # Brace elision: consume scalars for nested members.
+                        take = _member_count(str(mty))
+                        sub_elems: list[Any] = []
+                        for _ in range(take):
+                            if eidx >= len(elems_n):
+                                break
+                            if isinstance(elems_n[eidx], Initializer):
+                                break
+                            sub_elems.append(elems_n[eidx])
+                            eidx += 1
+                        sub_init = Initializer(
+                            elements=[(None, e) for e in sub_elems],
+                            line=getattr(decl, "line", 0),
+                            column=getattr(decl, "column", 0),
+                        )
+
+                    # Compute pointer to member and recurse.
+                    taddr = self._new_temp()
+                    if base_is_ptr:
+                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m))
+                    else:
+                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m))
+                    self._var_types[taddr] = f"{mty}*"
+                    if not _lower_struct_init(taddr, True, str(mty), sub_init):
+                        return False
+                    continue
+
+                # Scalar member.
+                if isinstance(elem0, Initializer):
+                    return False
+                v = self._gen_expr(elem0)
+                if base_is_ptr:
+                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m))
+                else:
+                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m))
+                eidx += 1
+
+            return True
+
+        # Parse initializer list elements in order (designators unsupported here).
+        if not _lower_struct_init(f"@{decl.name}", False, str(decl.type.base), decl.initializer):
+            return False
         return True
 
     # -------------

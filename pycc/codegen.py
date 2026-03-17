@@ -304,6 +304,8 @@ class CodeGenerator:
 
         # First try semantic layouts using base type info.
         ty = self._var_types.get(base)
+        if isinstance(ty, str) and ty.strip().endswith("*"):
+            ty = ty.strip()[:-1].strip()
         if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@") and self._sema_ctx is not None:
             ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
 
@@ -821,6 +823,18 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             # best-effort propagate pointer type: if base is a struct/union symbol,
             # treat result as pointer-to-member's scalar size is handled on load/store.
+            return
+
+        if op == "addr_of_member_ptr":
+            # result = &operand1->member
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            # Load pointer value into %rax then add member offset.
+            self._load_operand(base, "%rax")
+            off = self._resolve_member_offset(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            self._store_result(ins.result, "%rax")
             return
 
         if op == "unop":
