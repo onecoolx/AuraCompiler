@@ -19,8 +19,6 @@ def test_global_nested_struct_zero_fill() -> None:
     # NOTE: currently fails because global const-initializer blob packing does
     # not yet place nested aggregate fields at the correct offsets.
     # Kept as an xfail to drive the next milestone.
-    import pytest
-    pytest.xfail("global nested aggregate initializer blob packing not implemented correctly yet")
     code = textwrap.dedent(
         r"""
         struct B { int x; int y; };
