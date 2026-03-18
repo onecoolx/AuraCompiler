@@ -788,6 +788,9 @@ class Preprocessor:
         # This is needed for multi-line macros like:
         #   #define A 1 \
         #             + 2
+        # and for header-names split across lines:
+        #   #include "a\
+        #            .h"
         def _logical_lines(lines: List[str]) -> List[str]:
             out: List[str] = []
             i = 0
@@ -796,7 +799,9 @@ class Preprocessor:
                 if line.lstrip().startswith("#"):
                     joined = line
                     while joined.rstrip("\n").endswith("\\") and i + 1 < len(lines):
-                        # Drop the trailing backslash and newline, then insert a single space.
+                        # Line splicing: remove the backslash-newline pair.
+                        # For directives we keep behavior simple by inserting a single space
+                        # to avoid accidental token pasting.
                         joined = joined.rstrip("\n")
                         joined = joined[:-1]  # remove '\\'
                         i += 1
@@ -813,6 +818,30 @@ class Preprocessor:
         for line in _logical_lines(raw):
             logical_line_no += 1
             line, in_block_comment = self._strip_comments(line, in_block_comment)
+
+            # Handle directive line splices that occur inside header-names.
+            # Our directive joining above only joins when the directive physical line
+            # itself ends with a backslash. For `#include "a\
+            # .h"`, the backslash occurs inside the string literal and the physical
+            # line does not end with '\\'. As a subset, if we see a directive that
+            # contains an odd number of double quotes, join with the next physical line.
+            if line.lstrip().startswith("#") and line.count('"') % 2 == 1:
+                # Join subsequent physical lines until quotes are balanced.
+                # Remove the backslash-newline pair at the join point.
+                joined = line
+                # Use the original raw physical lines; logical_line_no is 1-based index
+                # for the current directive line.
+                while joined.count('"') % 2 == 1 and logical_line_no < len(raw):
+                    nxt = raw[logical_line_no]
+                    # If the current joined line ends with a backslash-newline, splice it.
+                    if joined.endswith("\\\n"):
+                        joined = joined[:-2]
+                    else:
+                        joined = joined.rstrip("\n")
+                    joined += nxt
+                    logical_line_no += 1
+                line = joined
+                line, in_block_comment = self._strip_comments(line, in_block_comment)
 
             if self._include_next_re.match(line):
                 raise RuntimeError("unsupported directive: #include_next")
@@ -1069,7 +1098,7 @@ class Preprocessor:
             # Includes (subset)
             miq = self._include_quote_re.match(line)
             if miq:
-                inc_name = miq.group(1)
+                inc_name = miq.group(1).replace(" ", "").replace("\t", "")
                 search_paths = [base_dir, *self._include_paths]
                 inc_path = self._resolve_include(inc_name, search_paths, include_stack=list(stack))
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
@@ -1077,11 +1106,57 @@ class Preprocessor:
 
             mia = self._include_angle_re.match(line)
             if mia:
-                inc_name = mia.group(1).strip()
+                inc_name = mia.group(1).strip().replace(" ", "").replace("\t", "")
                 search_paths = [*self._include_paths]
                 inc_path = self._resolve_include(inc_name, search_paths, include_stack=list(stack))
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
+
+            # Include header-name line splices (subset):
+            # handle directives like:
+            #   #include "a\
+            #            .h"
+            # and
+            #   #include <x\
+            #            y.h>
+            # by joining the physical lines and re-processing the logical directive.
+            if line.lstrip().startswith("#") and line.rstrip("\n").endswith("\\"):
+                joined = line
+                # The current line is a directive with a trailing backslash, so it must
+                # be a physical-line splice. Join subsequent lines until splice ends.
+                # NOTE: This is intentionally limited to directives.
+                while joined.rstrip("\n").endswith("\\") and logical_line_no < len(raw):
+                    # Remove backslash-newline.
+                    joined = joined.rstrip("\n")
+                    joined = joined[:-1]
+
+                    # Peek next physical line (approximate using raw list and the
+                    # current logical line number). If we cannot, break.
+                    nxt_idx = logical_line_no
+                    if nxt_idx >= len(raw):
+                        break
+                    joined += raw[nxt_idx]
+
+                    # Advance the logical line number to keep effective line mapping sane.
+                    logical_line_no += 1
+                # Re-run this logical directive by inserting it into the output stream.
+                # We do this by processing it through the normal include regexes.
+                # Strip comments for safety.
+                joined, in_block_comment = self._strip_comments(joined, in_block_comment)
+                miq2 = self._include_quote_re.match(joined)
+                if miq2:
+                    inc_name2 = miq2.group(1).replace(" ", "").replace("\t", "")
+                    search_paths = [base_dir, *self._include_paths]
+                    inc_path = self._resolve_include(inc_name2, search_paths, include_stack=list(stack))
+                    out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                    continue
+                mia2 = self._include_angle_re.match(joined)
+                if mia2:
+                    inc_name2 = mia2.group(1).strip().replace(" ", "").replace("\t", "")
+                    search_paths = [*self._include_paths]
+                    inc_path = self._resolve_include(inc_name2, search_paths, include_stack=list(stack))
+                    out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                    continue
 
             # Macro-expanded include operand (subset):
             #   #define HEADER "a.h"
