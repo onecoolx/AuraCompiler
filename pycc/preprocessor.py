@@ -1100,7 +1100,13 @@ class Preprocessor:
             if miq:
                 inc_name = miq.group(1).replace(" ", "").replace("\t", "")
                 search_paths = [base_dir, *self._include_paths]
-                inc_path = self._resolve_include(inc_name, search_paths, include_stack=list(stack))
+                inc_path = self._resolve_include(
+                    inc_name,
+                    search_paths,
+                    include_stack=list(stack),
+                    includer=abspath,
+                    includer_line=logical_line_no,
+                )
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
 
@@ -1108,7 +1114,13 @@ class Preprocessor:
             if mia:
                 inc_name = mia.group(1).strip().replace(" ", "").replace("\t", "")
                 search_paths = [*self._include_paths]
-                inc_path = self._resolve_include(inc_name, search_paths, include_stack=list(stack))
+                inc_path = self._resolve_include(
+                    inc_name,
+                    search_paths,
+                    include_stack=list(stack),
+                    includer=abspath,
+                    includer_line=logical_line_no,
+                )
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
 
@@ -1147,14 +1159,26 @@ class Preprocessor:
                 if miq2:
                     inc_name2 = miq2.group(1).replace(" ", "").replace("\t", "")
                     search_paths = [base_dir, *self._include_paths]
-                    inc_path = self._resolve_include(inc_name2, search_paths, include_stack=list(stack))
+                    inc_path = self._resolve_include(
+                        inc_name2,
+                        search_paths,
+                        include_stack=list(stack),
+                        includer=abspath,
+                        includer_line=logical_line_no,
+                    )
                     out_lines.append(self._preprocess_file(inc_path, stack, macros))
                     continue
                 mia2 = self._include_angle_re.match(joined)
                 if mia2:
                     inc_name2 = mia2.group(1).strip().replace(" ", "").replace("\t", "")
                     search_paths = [*self._include_paths]
-                    inc_path = self._resolve_include(inc_name2, search_paths, include_stack=list(stack))
+                    inc_path = self._resolve_include(
+                        inc_name2,
+                        search_paths,
+                        include_stack=list(stack),
+                        includer=abspath,
+                        includer_line=logical_line_no,
+                    )
                     out_lines.append(self._preprocess_file(inc_path, stack, macros))
                     continue
 
@@ -1175,7 +1199,13 @@ class Preprocessor:
                         search_paths = [base_dir, *self._include_paths]
                     else:
                         search_paths = [*self._include_paths]
-                    inc_path = self._resolve_include(inc_name2, search_paths, include_stack=list(stack))
+                    inc_path = self._resolve_include(
+                        inc_name2,
+                        search_paths,
+                        include_stack=list(stack),
+                        includer=abspath,
+                        includer_line=logical_line_no,
+                    )
                     out_lines.append(self._preprocess_file(inc_path, stack, macros))
                     continue
 
@@ -1586,15 +1616,26 @@ class Preprocessor:
             args.append(tail)
         return args
 
-    def _resolve_include(self, inc_name: str, search_paths: List[str], *, include_stack: Optional[List[str]] = None) -> str:
+    def _resolve_include(
+        self,
+        inc_name: str,
+        search_paths: List[str],
+        *,
+        include_stack: Optional[List[str]] = None,
+        includer: Optional[str] = None,
+        includer_line: Optional[int] = None,
+    ) -> str:
         for d in search_paths:
             cand = os.path.abspath(os.path.join(d, inc_name))
             if os.path.isfile(cand):
                 return cand
         shown = ", ".join(search_paths[:10])
         more = "" if len(search_paths) <= 10 else f" (+{len(search_paths) - 10} more)"
+        loc = ""
+        if includer and includer_line is not None:
+            loc = f" (at {os.path.basename(includer)}:{includer_line})"
         stack_msg = ""
         if include_stack:
             # Show the inclusion chain (outermost -> innermost).
             stack_msg = " (include stack: " + " -> ".join(os.path.basename(p) for p in include_stack) + ")"
-        raise RuntimeError(f"cannot find include: {inc_name} (searched: {shown}{more}){stack_msg}")
+        raise RuntimeError(f"cannot find include: {inc_name}{loc} (searched: {shown}{more}){stack_msg}")
