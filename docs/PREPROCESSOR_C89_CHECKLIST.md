@@ -23,14 +23,14 @@ Notes:
 Counts below are *checklist-item counts* (not lines of code).
 
 - Core directive parsing + inactive-region rules: **[x] 9 / 9**
-- Includes + include search: **[~] 8 / 12**
+- Includes + include search: **[~] 9 / 12**
 - Macro definitions (object/function) + expansion engine: **[~] 12 / 26**
 - Operators `#` / `##`: **[~] 5 / 10**
 - Conditional expressions (`#if` / `#elif`): **[~] 12 / 18**
 - Predefined macros (C89 set): **[~] 4 / 6**
 - Line control / diagnostics behavior: **[~] 2 / 6**
 
-Overall (this doc): **DONE 15 + PARTIAL 31 + TODO 40 = 86 items**
+Overall (this doc): **DONE 15 + PARTIAL 32 + TODO 39 = 86 items**
 
 Interpretation:
 - The project has a *broad* subset already, including many `#if` operators and several macro operators.
@@ -63,7 +63,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] `#pragma once` include-once semantics (subset) + path equivalence edges — `tests/test_preprocessor_pragma_once*.py`
 
 ### TODO (gap)
-- [ ] Macro-expanded include operands: `#include HEADER` / `#include STR(x)` (standard behavior)
+- [~] Macro-expanded include operands: `#include HEADER` / `#include STR(x)` (subset: expands to a header-name and then resolves it)
 - [ ] Full include search order parity for `""` vs `<>` (standard behavior)
 - [ ] `#include` with comments/line splices in header-name tokens (token-level correctness)
 - [~] Proper handling of missing includes: diagnostic quality + include stack reporting (include stack now shown; still missing richer range/caret formatting)

@@ -114,6 +114,7 @@ class Preprocessor:
     def __init__(self, *, include_paths: Optional[List[str]] = None) -> None:
         self._include_quote_re = re.compile(r"^\s*#\s*include\s*\"([^\"]+)\"\s*$")
         self._include_angle_re = re.compile(r"^\s*#\s*include\s*<([^>]+)>\s*$")
+        self._include_any_re = re.compile(r"^\s*#\s*include\s+(.+?)\s*$")
         self._include_next_re = re.compile(r"^\s*#\s*include_next\b.*$")
         self._define_re = re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s*(.*)$")
         self._undef_re = re.compile(r"^\s*#\s*undef\s+([A-Za-z_][A-Za-z0-9_]*)\s*$")
@@ -158,6 +159,46 @@ class Preprocessor:
 
         # Function-like macro storage: NAME -> (param_names, body)
         self._fn_macros: Dict[str, Tuple[List[str], str]] = {}
+
+    def _parse_header_name_from_include_operand(self, operand: str) -> Optional[Tuple[str, str]]:
+        """Parse an include operand into (kind, name).
+
+        kind:
+        - 'quote' for "file"
+        - 'angle' for <file>
+
+        Returns None if the operand isn't a header-name.
+        """
+
+        s = operand.strip()
+        if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+            return ("quote", s[1:-1])
+        if len(s) >= 2 and s[0] == '<' and s[-1] == '>':
+            return ("angle", s[1:-1].strip())
+        return None
+
+    def _expand_include_operand(self, operand: str, macros: Dict[str, str]) -> str:
+        """Expand macros inside a #include operand (subset).
+
+        Strategy (best-effort): run a normal line expansion on the operand as
+        if it were a line, then trim whitespace.
+        """
+
+        # Builtins are irrelevant here; do a best-effort macro expansion pass.
+        # Include operands often need *both* object-like and function-like rescans:
+        #   #define HDR STR("x.h")
+        #   #include HDR
+        # where HDR is object-like and STR is function-like.
+        cur = operand.strip()
+        for _ in range(20):
+            nxt = cur
+            nxt = self._expand_object_like_macros(nxt, macros)
+            nxt = self._expand_function_like_macros(nxt, macros)
+            nxt = nxt.strip()
+            if nxt == cur:
+                return cur
+            cur = nxt
+        return cur
 
     def _try_parse_line_directive(self, line: str) -> Optional[Tuple[int, str]]:
         """Parse `#line` directive.
@@ -1041,6 +1082,27 @@ class Preprocessor:
                 inc_path = self._resolve_include(inc_name, search_paths, include_stack=list(stack))
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
+
+            # Macro-expanded include operand (subset):
+            #   #define HEADER "a.h"
+            #   #include HEADER
+            # and
+            #   #define HDR STR("b.h")
+            #   #include HDR
+            mi_any = self._include_any_re.match(line)
+            if mi_any and include_stack[-1]:
+                operand = mi_any.group(1)
+                expanded = self._expand_include_operand(operand, macros)
+                parsed = self._parse_header_name_from_include_operand(expanded)
+                if parsed is not None:
+                    kind, inc_name2 = parsed
+                    if kind == "quote":
+                        search_paths = [base_dir, *self._include_paths]
+                    else:
+                        search_paths = [*self._include_paths]
+                    inc_path = self._resolve_include(inc_name2, search_paths, include_stack=list(stack))
+                    out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                    continue
 
             if logical_line_base is None:
                 effective_line_no = logical_line_no
