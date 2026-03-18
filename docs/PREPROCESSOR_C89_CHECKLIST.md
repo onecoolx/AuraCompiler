@@ -90,7 +90,7 @@ These are required to safely process real-world code without crashing or mis-nes
 
 ### TODO (gap)
 - [ ] Variadic macros (C99+, but common): `...` / `__VA_ARGS__`
-- [ ] Full parameter substitution tokenization rules (no regex word-boundary hacks)
+- [~] Full parameter substitution tokenization rules (subset: token-based substitution avoids strings/chars; still missing full preprocessing-token model)
 - [ ] Full hide-set / rescanning semantics for both object-like and function-like
 - [ ] Expand macros across multiple tokens while preserving token boundaries
 - [ ] Correct whitespace preservation rules in macro replacement (standard)

@@ -1535,8 +1535,7 @@ class Preprocessor:
                         repl = self._apply_stringize(repl, p, a)
                     # Do parameter substitution first (so a##b turns into x##y),
                     # then do token-paste removal.
-                    for p, a in zip(params, args):
-                        repl = re.sub(rf"\b{re.escape(p)}\b", a, repl)
+                    repl = self._substitute_fn_params(repl, params=params, args=args)
                     repl = self._apply_token_paste_simple(repl)
                     # After token pasting, rescan the pasted result for object-like macros.
                     # This is a small subset of the C preprocessor behavior.
@@ -1556,6 +1555,75 @@ class Preprocessor:
             if not changed:
                 return out
         return out
+
+    def _substitute_fn_params(self, body: str, *, params: List[str], args: List[str]) -> str:
+        """Substitute function-like macro params in a replacement list (subset).
+
+        Requirements (subset):
+        - only replace identifier tokens that exactly match param names
+        - do not substitute inside string/char literals
+        """
+
+        if not params or not args:
+            return body
+
+        mapping = dict(zip(params, args))
+        out: List[str] = []
+        i = 0
+        n = len(body)
+
+        def is_ident_start(ch: str) -> bool:
+            return ch.isalpha() or ch == "_"
+
+        def is_ident_continue(ch: str) -> bool:
+            return ch.isalnum() or ch == "_"
+
+        while i < n:
+            ch = body[i]
+
+            # String literal
+            if ch == '"':
+                start = i
+                i += 1
+                while i < n:
+                    if body[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if body[i] == '"':
+                        i += 1
+                        break
+                    i += 1
+                out.append(body[start:i])
+                continue
+
+            # Char literal
+            if ch == "'":
+                start = i
+                i += 1
+                while i < n:
+                    if body[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if body[i] == "'":
+                        i += 1
+                        break
+                    i += 1
+                out.append(body[start:i])
+                continue
+
+            if is_ident_start(ch):
+                start = i
+                i += 1
+                while i < n and is_ident_continue(body[i]):
+                    i += 1
+                ident = body[start:i]
+                out.append(mapping.get(ident, ident))
+                continue
+
+            out.append(ch)
+            i += 1
+
+        return "".join(out)
 
     def _apply_stringize(self, body: str, param: str, arg: str) -> str:
         # Very small subset of stringize (#param):
