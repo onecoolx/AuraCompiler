@@ -1,6 +1,6 @@
 C89 Implementation Roadmap (Living)
 
-Last updated: 2026-03-10
+Last updated: 2026-03-18
 
 目标
 - 以可执行、可验证（tests）方式推进：
@@ -30,8 +30,8 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - **DONE** `&&`/`||` 短路：`tests/test_short_circuit.py`
 - **PARTIAL** 类型系统：整数提升/常见算术转换尚未完全实现（见阶段 2）
 
-补充（2026-03-10 现状）
-- `pytest -q`：**597 passed**（测试为准）。
+补充（2026-03-18 现状）
+- `pytest -q`：**642 passed**（测试为准）。
 - 目标平台关键 ABI 点已覆盖并有回归测试：
 	- SysV AMD64 variadic ABI：`printf` 类调用点 `%al` 规则、以及 `va_list` 传递给 libc `v*` 系列（`vsnprintf` 等）。
 	- 相关实现与不变量记录：`docs/ARCHITECTURE.md` → “2.6.1 Variadic functions and `va_list`”。
@@ -75,17 +75,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - 优先补齐 `&&` / `||` 短路（需要 IR 分支）并添加 side-effect 测试
 - 推进更完整的类型系统（整数提升/算术转换、指针运算）
 
-当前实现状态（pytest 通过：109 tests）
-- `typedef`
-- `struct`/`union` 基本布局与成员访问
-- `enum` 定义与枚举常量
-- `switch/case/default`（compare-chain lowering，支持 fallthrough）
-- `sizeof`（最小子集：int/char/指针 等）
-- C-style cast `(type)expr`（最小子集）
-- `goto`/labels
-- `&&` / `||` 短路
-
-注：上面的“109 tests”已过期；以 `pytest -q` 输出为准（当前 597 passed）。
+注：历史上的“pytest 通过：N tests”小节容易过期，后续以 `pytest -q` 输出为准。
 
 引用文件
 - `pycc/parser.py`, `pycc/semantics.py`, `pycc/ast_nodes.py`, `pycc/codegen.py`

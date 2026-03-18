@@ -761,10 +761,7 @@ if __name__ == "__main__":
     compiler = Compiler(optimize=not args.no_opt)
     result = compiler.compile_file(args.source, args.output)
     if result.success:
-        # CLI-friendly output kept minimal; tools/tests should rely on exit code.
-        print(f"OK: {args.output}")
+        pass
     else:
-        print("ERROR")
-        for e in result.errors:
-            print(f"  Error: {e}")
+        pass
     raise SystemExit(0 if result.success else 1)

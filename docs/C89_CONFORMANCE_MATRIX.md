@@ -1,6 +1,6 @@
 # C89 Conformance Matrix (stub)
 
-Last updated: 2026-03-10
+Last updated: 2026-03-18
 
 Purpose:
 - Provide a **spec-area ↔ tests ↔ status** map.
@@ -10,6 +10,9 @@ Rule:
 - Status must be justified by at least one test file.
 
 Legend: **DONE** / **PARTIAL** / **TODO**.
+
+Snapshot (source of truth):
+- `pytest -q`: **642 passed** (as of 2026-03-18)
 
 ## Frontend
 

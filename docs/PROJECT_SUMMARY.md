@@ -1,6 +1,6 @@
 # AuraCompiler (pycc): Practical C89 Compiler - Project Summary
 
-Last updated: 2026-03-10
+Last updated: 2026-03-18
 
 ## Executive Summary
 
@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **597 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **642 passed**.
 
 ### Recent changes
 
@@ -91,7 +91,7 @@ pycc/
 - No floating point (`float`/`double`) codegen/type rules
 - C89 integer promotions / usual arithmetic conversions not fully modeled
 - Full declarator/type grammar coverage is incomplete (many edge cases)
-- Initializers are incomplete (especially aggregate initializers); local 2D brace init + nested indexing are now covered.
+- Initializers are still incomplete, but aggregate initializers (including nested local structs) are now covered by tests; remaining gaps are mostly edge-cases (designators, mixed scalar/aggregate corner cases, more global aggregate forms).
 - Translation-unit / multi-file model is still incomplete in general, but a practical multi-TU workflow is implemented and tested.
 - Diagnostics and conformance testing vs `gcc -std=c89` not comprehensive yet
 
