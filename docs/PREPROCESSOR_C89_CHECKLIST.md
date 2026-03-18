@@ -65,7 +65,7 @@ These are required to safely process real-world code without crashing or mis-nes
 ### TODO (gap)
 - [~] Macro-expanded include operands: `#include HEADER` / `#include STR(x)` (subset: expands to a header-name and then resolves it)
 - [x] Full include search order parity for `""` vs `<>` (standard behavior) — `tests/test_preprocessor_include_search_order.py`
-- [ ] `#include` with comments/line splices in header-name tokens (token-level correctness)
+- [~] `#include` with comments/line splices in header-name tokens (subset: comments supported; line splices in header-name tokens TBD) — `tests/test_preprocessor_include_comments_in_header_name.py`
 - [~] Proper handling of missing includes: diagnostic quality + include stack reporting (include stack now shown; still missing richer range/caret formatting)
 - [ ] `#line` affects include location / builtins consistently
 - [~] `#pragma` generic handling (unknown pragmas ignored; optional diagnostics TBD)
