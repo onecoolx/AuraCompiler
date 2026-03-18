@@ -195,6 +195,10 @@ class CodeGenerator:
                         # we have no type for it.
                         if d.result not in self._var_types:
                             self._var_types[d.result] = "ptr"
+                    # If the IR uses a temp as the result of addr_of_member, it is a pointer value.
+                    if d.op == "addr_of_member" and d.result:
+                        if d.result not in self._var_types:
+                            self._var_types[d.result] = "ptr"
                     # Propagate best-effort result type for temps produced by load_index.
                     # IRGenerator annotates element type via ins.meta["result_ty"].
                     if d.op == "load_index" and d.result:
@@ -309,6 +313,13 @@ class CodeGenerator:
         if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@") and self._sema_ctx is not None:
             ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
 
+        # If `base` is a temp pointer (e.g. from addr_of_member), fall back to
+        # its recorded type.
+        if (ty is None or ty == "") and isinstance(base, str) and base.startswith("%t"):
+            ty = self._var_types.get(base)
+            if isinstance(ty, str) and ty.strip().endswith("*"):
+                ty = ty.strip()[:-1].strip()
+
         if isinstance(ty, str) and self._sema_ctx is not None:
             layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
             if layout is not None:
@@ -336,8 +347,17 @@ class CodeGenerator:
             return None
 
         ty = self._var_types.get(base)
+        if isinstance(ty, str) and ty.strip().endswith("*"):
+            ty = ty.strip()[:-1].strip()
         if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@"):
             ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
+        # If `base` is a temp holding a pointer into a struct/union (e.g. result
+        # of addr_of_member/addr_of_member_ptr), consult its recorded type.
+        # Those are stored as "<ty>*" in `_var_types`.
+        if (ty is None or ty == "") and isinstance(base, str) and base.startswith("%t"):
+            ty = self._var_types.get(base)
+            if isinstance(ty, str) and ty.strip().endswith("*"):
+                ty = ty.strip()[:-1].strip()
 
         if not isinstance(ty, str) or not ty:
             return None
@@ -405,12 +425,21 @@ class CodeGenerator:
                 if elems > 0:
                     self._arrays[sym] = size_bytes
             else:
-                # Scalar locals: reserve a full 8-byte slot (simplifies addressing).
-                offset += 8
-                self._locals[sym] = offset
-                if d.operand1:
-                    # remember declared type base for load/store width decisions
-                    self._var_types[sym] = str(d.operand1)
+                # Struct/union locals: allocate actual size, at least 8 bytes for alignment.
+                ty_str = str(d.operand1) if d.operand1 else ""
+                if ty_str.startswith("struct ") or ty_str.startswith("union "):
+                    size_bytes = self._type_size_bytes(ty_str)
+                    size_bytes = max(size_bytes, 8)
+                    offset += size_bytes
+                    self._locals[sym] = offset
+                    self._var_types[sym] = ty_str
+                else:
+                    # Scalar locals: reserve a full 8-byte slot (simplifies addressing).
+                    offset += 8
+                    self._locals[sym] = offset
+                    if d.operand1:
+                        # remember declared type base for load/store width decisions
+                        self._var_types[sym] = str(d.operand1)
 
         # Seed stack slots for late-discovered locals.
         # IR currently emits decls before first use, but codegen also allocates
@@ -816,13 +845,50 @@ class CodeGenerator:
             # Load base address into %rax then add member offset.
             # IMPORTANT: `base` is an lvalue (struct/union object). We must take
             # its address rather than load its value.
-            self._addr_of_symbol(base, "%rax")
+            base_ty = self._var_types.get(base, "")
+            if isinstance(base, str) and base.startswith("%t") and isinstance(base_ty, str) and (base_ty.strip().endswith("*") or base_ty.strip() == "ptr"):
+                # addr_of_member can be used on a temp that already is a pointer
+                # to a struct/union object (e.g. when rewriting `s.b` as an
+                # lvalue address). In that case, load the pointer value.
+                self._load_operand(base, "%rax")
+            else:
+                self._addr_of_symbol(base, "%rax")
             off = self._resolve_member_offset(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
             self._store_result(ins.result, "%rax")
             # best-effort propagate pointer type: if base is a struct/union symbol,
             # treat result as pointer-to-member's scalar size is handled on load/store.
+            return
+
+        if op == "load_member":
+            # result = operand1.member
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            # Get base address into %rax then add member offset, then load the value.
+            base_ty = self._var_types.get(base, "")
+            if isinstance(base, str) and base.startswith("%t") and isinstance(base_ty, str) and (base_ty.strip().endswith("*") or base_ty.strip() == "ptr"):
+                # load_member on a temp that is a pointer to struct/union.
+                self._load_operand(base, "%rax")
+            else:
+                self._addr_of_symbol(base, "%rax")
+            off = self._resolve_member_offset(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            # Load the member value based on its size.
+            _, sz = self._resolve_member(base, member)
+            if sz == 1:
+                self._emit("  movb (%rax), %al")
+                self._emit("  movsbq %al, %rax")
+            elif sz == 2:
+                self._emit("  movw (%rax), %ax")
+                self._emit("  movswq %ax, %rax")
+            elif sz == 4:
+                self._emit("  movl (%rax), %eax")
+                self._emit("  movl %eax, %eax")  # zero-extend to 64-bit
+            else:
+                self._emit("  movq (%rax), %rax")
+            self._store_result(ins.result, "%rax")
             return
 
         if op == "addr_of_member_ptr":
@@ -834,6 +900,31 @@ class CodeGenerator:
             off = self._resolve_member_offset(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "load_member_ptr":
+            # result = operand1->member
+            base = ins.operand1 or ""
+            member = ins.operand2 or ""
+            # Load pointer value into %rax then add member offset, then load value.
+            self._load_operand(base, "%rax")
+            off = self._resolve_member_offset(base, member)
+            if off:
+                self._emit(f"  addq ${off}, %rax")
+            # Load the member value based on its size.
+            _, sz = self._resolve_member(base, member)
+            if sz == 1:
+                self._emit("  movb (%rax), %al")
+                self._emit("  movsbq %al, %rax")
+            elif sz == 2:
+                self._emit("  movw (%rax), %ax")
+                self._emit("  movswq %ax, %rax")
+            elif sz == 4:
+                self._emit("  movl (%rax), %eax")
+                self._emit("  movl %eax, %eax")  # zero-extend to 64-bit
+            else:
+                self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
             return
 
@@ -1471,33 +1562,59 @@ class CodeGenerator:
             # Compute base address.
             # - locals/globals: take address of the symbol
             # - temps holding addresses (e.g. from addr_index/addr_of_member): load pointer value
+            # For load_member we want the *pointee* type when `base` is a pointer.
             base_ty = self._var_types.get(base, "")
+            if isinstance(base_ty, str) and base_ty.strip().endswith("*"):
+                base_ty = base_ty.strip()[:-1].strip()
             # For temps, decide whether it holds an address (pointer value) or a scalar.
             # - If we know it is pointer-typed ("...*") or tagged as "ptr", treat as pointer value.
             # - Otherwise it's a scalar temp stored in a stack slot; use its address as base.
+            # IMPORTANT: for non-temp locals like "@s" (a struct object), ALWAYS take
+            # the address of the object. Do not treat it as a pointer even if the type
+            # string contains '*' somewhere (e.g. "struct X*" for pointer vars).
             if isinstance(base, str) and base.startswith("%t"):
-                if isinstance(base_ty, str) and ("*" in base_ty or base_ty == "ptr"):
+                # Temps may hold either a pointer value or a scalar in a spill slot.
+                if isinstance(base_ty, str) and (base_ty.strip().endswith("*") or base_ty == "ptr"):
                     self._load_operand(base, "%rax")
                 else:
                     self._addr_of_symbol(base, "%rax")
-            elif isinstance(base_ty, str) and "*" in base_ty:
-                self._load_operand(base, "%rax")
             else:
-                self._addr_of_symbol(base, "%rax")
+                # Non-temp: treat as pointer value only if the variable is pointer-typed.
+                if isinstance(base_ty, str) and base_ty.strip().endswith("*"):
+                    self._load_operand(base, "%rax")
+                else:
+                    self._addr_of_symbol(base, "%rax")
             off, sz = self._resolve_member(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
+
+            # If the member itself is a struct/union, `load_member` should yield
+            # its address (so subsequent `.x` accesses don't interpret the first
+            # bytes of the subobject as a pointer).
+            mem_ty = self._resolve_member_type(base, member)
+            # Fallback: for locals, semantic typing might not be available.
+            # If IR recorded the member access result as a struct/union type,
+            # treat it as an address.
+            if mem_ty is None:
+                try:
+                    rty = self._var_types.get(ins.result or "")
+                except Exception:
+                    rty = None
+                if isinstance(rty, str) and (rty.strip().startswith("struct ") or rty.strip().startswith("union ")):
+                    mem_ty = rty.strip()
+            if mem_ty is not None:
+                mem_ty_s = str(mem_ty).strip()
+                if mem_ty_s.startswith("struct ") or mem_ty_s.startswith("union "):
+                    if ins.result and isinstance(ins.result, str) and ins.result.startswith("%t"):
+                        self._var_types[ins.result] = f"{mem_ty_s}*"
+                    self._store_result(ins.result, "%rax")
+                    return
+
             # load based on member size
             if sz == 1:
                 # Best-effort signedness for 1-byte members.
                 # Default C89: plain `char` is implementation-defined. This
                 # backend treats `char` as signed.
-                mem_ty = None
-                try:
-                    mem_ty = self._resolve_member_type(base, member)
-                except Exception:
-                    mem_ty = None
-
                 mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
                 is_unsigned = mem_ty_s.startswith("unsigned char")
                 if is_unsigned:
@@ -2094,6 +2211,31 @@ class CodeGenerator:
             self._emit(f"  leaq -{off}(%rbp), {reg}")
             return
         self._emit(f"  leaq {sym}(%rip), {reg}")
+
+    def _resolve_member_offset(self, base_sym: str, member: str) -> int:
+        """Return offset for `base_sym.member` using semantic layouts when available."""
+        off, _ = self._resolve_member(base_sym, member)
+        return off
+
+    def _type_size_bytes(self, ty: str) -> int:
+        """Best-effort size (bytes) for a type string."""
+        b = ty.strip()
+        if b.startswith("struct ") or b.startswith("union "):
+            layout = getattr(self._sema_ctx, "layouts", {}).get(b)
+            return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
+        if "*" in b:
+            return 8
+        if b in {"char", "unsigned char", "signed char"}:
+            return 1
+        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
+            return 2
+        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
+            return 4
+        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
+            return 8
+        if "long long" in b:
+            return 8
+        return 8
 
     def _resolve_member(self, base_sym: str, member: str) -> Tuple[int, int]:
         """Return (offset, size_bytes) for `base_sym.member` using semantic layouts when available."""

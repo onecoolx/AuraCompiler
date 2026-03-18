@@ -39,38 +39,84 @@ int main(){
 """.lstrip()
     assert _compile_and_run(tmp_path, code) == 0
 
-    def test_local_nested_struct_zero_fill(tmp_path):
-        code = r"""
-        struct B { int x; int y; };
-        struct A { int a; struct B b; int c; };
 
-        int main() {
-            struct A s = { 1, { 2 } };
-            if (s.a != 1) return 1;
-            if (s.b.x != 2) return 2;
-            if (s.b.y != 0) return 3;
-            if (s.c != 0) return 4;
-            return 0;
-        }
-        """
+def test_local_nested_struct_zero_fill(tmp_path):
+    code = r"""
+    struct B { int x; int y; };
+    struct A { int a; struct B b; int c; };
 
-        res = _compile_and_run(tmp_path, code)
-        assert res == 0
+    int main() {
+        struct A s = { 1, { 2 } };
+        if (s.a != 1) return 1;
+        if (s.b.x != 2) return 2;
+        if (s.b.y != 0) return 3;
+        if (s.c != 0) return 4;
+        return 0;
+    }
+    """
 
-    def test_local_nested_struct_brace_elision(tmp_path):
-        code = r"""
-        struct B { int x; int y; };
-        struct A { int a; struct B b; int c; };
+    res = _compile_and_run(tmp_path, code)
+    assert res == 0
 
-        int main() {
-            struct A s = { 1, 2, 3 };
-            if (s.a != 1) return 1;
-            if (s.b.x != 2) return 2;
-            if (s.b.y != 3) return 3;
-            if (s.c != 0) return 4;
-            return 0;
-        }
-        """
 
-        res = _compile_and_run(tmp_path, code)
-        assert res == 0
+def test_local_nested_struct_brace_elision(tmp_path):
+    code = r"""
+    struct B { int x; int y; };
+    struct A { int a; struct B b; int c; };
+
+    int main() {
+        struct A s = { 1, 2, 3 };
+        if (s.a != 1) return 1;
+        if (s.b.x != 2) return 2;
+        if (s.b.y != 3) return 3;
+        if (s.c != 0) return 4;
+        return 0;
+    }
+    """
+
+    res = _compile_and_run(tmp_path, code)
+    assert res == 0
+
+
+def test_local_union_initializer_first_member(tmp_path):
+    code = r"""
+    union U { int x; int y; };
+
+    int main(void){
+        union U u = {7};
+        return (u.x == 7) ? 0 : 1;
+    }
+    """
+    assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_struct_with_union_member_init(tmp_path):
+    code = r"""
+    union U { int x; int y; };
+    struct S { int a; union U u; int b; };
+
+    int main(void){
+        struct S s = { 1, { 7 }, 2 };
+        if (s.a != 1) return 1;
+        if (s.u.x != 7) return 2;
+        if (s.b != 2) return 3;
+        return 0;
+    }
+    """
+    assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_struct_with_union_member_brace_elision(tmp_path):
+    code = r"""
+    union U { int x; int y; };
+    struct S { int a; union U u; int b; };
+
+    int main(void){
+        struct S s = { 1, 7, 2 };
+        if (s.a != 1) return 1;
+        if (s.u.x != 7) return 2;
+        if (s.b != 2) return 3;
+        return 0;
+    }
+    """
+    assert _compile_and_run(tmp_path, code) == 0

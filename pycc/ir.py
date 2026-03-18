@@ -1121,18 +1121,87 @@ class IRGenerator:
             return elems0
 
         def _member_count(ty_name: str) -> int:
-            layout_n = getattr(self._sema_ctx, "layouts", {}).get(str(ty_name))
+            """Return number of subobjects consumed by brace elision.
+
+            For structs: number of members.
+            For unions (C89): only the first member is initialized by a
+            non-designated initializer.
+            """
+
+            ty_s = str(ty_name).strip()
+            layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
             if layout_n is None:
                 return 1
-            return max(1, len(getattr(layout_n, "member_offsets", {}) or {}))
+            members = list(getattr(layout_n, "member_offsets", {}) or {})
+            if ty_s.startswith("union "):
+                return 1
+            return max(1, len(members))
 
         def _lower_struct_init(base_sym: str, base_is_ptr: bool, ty_name: str, init_any: Any) -> bool:
-            layout_n = getattr(self._sema_ctx, "layouts", {}).get(str(ty_name))
+            ty_s = str(ty_name).strip()
+            layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
             if layout_n is None:
                 return False
             members_n = list(layout_n.member_offsets.keys())
             mtypes_n = getattr(layout_n, "member_types", {})
             elems_n = _init_elems(init_any)
+
+            # C89 union initialization: only the first member is initialized.
+            if ty_s.startswith("union "):
+                if not members_n:
+                    return True
+                m0 = members_n[0]
+                mty0 = mtypes_n.get(m0)
+                if not elems_n:
+                    # No initializer elements: treat as zero-init for first member.
+                    val_expr = IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
+                    v = self._gen_expr(val_expr)
+                    if base_is_ptr:
+                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0))
+                    else:
+                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0))
+                    return True
+
+                elem0 = elems_n[0]
+                if isinstance(mty0, str) and self._is_struct_or_union_type(mty0):
+                    # Initialize the first union member as an aggregate.
+                    if isinstance(elem0, Initializer):
+                        sub_init = elem0
+                    else:
+                        # Brace elision into the first member.
+                        take = _member_count(str(mty0))
+                        sub_elems: list[Any] = []
+                        eidx_u = 0
+                        for _ in range(take):
+                            if eidx_u >= len(elems_n):
+                                break
+                            if isinstance(elems_n[eidx_u], Initializer):
+                                break
+                            sub_elems.append(elems_n[eidx_u])
+                            eidx_u += 1
+                        sub_init = Initializer(
+                            elements=[(None, e) for e in sub_elems],
+                            line=getattr(decl, "line", 0),
+                            column=getattr(decl, "column", 0),
+                        )
+
+                    taddr = self._new_temp()
+                    if base_is_ptr:
+                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m0))
+                    else:
+                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m0))
+                    self._var_types[taddr] = f"{mty0}*"
+                    return _lower_struct_init(taddr, True, str(mty0), sub_init)
+
+                # Scalar first member.
+                if isinstance(elem0, Initializer):
+                    return False
+                v = self._gen_expr(elem0)
+                if base_is_ptr:
+                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0))
+                else:
+                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0))
+                return True
 
             eidx = 0
             for m in members_n:
@@ -2086,10 +2155,30 @@ class IRGenerator:
             return f"@{expr.name}"
         if isinstance(expr, MemberAccess):
             base = self._gen_expr(expr.object)
+            # If the member is an aggregate, return an lvalue address (pointer)
+            # so chained member access works: `s.b.x`.
+            try:
+                if self._sema_ctx is not None and isinstance(base, str):
+                    bty = self._var_types.get(base)
+                    if (bty is None or bty == "") and base.startswith("@"): 
+                        bty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
+                    if isinstance(bty, str) and bty.strip().endswith("*"):
+                        bty = bty.strip()[:-1].strip()
+                    if isinstance(bty, str):
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(bty)
+                        if layout is not None:
+                            mtypes = getattr(layout, "member_types", {}) or {}
+                            mty = mtypes.get(expr.member)
+                            if isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                                taddr = self._new_temp()
+                                self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base, operand2=expr.member))
+                                self._var_types[taddr] = f"{mty}*"
+                                return taddr
+            except Exception:
+                pass
+
             t = self._new_temp()
-            self.instructions.append(
-                IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member)
-            )
+            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member))
             return t
         # Address-of a member: &obj.member
         if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, MemberAccess):
