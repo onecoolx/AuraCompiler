@@ -1,6 +1,6 @@
 # C89 Preprocessor Checklist (Quantified)
 
-Last updated: 2026-03-02
+Last updated: 2026-03-18
 
 Purpose:
 - Provide a **quantified gap** vs. a "full" C89-style preprocessor.
@@ -66,9 +66,9 @@ These are required to safely process real-world code without crashing or mis-nes
 - [ ] Macro-expanded include operands: `#include HEADER` / `#include STR(x)` (standard behavior)
 - [ ] Full include search order parity for `""` vs `<>` (standard behavior)
 - [ ] `#include` with comments/line splices in header-name tokens (token-level correctness)
-- [ ] Proper handling of missing includes: diagnostic quality + include stack reporting
+- [~] Proper handling of missing includes: diagnostic quality + include stack reporting (include stack now shown; still missing richer range/caret formatting)
 - [ ] `#line` affects include location / builtins consistently
-- [ ] `#pragma` generic handling (unknown pragmas ignored with optional diagnostic)
+- [~] `#pragma` generic handling (unknown pragmas ignored; optional diagnostics TBD)
 
 ---
 
@@ -156,7 +156,7 @@ These are required to safely process real-world code without crashing or mis-nes
 
 - [~] `#line` accepted and stripped from `-E` output — `tests/test_preprocessor_line_directive.py`
 - [~] malformed `#line` in inactive region ignored — `tests/test_preprocessor_line_directive_ignored_in_inactive.py`
-- [ ] Full `#line` semantics updating logical line/file
+- [~] Full `#line` semantics updating logical line/file (basic `#line N "file"` affects `__LINE__`/`__FILE__`)
 - [ ] Diagnostics with file/line ranges (caret), include stacks
 - [ ] Standard-required diagnostic wording is not targeted; just consistency + testability
 

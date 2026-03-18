@@ -139,6 +139,7 @@ class Preprocessor:
         self._endif_re = re.compile(r"^\s*#\s*endif\s*$")
         self._line_re = re.compile(r"^\s*#\s*line\b.*$")
         self._pragma_once_re = re.compile(r"^\s*#\s*pragma\s+once\s*$")
+        self._pragma_re = re.compile(r"^\s*#\s*pragma\b.*$")
         self._error_re = re.compile(r"^\s*#\s*error\b(.*)$")
         self._warning_re = re.compile(r"^\s*#\s*warning\b(.*)$")
         self._counter = 0
@@ -157,6 +158,41 @@ class Preprocessor:
 
         # Function-like macro storage: NAME -> (param_names, body)
         self._fn_macros: Dict[str, Tuple[List[str], str]] = {}
+
+    def _try_parse_line_directive(self, line: str) -> Optional[Tuple[int, str]]:
+        """Parse `#line` directive.
+
+        Supported subset:
+        - `#line <number>`
+        - `#line <number> "filename"`
+
+        Returns:
+        - (new_logical_line, new_logical_filename)
+        - or None if not parseable.
+
+        Notes:
+        - This preprocessor strips #line directives from output.
+        - When a directive is accepted, it affects `__LINE__`/`__FILE__` on
+          *subsequent* lines.
+        """
+
+        s = line.strip()
+        if not s.startswith("#"):
+            return None
+        if not re.match(r"^#\s*line\b", s):
+            return None
+
+        # Accept: #line 123 "fake.c"
+        m = re.match(r'^#\s*line\s+([0-9]+)(?:\s+"([^"]*)")?\s*$', s)
+        if not m:
+            return None
+
+        new_line = int(m.group(1))
+        new_file = m.group(2)
+        if new_file is None:
+            # Caller may keep current logical filename.
+            new_file = ""
+        return (new_line, new_file)
 
     def _eval_cond_01(self, name: str, macros: Dict[str, str]) -> bool:
         """Evaluate a very small #if/#elif condition.
@@ -698,6 +734,10 @@ class Preprocessor:
         out_lines: List[str] = []
         base_dir = os.path.dirname(abspath)
 
+        # Logical line/file are affected by `#line` directives.
+        logical_filename = os.path.basename(abspath)
+        logical_line_base: Optional[int] = None
+
         include_stack: List[bool] = [True]
         taken_stack: List[bool] = []
 
@@ -743,6 +783,13 @@ class Preprocessor:
                     self._pragma_once_files.add(abspath)
                 continue
 
+            # Generic pragmas (subset): accept and strip. Unknown pragmas are ignored.
+            # Only in active regions.
+            if self._pragma_re.match(line):
+                if include_stack[-1]:
+                    continue
+                continue
+
             merr = self._error_re.match(line)
             if merr:
                 if include_stack[-1]:
@@ -754,8 +801,15 @@ class Preprocessor:
             if mwarn:
                 # Subset: accept and ignore (do not fail, do not emit).
                 continue
-            # Line markers (subset): accept and strip.
+            # Line markers (#line): accept and strip; update logical file/line state.
             if self._line_re.match(line):
+                if include_stack[-1]:
+                    parsed = self._try_parse_line_directive(line)
+                    if parsed is not None:
+                        new_line, new_file = parsed
+                        logical_line_base = new_line - (logical_line_no + 1)
+                        if new_file:
+                            logical_filename = new_file
                 continue
 
             # Conditionals
@@ -976,7 +1030,7 @@ class Preprocessor:
             if miq:
                 inc_name = miq.group(1)
                 search_paths = [base_dir, *self._include_paths]
-                inc_path = self._resolve_include(inc_name, search_paths)
+                inc_path = self._resolve_include(inc_name, search_paths, include_stack=list(stack))
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
 
@@ -984,11 +1038,15 @@ class Preprocessor:
             if mia:
                 inc_name = mia.group(1).strip()
                 search_paths = [*self._include_paths]
-                inc_path = self._resolve_include(inc_name, search_paths)
+                inc_path = self._resolve_include(inc_name, search_paths, include_stack=list(stack))
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
                 continue
 
-            out_lines.append(self._expand_line(line, macros, filename=abspath, line_no=logical_line_no))
+            if logical_line_base is None:
+                effective_line_no = logical_line_no
+            else:
+                effective_line_no = logical_line_no + logical_line_base
+            out_lines.append(self._expand_line(line, macros, filename=logical_filename, line_no=effective_line_no))
 
         stack.pop()
         # restore counter for the including context
@@ -1391,11 +1449,15 @@ class Preprocessor:
             args.append(tail)
         return args
 
-    def _resolve_include(self, inc_name: str, search_paths: List[str]) -> str:
+    def _resolve_include(self, inc_name: str, search_paths: List[str], *, include_stack: Optional[List[str]] = None) -> str:
         for d in search_paths:
             cand = os.path.abspath(os.path.join(d, inc_name))
             if os.path.isfile(cand):
                 return cand
         shown = ", ".join(search_paths[:10])
         more = "" if len(search_paths) <= 10 else f" (+{len(search_paths) - 10} more)"
-        raise RuntimeError(f"cannot find include: {inc_name} (searched: {shown}{more})")
+        stack_msg = ""
+        if include_stack:
+            # Show the inclusion chain (outermost -> innermost).
+            stack_msg = " (include stack: " + " -> ".join(os.path.basename(p) for p in include_stack) + ")"
+        raise RuntimeError(f"cannot find include: {inc_name} (searched: {shown}{more}){stack_msg}")
