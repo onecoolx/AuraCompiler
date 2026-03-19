@@ -1508,9 +1508,22 @@ class Preprocessor:
             first = self._expand_object_like_macros_single_pass(line, macros)
             return self._expand_object_like_macros_single_pass(first, macros, disabled={stripped})
 
+        # Subset hide-set behavior for self-referential object-like macros.
+        # If a macro's replacement mentions itself (e.g. `A -> A + 1`), disable
+        # it during rescans of the containing line to prevent runaway growth.
+        self_refs: Set[str] = set()
+        for k, v in macros.items():
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k) and re.search(rf"\b{re.escape(k)}\b", v):
+                self_refs.add(k)
+
         cur = line
-        for _ in range(20):
-            nxt = self._expand_object_like_macros_single_pass(cur, macros)
+        # First pass: allow normal expansions.
+        cur = self._expand_object_like_macros_single_pass(cur, macros)
+
+        # Subsequent rescans: suppress self-referential macros to prevent
+        # runaway growth like `A -> A + 1 + 1 + ...`.
+        for _ in range(19):
+            nxt = self._expand_object_like_macros_single_pass(cur, macros, disabled=self_refs)
             if nxt == cur:
                 return cur
             cur = nxt
@@ -1541,6 +1554,14 @@ class Preprocessor:
 
         def is_pp_number_continue(ch: str) -> bool:
             return ch.isalnum() or ch in "._+-"
+
+        # Heuristic subset: if we start expanding a macro at top-level (i.e.
+        # not as a special one-shot line boundary), suppress re-expansion of
+        # that same macro name while scanning its own replacement output.
+        # This helps common self-referential patterns like `#define A A + 1`
+        # terminate as `A + 1`.
+        if disabled is None:
+            disabled = set()
 
         while i < n:
             ch = line[i]
@@ -1588,7 +1609,14 @@ class Preprocessor:
                     if only_empty and ident in macros and macros[ident].strip() != "":
                         out.append(ident)
                     else:
-                        out.append(macros.get(ident, ident))
+                        if ident in macros and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", ident):
+                            # Disable the macro name for the remainder of this
+                            # scan so we don't keep expanding within its own
+                            # output in the same pass.
+                            disabled.add(ident)
+                            out.append(macros.get(ident, ident))
+                        else:
+                            out.append(macros.get(ident, ident))
                 continue
 
             # Preprocessing-number (very small subset): do not expand macros

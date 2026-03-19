@@ -93,6 +93,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] Variadic macros (C99+, but common): `...` / `__VA_ARGS__` (subset; includes GNU `, ##__VA_ARGS__` comma-swallow and `#__VA_ARGS__` stringize) — `tests/test_preprocessor_variadic_macros.py`
 - [~] Full parameter substitution tokenization rules (subset: token-based substitution avoids strings/chars; still missing full preprocessing-token model)
 - [~] Full hide-set / rescanning semantics for both object-like and function-like (subset: recursive expansion terminates; see `tests/test_preprocessor_hide_set.py`)
+- [~] Self-referential object-like macro termination (subset: `#define A A + 1` expands to `A + 1` without runaway growth) — `tests/test_preprocessor_macro_disable_during_expansion.py`
 - [ ] Expand macros across multiple tokens while preserving token boundaries
 - [~] Do not match function-like macro calls inside preprocessing-number tokens (subset: `0F(1)` does not invoke `F`) — `tests/test_preprocessor_function_like_call_not_in_pp_number.py`
 - [ ] Correct whitespace preservation rules in macro replacement (standard)
