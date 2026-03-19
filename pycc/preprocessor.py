@@ -194,7 +194,7 @@ class Preprocessor:
         for _ in range(20):
             nxt = cur
             nxt = self._expand_object_like_macros(nxt, macros)
-            nxt = self._expand_function_like_macros(nxt, macros)
+            nxt = self._expand_function_like_macros(nxt, macros, filename="<include-operand>")
             nxt = nxt.strip()
             if nxt == cur:
                 return cur
@@ -758,14 +758,19 @@ class Preprocessor:
             text = self._preprocess_file(path, stack=[], macros=macros)
             return PreprocessResult(success=True, text=text)
         except RuntimeError as e:
-            return PreprocessResult(success=False, errors=[str(e)])
+            msg = str(e)
+            # L-scope unified diagnostics (subset): ensure a `file:line:` prefix
+            # for any error that didn't already supply one.
+            if not re.match(r"^[^:\n]+:\d+: ", msg):
+                msg = f"{os.path.basename(path)}:1: {msg}"
+            return PreprocessResult(success=False, errors=[msg])
 
     def _preprocess_file(self, path: str, stack: List[str], macros: Dict[str, str]) -> str:
         abspath = os.path.abspath(path)
         if abspath in self._pragma_once_files:
             return ""
         if abspath in stack:
-            raise RuntimeError(f"include cycle detected: {abspath}")
+            raise RuntimeError(f"{os.path.basename(abspath)}:1: include cycle detected: {abspath}")
 
         # Per-file __COUNTER__ semantics: save and reset the instance counter
         # while preprocessing this file so each file's __COUNTER__ starts at 0.
@@ -776,7 +781,7 @@ class Preprocessor:
         try:
             raw = open(abspath, "r", encoding="utf-8").read().splitlines(True)
         except OSError as e:
-            raise RuntimeError(f"cannot read {path}: {e}")
+            raise RuntimeError(f"{os.path.basename(path)}:1: cannot read {path}: {e}")
 
         out_lines: List[str] = []
         base_dir = os.path.dirname(abspath)
@@ -1327,7 +1332,7 @@ class Preprocessor:
     def _expand_line(self, line: str, macros: Dict[str, str], *, filename: str, line_no: int) -> str:
         # Expand function-like invocations first (best-effort), then object-like macros.
         expanded = line
-        expanded = self._expand_function_like_macros(expanded, macros)
+        expanded = self._expand_function_like_macros(expanded, macros, filename=filename, base_line_no=line_no)
         if (
             "__LINE__" in expanded
             or "__FILE__" in expanded
@@ -1536,7 +1541,14 @@ class Preprocessor:
 
         return "".join(out)
 
-    def _expand_function_like_macros(self, text: str, macros: Dict[str, str]) -> str:
+    def _expand_function_like_macros(
+        self,
+        text: str,
+        macros: Dict[str, str],
+        *,
+        filename: str = "",
+        base_line_no: int = 1,
+    ) -> str:
         # Very small subset expansion:
         # - only expands NAME(arglist) with balanced parentheses in arglist
         # - arguments are split by commas at paren depth 0
@@ -1558,8 +1570,13 @@ class Preprocessor:
 
                     args = self._split_args(arg_text)
                     if (not is_variadic and len(args) != len(params)) or (is_variadic and len(args) < len(params)):
+                        # Best-effort: include call site line number.
+                        # Convert call_start offset to a 1-based line number,
+                        # relative to the current expanded string.
+                        call_line = base_line_no + out[:call_start].count("\n")
+                        fn = os.path.basename(filename) if filename else "<input>"
                         raise RuntimeError(
-                            f"unsupported macro invocation: {name} expects {len(params)} args, got {len(args)}"
+                            f"{fn}:{call_line}: unsupported macro invocation: {name} expects {len(params)} args, got {len(args)}"
                         )
                     repl = body
                     # Subset ordering:
