@@ -136,7 +136,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] Character constants incl. escapes + multi-char subset — `tests/test_preprocessor_if_char_literals_*.py`
 
 ### TODO (gap)
-- [ ] Full integer literal grammar (suffixes `U/L`, digit separators not applicable; but `0u` etc. in practice)
+- [~] Full integer literal grammar (suffixes `U/L`, digit separators not applicable; but `0u` etc. in practice) (subset: supports U/L suffixes in `#if` literals, including hex; see `tests/test_preprocessor_if_integer_suffixes.py`)
 - [ ] Correct integer width/overflow semantics matching the host model (implementation-defined)
 - [ ] Full tokenization parity with C preprocessing tokens
 - [ ] `defined` inside more complex macro-expanded expressions parity with C

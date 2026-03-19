@@ -370,8 +370,13 @@ class Preprocessor:
                         j += 1
                     if j == i + 2:
                         raise RuntimeError(f"unsupported #if expression: invalid hex literal in {expr!r}")
-                    toks.append(expr[i:j])
-                    i = j
+                    # Accept and ignore common integer suffixes used in system headers.
+                    # C89: U/u, L/l; also accept LL/ll and combinations.
+                    k = j
+                    while k < n and expr[k] in ("u", "U", "l", "L"):
+                        k += 1
+                    toks.append(expr[i:k])
+                    i = k
                     continue
 
                 j = i + 1
