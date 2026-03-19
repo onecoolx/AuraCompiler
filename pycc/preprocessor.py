@@ -1697,6 +1697,21 @@ class Preprocessor:
                     # Do parameter substitution first (so a##b turns into x##y),
                     # then do token-paste removal.
                     repl = self._substitute_fn_params(repl, params=params, args=args)
+
+                    # Subset hide-set behavior for self-referential function-like
+                    # macros: if the replacement mentions its own invocation,
+                    # prevent it from expanding again during rescans.
+                    # This targets common patterns like:
+                    #   #define F(x) F(x) + 1
+                    # so `F(0)` becomes `F(0) + 1`.
+                    if re.search(rf"\b{re.escape(name)}\s*\(", repl):
+                        # Replace only as a call: NAME( -> NAME_DISABLED(
+                        repl = re.sub(
+                            rf"\b{re.escape(name)}\s*\(",
+                            f"{name}__PP_DISABLED__(",
+                            repl,
+                        )
+                    
                     # Best-effort: only expand *empty* object-like macros inside the
                     # replacement list *before* token pasting, so common patterns like
                     # CAT(EMPTY, X) can paste correctly when EMPTY expands to nothing,
@@ -1719,7 +1734,11 @@ class Preprocessor:
                     changed = True
                     idx = call_start + len(repl)
             if not changed:
+                # Restore any disabled self-referential markers.
+                out = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)__PP_DISABLED__\(", r"\1(", out)
                 return out
+
+        out = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)__PP_DISABLED__\(", r"\1(", out)
         return out
 
     def _find_fn_macro_call(self, text: str, name: str, *, start_idx: int) -> Tuple[Optional[int], Optional[int]]:
