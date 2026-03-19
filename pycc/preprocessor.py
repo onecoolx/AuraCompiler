@@ -1538,6 +1538,8 @@ class Preprocessor:
                     # Variadics: __VA_ARGS__ is the comma-joined remaining args.
                     if is_variadic:
                         va = ", ".join(args[len(params) :])
+                        # Support stringizing __VA_ARGS__ via #__VA_ARGS__ (subset).
+                        repl = self._apply_stringize(repl, "__VA_ARGS__", va)
                         if va.strip() == "":
                             # GNU extension (subset): swallow a preceding comma when
                             # using token paste with empty __VA_ARGS__:

@@ -53,3 +53,19 @@ int b = LOG("hi");
     assert 'int a = printf("%d",1);' in res.stdout
     # When __VA_ARGS__ is empty, the preceding comma must be removed (GNU extension).
     assert 'int b = printf("hi");' in res.stdout
+
+
+def test_E_variadic_macro_stringize_va_args(tmp_path: Path):
+    res = _run_E(
+        tmp_path,
+        r"""
+#define S(...) #__VA_ARGS__
+const char *a = S(1, 2);
+const char *b = S();
+""".lstrip(),
+    )
+    assert res.returncode == 0, res.stderr
+    # Non-empty: arguments are stringized (subset: whitespace normalization).
+    assert 'const char *a = "1, 2";' in res.stdout
+    # Empty: stringizes to empty string.
+    assert 'const char *b = "";' in res.stdout
