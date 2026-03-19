@@ -158,7 +158,8 @@ class Preprocessor:
         self._include_paths = user_paths + sys_paths
 
         # Function-like macro storage: NAME -> (param_names, body)
-        self._fn_macros: Dict[str, Tuple[List[str], str]] = {}
+        # name -> (params, body, is_variadic)
+        self._fn_macros: Dict[str, Tuple[List[str], str, bool]] = {}
 
     def _parse_header_name_from_include_operand(self, operand: str) -> Optional[Tuple[str, str]]:
         """Parse an include operand into (kind, name).
@@ -1064,9 +1065,11 @@ class Preprocessor:
                         params = []
                     else:
                         params = [p.strip() for p in params_raw.split(",")]
+                    is_variadic = False
+                    if params and params[-1] == "...":
+                        is_variadic = True
+                        params = params[:-1]
                     for p in params:
-                        if p == "...":
-                            raise RuntimeError(f"unsupported variadic macro: {name}")
                         if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", p):
                             # In system headers we may see extensions like:
                             #   #define __END_DECLS }
@@ -1081,7 +1084,7 @@ class Preprocessor:
                     if body == "" and params == [] and params_raw != "":
                         # Ignored unsupported function-like macro.
                         continue
-                    self._fn_macros[name] = (params, body.strip())
+                    self._fn_macros[name] = (params, body.strip(), is_variadic)
                     macros.pop(name, None)
                 else:
                     macros[name] = val.strip()
@@ -1507,7 +1510,8 @@ class Preprocessor:
         out = text
         for _ in range(20):
             changed = False
-            for name, (params, body) in list(self._fn_macros.items()):
+            for name, fn in list(self._fn_macros.items()):
+                params, body, is_variadic = fn
                 # Find a call site "NAME(" and expand the first one found, repeatedly.
                 idx = 0
                 while True:
@@ -1519,7 +1523,7 @@ class Preprocessor:
                         break
 
                     args = self._split_args(arg_text)
-                    if len(args) != len(params):
+                    if (not is_variadic and len(args) != len(params)) or (is_variadic and len(args) < len(params)):
                         raise RuntimeError(
                             f"unsupported macro invocation: {name} expects {len(params)} args, got {len(args)}"
                         )
@@ -1531,6 +1535,10 @@ class Preprocessor:
                     # then substitute the remaining plain params.
                     for p, a in zip(params, args):
                         repl = self._apply_stringize(repl, p, a)
+                    # Variadics: __VA_ARGS__ is the comma-joined remaining args.
+                    if is_variadic:
+                        va = ", ".join(args[len(params) :])
+                        repl = repl.replace("__VA_ARGS__", va)
                     # Do parameter substitution first (so a##b turns into x##y),
                     # then do token-paste removal.
                     repl = self._substitute_fn_params(repl, params=params, args=args)
