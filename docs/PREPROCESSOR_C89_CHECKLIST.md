@@ -158,7 +158,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] `#line` accepted and stripped from `-E` output — `tests/test_preprocessor_line_directive.py`
 - [~] malformed `#line` in inactive region ignored — `tests/test_preprocessor_line_directive_ignored_in_inactive.py`
 - [~] Full `#line` semantics updating logical line/file (basic `#line N "file"` affects `__LINE__`/`__FILE__`)
-- [~] Diagnostics with file/line ranges (caret), include stacks (subset: file:line + include stack in `#error`; missing-include already reports stack) — `tests/test_preprocessor_diagnostics_locations.py`
+- [~] Diagnostics with file/line ranges (caret), include stacks (subset: unified `file:line:` prefix for errors + include stack when applicable; caret ranges still TODO) — `tests/test_preprocessor_diagnostics_locations.py`
 - [ ] Standard-required diagnostic wording is not targeted; just consistency + testability
 
 ---

@@ -794,6 +794,11 @@ class Preprocessor:
             base = os.path.basename(file_path)
             return f"{base}:{line_no}: {msg}"
 
+        def _raise_diag(msg: str, *, file_path: str, line_no: int) -> None:
+            # Centralized unified diagnostic format (subset):
+            #   file:line: message (include stack: ...)
+            raise RuntimeError(_with_loc(msg, file_path=file_path, line_no=line_no) + _include_chain())
+
         def _include_chain() -> str:
             # Show the inclusion chain (outermost -> innermost).
             chain = " -> ".join(os.path.basename(p) for p in stack)
@@ -859,7 +864,8 @@ class Preprocessor:
                 line, in_block_comment = self._strip_comments(line, in_block_comment)
 
             if self._include_next_re.match(line):
-                raise RuntimeError("unsupported directive: #include_next")
+                loc_line = (logical_line_no + (logical_line_base or 0))
+                _raise_diag("unsupported directive: #include_next", file_path=logical_filename, line_no=loc_line)
 
             if self._pragma_once_re.match(line):
                 # Subset: remember this file as include-once and strip directive.
@@ -885,7 +891,7 @@ class Preprocessor:
                     # If origin differs from the current file basename, still show
                     # the physical file basename for clarity.
                     err = f"#error {msg}".rstrip()
-                    raise RuntimeError(_with_loc(err, file_path=origin, line_no=loc_line) + _include_chain())
+                    _raise_diag(err, file_path=origin, line_no=loc_line)
                 continue
 
             mwarn = self._warning_re.match(line)
@@ -1824,11 +1830,11 @@ class Preprocessor:
                 return cand
         shown = ", ".join(search_paths[:10])
         more = "" if len(search_paths) <= 10 else f" (+{len(search_paths) - 10} more)"
-        loc = ""
+        loc_prefix = ""
         if includer and includer_line is not None:
-            loc = f" (at {os.path.basename(includer)}:{includer_line})"
+            loc_prefix = f"{os.path.basename(includer)}:{includer_line}: "
         stack_msg = ""
         if include_stack:
             # Show the inclusion chain (outermost -> innermost).
             stack_msg = " (include stack: " + " -> ".join(os.path.basename(p) for p in include_stack) + ")"
-        raise RuntimeError(f"cannot find include: {inc_name}{loc} (searched: {shown}{more}){stack_msg}")
+        raise RuntimeError(f"{loc_prefix}cannot find include: {inc_name} (searched: {shown}{more}){stack_msg}")
