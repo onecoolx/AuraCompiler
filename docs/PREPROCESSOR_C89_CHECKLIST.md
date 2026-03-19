@@ -113,7 +113,7 @@ These are required to safely process real-world code without crashing or mis-nes
 ### TODO (gap)
 - [ ] Full stringize escaping rules (tabs/newlines, trigraph interactions, etc.)
 - [ ] Full token-paste legality rules + diagnostics for invalid results
-- [ ] `##` at start/end of replacement list
+- [~] `##` at start/end of replacement list (subset: rejected with diagnostic) — `tests/test_preprocessor_macro_token_paste_edge_cases.py`
 - [ ] `##` with empty arguments (requires variadics)
 
 ---

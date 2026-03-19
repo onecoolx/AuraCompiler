@@ -1730,6 +1730,12 @@ class Preprocessor:
 
     def _apply_token_paste_simple(self, body: str) -> str:
         # Very small subset: after params are substituted, just delete the operator.
+        # But reject the standard-invalid forms where '##' appears at the start
+        # or end of the replacement list (subset: raise a clear error).
+        if re.match(r"^\s*##", body):
+            raise RuntimeError("unsupported macro: '##' cannot appear at start of replacement list")
+        if re.search(r"##\s*$", body):
+            raise RuntimeError("unsupported macro: '##' cannot appear at end of replacement list")
         return re.sub(r"\s*##\s*", "", body)
 
     def _extract_paren_group(self, s: str, lparen_index: int) -> Tuple[str, Union[int, None]]:
