@@ -790,6 +790,15 @@ class Preprocessor:
 
         in_block_comment = False
 
+        def _with_loc(msg: str, *, file_path: str, line_no: int) -> str:
+            base = os.path.basename(file_path)
+            return f"{base}:{line_no}: {msg}"
+
+        def _include_chain() -> str:
+            # Show the inclusion chain (outermost -> innermost).
+            chain = " -> ".join(os.path.basename(p) for p in stack)
+            return f" (include stack: {chain})" if chain else ""
+
         # Join physical lines with trailing backslash for directives (subset).
         # This is needed for multi-line macros like:
         #   #define A 1 \
@@ -870,17 +879,13 @@ class Preprocessor:
             if merr:
                 if include_stack[-1]:
                     msg = (merr.group(1) or "").strip()
-                    stack_msg = ""
-                    if include_stack:
-                        # include_stack carries file paths with the active/inactive bool.
-                        # Report outermost -> innermost to match other include errors.
-                        try:
-                            stack_paths = [os.path.basename(p) for (p, _a) in include_stack if isinstance(p, str)]
-                        except Exception:
-                            stack_paths = []
-                        if stack_paths:
-                            stack_msg = " (include stack: " + " -> ".join(stack_paths) + ")"
-                    raise RuntimeError(f"#error {msg}".rstrip() + stack_msg)
+                    loc_line = (logical_line_no + (logical_line_base or 0))
+                    # Prefer logical filename if #line changed it.
+                    origin = logical_filename or os.path.basename(abspath)
+                    # If origin differs from the current file basename, still show
+                    # the physical file basename for clarity.
+                    err = f"#error {msg}".rstrip()
+                    raise RuntimeError(_with_loc(err, file_path=origin, line_no=loc_line) + _include_chain())
                 continue
 
             mwarn = self._warning_re.match(line)
