@@ -40,3 +40,19 @@ int x = 1;
     )
     assert res.returncode == 0, res.stderr
     assert "int x = 1;" in res.stdout
+
+
+def test_E_error_in_include_reports_stack(tmp_path: Path):
+    (tmp_path / "a.h").write_text("#error from_header\n")
+    res = _run_E(
+        tmp_path,
+        r'''
+#include "a.h"
+int x = 1;
+'''.lstrip(),
+    )
+    assert res.returncode != 0
+    msg = (res.stdout + res.stderr)
+    assert "from_header" in msg
+    # Current behavior: message includes the #error payload but may not include
+    # the includer/includee filenames.

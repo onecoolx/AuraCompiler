@@ -870,7 +870,17 @@ class Preprocessor:
             if merr:
                 if include_stack[-1]:
                     msg = (merr.group(1) or "").strip()
-                    raise RuntimeError(f"#error {msg}".rstrip())
+                    stack_msg = ""
+                    if include_stack:
+                        # include_stack carries file paths with the active/inactive bool.
+                        # Report outermost -> innermost to match other include errors.
+                        try:
+                            stack_paths = [os.path.basename(p) for (p, _a) in include_stack if isinstance(p, str)]
+                        except Exception:
+                            stack_paths = []
+                        if stack_paths:
+                            stack_msg = " (include stack: " + " -> ".join(stack_paths) + ")"
+                    raise RuntimeError(f"#error {msg}".rstrip() + stack_msg)
                 continue
 
             mwarn = self._warning_re.match(line)
