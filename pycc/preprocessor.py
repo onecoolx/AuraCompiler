@@ -1538,7 +1538,16 @@ class Preprocessor:
                     # Variadics: __VA_ARGS__ is the comma-joined remaining args.
                     if is_variadic:
                         va = ", ".join(args[len(params) :])
-                        repl = repl.replace("__VA_ARGS__", va)
+                        if va.strip() == "":
+                            # GNU extension (subset): swallow a preceding comma when
+                            # using token paste with empty __VA_ARGS__:
+                            #   , ##__VA_ARGS__  ->  (removed)
+                            # We do this before the generic token-paste removal.
+                            repl = re.sub(r"\s*,\s*##\s*__VA_ARGS__\b", "", repl)
+                            repl = re.sub(r"\s*##\s*__VA_ARGS__\b", "", repl)
+                            repl = repl.replace("__VA_ARGS__", "")
+                        else:
+                            repl = repl.replace("__VA_ARGS__", va)
                     # Do parameter substitution first (so a##b turns into x##y),
                     # then do token-paste removal.
                     repl = self._substitute_fn_params(repl, params=params, args=args)

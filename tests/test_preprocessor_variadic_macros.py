@@ -38,3 +38,18 @@ int x = V(1);
     assert res.returncode == 0, res.stderr
     # Subset expectation: empty __VA_ARGS__ disappears (may leave extra whitespace).
     assert "int x = 1" in res.stdout
+
+
+def test_E_variadic_macro_gnu_comma_swallow(tmp_path: Path):
+    res = _run_E(
+        tmp_path,
+        r"""
+#define LOG(fmt, ...) printf(fmt, ##__VA_ARGS__)
+int a = LOG("%d", 1);
+int b = LOG("hi");
+""".lstrip(),
+    )
+    assert res.returncode == 0, res.stderr
+    assert 'int a = printf("%d",1);' in res.stdout
+    # When __VA_ARGS__ is empty, the preceding comma must be removed (GNU extension).
+    assert 'int b = printf("hi");' in res.stdout

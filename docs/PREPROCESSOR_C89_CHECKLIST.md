@@ -90,7 +90,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] Do not expand function-like macro calls inside string/char literals (subset) — `tests/test_preprocessor_function_like_callsite_not_in_string.py`
 
 ### TODO (gap)
-- [~] Variadic macros (C99+, but common): `...` / `__VA_ARGS__` (subset) — `tests/test_preprocessor_variadic_macros.py`
+- [~] Variadic macros (C99+, but common): `...` / `__VA_ARGS__` (subset; includes GNU `, ##__VA_ARGS__` comma-swallow) — `tests/test_preprocessor_variadic_macros.py`
 - [~] Full parameter substitution tokenization rules (subset: token-based substitution avoids strings/chars; still missing full preprocessing-token model)
 - [ ] Full hide-set / rescanning semantics for both object-like and function-like
 - [ ] Expand macros across multiple tokens while preserving token boundaries
