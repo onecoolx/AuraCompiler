@@ -1390,6 +1390,30 @@ class Preprocessor:
         def is_ident_continue(ch: str) -> bool:
             return ch.isalnum() or ch == "_"
 
+        def is_pp_number_start(ch: str) -> bool:
+            return ch.isdigit() or ch == "."
+
+        def is_pp_number_continue(ch: str) -> bool:
+            return ch.isalnum() or ch in "._+-"
+
+        def is_pp_number_start(ch: str) -> bool:
+            # Subset of preprocessing-number start characters.
+            return ch.isdigit() or ch == "."
+
+        def is_pp_number_continue(ch: str) -> bool:
+            # Very small pp-number subset sufficient to avoid expanding macros
+            # inside tokens like `0A` / `123UL` / `0x10u` / `1e+3`.
+            return ch.isalnum() or ch in "._+-"
+
+        def is_pp_number_start(ch: str) -> bool:
+            # Subset of preprocessing-number start characters.
+            return ch.isdigit() or ch == "."
+
+        def is_pp_number_continue(ch: str) -> bool:
+            # Very small pp-number subset sufficient to avoid expanding macros
+            # inside tokens like `0A` / `123UL` / `0x10u` / `1e+3`.
+            return ch.isalnum() or ch in "._+-"
+
         while i < n:
             ch = line[i]
 
@@ -1500,6 +1524,12 @@ class Preprocessor:
         def is_ident_continue(ch: str) -> bool:
             return ch.isalnum() or ch == "_"
 
+        def is_pp_number_start(ch: str) -> bool:
+            return ch.isdigit() or ch == "."
+
+        def is_pp_number_continue(ch: str) -> bool:
+            return ch.isalnum() or ch in "._+-"
+
         while i < n:
             ch = line[i]
 
@@ -1547,6 +1577,16 @@ class Preprocessor:
                         out.append(ident)
                     else:
                         out.append(macros.get(ident, ident))
+                continue
+
+            # Preprocessing-number (very small subset): do not expand macros
+            # inside it (e.g. `0A` is one pp-number token, not `0` + `A`).
+            if is_pp_number_start(ch):
+                start = i
+                i += 1
+                while i < n and is_pp_number_continue(line[i]):
+                    i += 1
+                out.append(line[start:i])
                 continue
 
             out.append(ch)
