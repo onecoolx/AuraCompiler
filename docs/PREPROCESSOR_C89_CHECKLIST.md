@@ -87,6 +87,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] Nested calls (best-effort) — `tests/test_preprocessor_function_like_macros.py`
 - [~] Multiline macro bodies via `\` line splice (subset) — `tests/test_preprocessor_function_like_multiline.py`
 - [~] Argument macro expansion (subset) — `tests/test_preprocessor_function_like_arg_expansion.py`
+- [~] Do not expand function-like macro calls inside string/char literals (subset) — `tests/test_preprocessor_function_like_callsite_not_in_string.py`
 
 ### TODO (gap)
 - [ ] Variadic macros (C99+, but common): `...` / `__VA_ARGS__`

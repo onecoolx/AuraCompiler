@@ -1511,11 +1511,9 @@ class Preprocessor:
                 # Find a call site "NAME(" and expand the first one found, repeatedly.
                 idx = 0
                 while True:
-                    m = re.search(rf"\b{re.escape(name)}\s*\(", out[idx:])
-                    if not m:
+                    call_start, paren_start = self._find_fn_macro_call(out, name, start_idx=idx)
+                    if call_start is None or paren_start is None:
                         break
-                    call_start = idx + m.start()
-                    paren_start = idx + m.end() - 1  # points at '('
                     arg_text, paren_end = self._extract_paren_group(out, paren_start)
                     if paren_end is None:
                         break
@@ -1555,6 +1553,73 @@ class Preprocessor:
             if not changed:
                 return out
         return out
+
+    def _find_fn_macro_call(self, text: str, name: str, *, start_idx: int) -> Tuple[Optional[int], Optional[int]]:
+        """Find next function-like macro call site (subset).
+
+        Returns (call_start, lparen_index) or (None, None) if not found.
+
+        Subset rules:
+        - Match only at identifier token boundaries.
+        - Skip over string and char literals.
+        - Allow whitespace between NAME and '(' (like the existing regex).
+        """
+
+        n = len(text)
+        i = max(0, start_idx)
+
+        def is_ident_start(ch: str) -> bool:
+            return ch.isalpha() or ch == "_"
+
+        def is_ident_continue(ch: str) -> bool:
+            return ch.isalnum() or ch == "_"
+
+        while i < n:
+            ch = text[i]
+
+            # Skip string literals
+            if ch == '"':
+                i += 1
+                while i < n:
+                    if text[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if text[i] == '"':
+                        i += 1
+                        break
+                    i += 1
+                continue
+
+            # Skip char literals
+            if ch == "'":
+                i += 1
+                while i < n:
+                    if text[i] == "\\" and i + 1 < n:
+                        i += 2
+                        continue
+                    if text[i] == "'":
+                        i += 1
+                        break
+                    i += 1
+                continue
+
+            if is_ident_start(ch):
+                start = i
+                i += 1
+                while i < n and is_ident_continue(text[i]):
+                    i += 1
+                ident = text[start:i]
+                if ident == name:
+                    j = i
+                    while j < n and text[j].isspace():
+                        j += 1
+                    if j < n and text[j] == "(":
+                        return start, j
+                continue
+
+            i += 1
+
+        return None, None
 
     def _substitute_fn_params(self, body: str, *, params: List[str], args: List[str]) -> str:
         """Substitute function-like macro params in a replacement list (subset).
