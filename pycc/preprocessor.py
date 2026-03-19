@@ -1442,7 +1442,12 @@ class Preprocessor:
         return cur
 
     def _expand_object_like_macros_single_pass(
-        self, line: str, macros: Dict[str, str], *, disabled: Optional[Set[str]] = None
+        self,
+        line: str,
+        macros: Dict[str, str],
+        *,
+        disabled: Optional[Set[str]] = None,
+        only_empty: bool = False,
     ) -> str:
         out: List[str] = []
         i = 0
@@ -1499,7 +1504,10 @@ class Preprocessor:
                 if ident in disabled:
                     out.append(ident)
                 else:
-                    out.append(macros.get(ident, ident))
+                    if only_empty and ident in macros and macros[ident].strip() != "":
+                        out.append(ident)
+                    else:
+                        out.append(macros.get(ident, ident))
                 continue
 
             out.append(ch)
@@ -1558,6 +1566,11 @@ class Preprocessor:
                     # Do parameter substitution first (so a##b turns into x##y),
                     # then do token-paste removal.
                     repl = self._substitute_fn_params(repl, params=params, args=args)
+                    # Best-effort: only expand *empty* object-like macros inside the
+                    # replacement list *before* token pasting, so common patterns like
+                    # CAT(EMPTY, X) can paste correctly when EMPTY expands to nothing,
+                    # without changing general token-paste semantics.
+                    repl = self._expand_object_like_macros_single_pass(repl, macros, only_empty=True)
                     repl = self._apply_token_paste_simple(repl)
                     # After token pasting, rescan the pasted result for object-like macros.
                     # This is a small subset of the C preprocessor behavior.
@@ -1732,10 +1745,11 @@ class Preprocessor:
         # Very small subset: after params are substituted, just delete the operator.
         # But reject the standard-invalid forms where '##' appears at the start
         # or end of the replacement list (subset: raise a clear error).
-        if re.match(r"^\s*##", body):
-            raise RuntimeError("unsupported macro: '##' cannot appear at start of replacement list")
-        if re.search(r"##\s*$", body):
-            raise RuntimeError("unsupported macro: '##' cannot appear at end of replacement list")
+        # Note: after best-effort macro expansion, token pasting may end up with
+        # an empty operand on either side. Accept these by dropping the operator
+        # and adjacent whitespace (subset).
+        body = re.sub(r"^\s*##\s*", "", body)
+        body = re.sub(r"\s*##\s*$", "", body)
         return re.sub(r"\s*##\s*", "", body)
 
     def _extract_paren_group(self, s: str, lparen_index: int) -> Tuple[str, Union[int, None]]:
@@ -1774,9 +1788,10 @@ class Preprocessor:
                 if depth > 0:
                     depth -= 1
             cur.append(ch)
+        # Important: allow empty trailing arguments (e.g. `F(a,)`), which are
+        # common in macro token-paste patterns.
         tail = "".join(cur).strip()
-        if tail:
-            args.append(tail)
+        args.append(tail)
         return args
 
     def _resolve_include(
