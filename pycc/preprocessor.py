@@ -964,7 +964,11 @@ class Preprocessor:
                 try:
                     cond_true = self._eval_if_expr(expr, macros)
                 except RuntimeError as e:
-                    raise RuntimeError(f"{e} (at {os.path.basename(abspath)}:{logical_line_no}: {expr.strip()!r})")
+                    # Ensure #if failures always carry the directive location.
+                    msg = str(e)
+                    if not re.match(r"^[^:\n]+:\d+:\s", msg):
+                        msg = f"{os.path.basename(abspath)}:{logical_line_no}: {msg}"
+                    raise RuntimeError(f"{msg} (at {os.path.basename(abspath)}:{logical_line_no}: {expr.strip()!r})")
                 include_stack.append(parent and cond_true)
                 taken_stack.append(parent and cond_true)
                 continue
@@ -1057,7 +1061,11 @@ class Preprocessor:
                 try:
                     cond_true = self._eval_if_expr(expr, macros)
                 except RuntimeError as e:
-                    raise RuntimeError(f"{e} (at {os.path.basename(abspath)}:{logical_line_no}: {expr.strip()!r})")
+                    # Ensure #elif failures always carry the directive location.
+                    msg = str(e)
+                    if not re.match(r"^[^:\n]+:\d+:\s", msg):
+                        msg = f"{os.path.basename(abspath)}:{logical_line_no}: {msg}"
+                    raise RuntimeError(f"{msg} (at {os.path.basename(abspath)}:{logical_line_no}: {expr.strip()!r})")
                 new_active = parent and (not already) and cond_true
                 include_stack[-1] = new_active
                 taken_stack[-1] = already or new_active

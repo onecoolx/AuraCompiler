@@ -67,6 +67,8 @@ def test_E_unsupported_if_expression_has_file_line(tmp_path: Path):
     # Trigger a known unsupported #if expression error.
     (tmp_path / "t.c").write_text(
         """
+// pad
+// pad
 #if 1/0
 int x;
 #endif
@@ -82,5 +84,5 @@ int x;
     assert r.returncode != 0
     msg = (r.stdout + r.stderr)
     assert "t.c" in msg
-    assert ":1" in msg
+    assert ":3" in msg
     assert "unsupported" in msg.lower()
