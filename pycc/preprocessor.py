@@ -1397,6 +1397,18 @@ class Preprocessor:
             return ch.isalnum() or ch in "._+-"
 
         def is_pp_number_start(ch: str) -> bool:
+            return ch.isdigit() or ch == "."
+
+        def is_pp_number_continue(ch: str) -> bool:
+            return ch.isalnum() or ch in "._+-"
+
+        def is_pp_number_start(ch: str) -> bool:
+            return ch.isdigit() or ch == "."
+
+        def is_pp_number_continue(ch: str) -> bool:
+            return ch.isalnum() or ch in "._+-"
+
+        def is_pp_number_start(ch: str) -> bool:
             # Subset of preprocessing-number start characters.
             return ch.isdigit() or ch == "."
 
@@ -1702,8 +1714,22 @@ class Preprocessor:
         def is_ident_continue(ch: str) -> bool:
             return ch.isalnum() or ch == "_"
 
+        def is_pp_number_start(ch: str) -> bool:
+            return ch.isdigit() or ch == "."
+
+        def is_pp_number_continue(ch: str) -> bool:
+            return ch.isalnum() or ch in "._+-"
+
         while i < n:
             ch = text[i]
+
+            # Skip preprocessing-number tokens so we don't match identifiers
+            # inside them (e.g. `0F(1)` should not match macro `F(`).
+            if is_pp_number_start(ch):
+                i += 1
+                while i < n and is_pp_number_continue(text[i]):
+                    i += 1
+                continue
 
             # Skip string literals
             if ch == '"':

@@ -94,6 +94,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] Full parameter substitution tokenization rules (subset: token-based substitution avoids strings/chars; still missing full preprocessing-token model)
 - [~] Full hide-set / rescanning semantics for both object-like and function-like (subset: recursive expansion terminates; see `tests/test_preprocessor_hide_set.py`)
 - [ ] Expand macros across multiple tokens while preserving token boundaries
+- [~] Do not match function-like macro calls inside preprocessing-number tokens (subset: `0F(1)` does not invoke `F`) — `tests/test_preprocessor_function_like_call_not_in_pp_number.py`
 - [ ] Correct whitespace preservation rules in macro replacement (standard)
 - [ ] Disable macro expansion of macro name during its own expansion (general, not only special cases)
 
