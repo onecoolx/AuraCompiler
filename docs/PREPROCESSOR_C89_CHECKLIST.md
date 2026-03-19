@@ -63,7 +63,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [~] `#pragma once` include-once semantics (subset) + path equivalence edges — `tests/test_preprocessor_pragma_once*.py`
 
 ### TODO (gap)
-- [~] Macro-expanded include operands: `#include HEADER` / `#include STR(x)` (subset: expands to a header-name and then resolves it)
+- [~] Macro-expanded include operands: `#include HEADER` / `#include STR(x)` (subset: expands to a header-name and then resolves it; errors if expansion is not a header-name) — `tests/test_preprocessor_include_macro_operands.py`
 - [x] Full include search order parity for `""` vs `<>` (standard behavior) — `tests/test_preprocessor_include_search_order.py`
 - [~] `#include` with comments/line splices in header-name tokens (subset: comments + header-name line splices supported) — `tests/test_preprocessor_include_comments_in_header_name.py`, `tests/test_preprocessor_include_line_splice_header_name.py`
 - [~] Proper handling of missing includes: diagnostic quality + include stack reporting (subset: include stack + includer location; caret ranges still TODO) — `tests/test_preprocessor_missing_include_error.py`, `tests/test_preprocessor_missing_include_location_and_stack.py`

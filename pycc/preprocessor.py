@@ -1250,6 +1250,11 @@ class Preprocessor:
                     )
                     out_lines.append(self._preprocess_file(inc_path, stack, macros))
                     continue
+                _raise_diag(
+                    f"unsupported #include operand after macro expansion: {expanded.strip()!r}",
+                    file_path=logical_filename,
+                    line_no=logical_line_no,
+                )
 
             if logical_line_base is None:
                 effective_line_no = logical_line_no
