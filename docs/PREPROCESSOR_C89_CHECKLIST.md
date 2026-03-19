@@ -173,6 +173,7 @@ These are required to safely process real-world code without crashing or mis-nes
 - [ ] Implement macro-expanded `#include` operands (very common in real code)
 - [ ] Replace regex-based macro substitution with token-based substitution (unblocks correctness across many cases)
 - [~] Avoid expanding object-like macros inside preprocessing-number tokens (subset: treat `0A`/`0x10u`/`1e+3` as atomic for macro replacement) — `tests/test_preprocessor_object_like_multiple_tokens.py`
+- [~] Token-boundary consistency across expanders (subset: object-like and function-like agree on pp-number / string boundaries) — `tests/test_preprocessor_token_scanner_consistency.py`
 - [ ] Generalize hide-set implementation (remove special-case suppressions)
 
 ## P1 (macro completeness)
