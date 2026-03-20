@@ -39,6 +39,9 @@ Snapshot (source of truth):
 | Area | Status | Tests / Notes |
 |---|---:|---|
 | integer promotions / UAC | PARTIAL | `tests/test_integer_promotions_*.py`, `tests/test_int_conversions*.py` |
+
+Notes:
+- LP64 usual arithmetic conversion case `long` vs `unsigned int` is covered by `tests/test_usual_arithmetic_conversions_long_vs_unsigned_int.py`.
 | pointer arithmetic | PARTIAL | `tests/test_pointer_arith*.py` |
 | `sizeof` | PARTIAL | `tests/test_sizeof.py` |
 | short-circuit `&&/||` | DONE | `tests/test_short_circuit.py` |
