@@ -1,6 +1,6 @@
 C89 Implementation Roadmap (Living)
 
-Last updated: 2026-03-18
+Last updated: 2026-03-20
 
 目标
 - 以可执行、可验证（tests）方式推进：
@@ -30,7 +30,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - **DONE** `&&`/`||` 短路：`tests/test_short_circuit.py`
 - **PARTIAL** 类型系统：整数提升/常见算术转换尚未完全实现（见阶段 2）
 
-补充（2026-03-18 现状）
+补充（2026-03-20 现状）
 - `pytest -q`：**705 passed**（测试为准）。
 - 目标平台关键 ABI 点已覆盖并有回归测试：
 	- SysV AMD64 variadic ABI：`printf` 类调用点 `%al` 规则、以及 `va_list` 传递给 libc `v*` 系列（`vsnprintf` 等）。
@@ -72,7 +72,6 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - 生成：对应示例能编译、链接并在系统上正确运行（与 `gcc` 行为一致）
 
 下一步建议（短期）
-- 优先补齐 `&&` / `||` 短路（需要 IR 分支）并添加 side-effect 测试
 - 推进更完整的类型系统（整数提升/算术转换、指针运算）
 
 注：历史上的“pytest 通过：N tests”小节容易过期，后续以 `pytest -q` 输出为准。
