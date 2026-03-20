@@ -1,6 +1,6 @@
 # C89 Conformance Matrix (stub)
 
-Last updated: 2026-03-18
+Last updated: 2026-03-20
 
 Purpose:
 - Provide a **spec-area ↔ tests ↔ status** map.
