@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **642 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **705 passed**.
 
 ### Recent changes
 
@@ -63,7 +63,8 @@ pycc/
 - Added regression test: `tests/test_variadic_printf_local_extern_proto.py`.
 - Fixed a for-loop infinite-loop bug caused by stack slot aliasing between user locals (`@i/@j`) and IR temporaries (`%t*`). Root cause was an inconsistent frame-offset scheme when reserving a fixed spill area; compare results were accidentally stored into the loop variable slot.
 - Implemented a consistent frame layout rule in `pycc/codegen.py`: declared locals occupy the top of the frame; temps/spills use a reserved spill region below locals; any late-discovered locals are allocated below the spill region. This prevents overlaps and stabilizes control-flow correctness.
-- Preprocessor: improved `#if` expression compatibility for system headers by accepting integer literal suffixes (e.g. `201710L`) and tolerating function-like macro calls in `#if` (treated as 0). Also enhanced `#if` error diagnostics with file:line and the expression text.
+- Preprocessor: improved `#if` expression compatibility for system headers by accepting integer literal suffixes (e.g. `201710L`) and tolerating function-like macro calls in `#if` (treated as 0). Also enhanced `#if`/`#elif` error diagnostics with directive file:line.
+- Preprocessor: macro-expanded `#include` operands (subset) and additional token-boundary / termination hardening for macro expansion (pp-number boundaries; self-referential termination subsets).
 
 - Variadic ABI (SysV AMD64): fixed glibc-compatible `va_list` handling so a `va_list` can be passed to libc `v*` entrypoints (e.g. `vsnprintf`). Documented in `docs/ARCHITECTURE.md` (2.6.1) and covered by regression tests.
 
@@ -107,7 +108,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 
 - **DONE**: Tokens for C operators, delimiters, identifiers, integer/char/string literals, comments.
 - **PARTIAL**: Keywords set includes many non-C89 keywords (lexer accepts them).
-- **PARTIAL**: Preprocessor: `#include`, `#define` (object/function-like), `#if/#ifdef/#ifndef/#else/#elif/#endif`, `#line`, `#error`, `#warning`, `#pragma once` (subset). Missing full macro expansion semantics and macro-expanded includes.
+- **PARTIAL**: Preprocessor: `#include`, `#define` (object/function-like), `#if/#ifdef/#ifndef/#else/#elif/#endif`, `#line`, `#error`, `#warning`, `#pragma once` (subset). Missing full macro expansion semantics; macro-expanded includes are supported as a subset (see `docs/PREPROCESSOR_C89_CHECKLIST.md`).
 
 ### Declarations / Types
 

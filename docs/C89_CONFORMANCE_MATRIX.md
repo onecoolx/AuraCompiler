@@ -12,7 +12,7 @@ Rule:
 Legend: **DONE** / **PARTIAL** / **TODO**.
 
 Snapshot (source of truth):
-- `pytest -q`: **642 passed** (as of 2026-03-18)
+- `pytest -q`: **705 passed** (as of 2026-03-20)
 
 ## Frontend
 
