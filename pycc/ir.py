@@ -1556,38 +1556,44 @@ class IRGenerator:
                             except Exception:
                                 ad = None
                             if isinstance(ad, list) and len(ad) >= 2 and isinstance(ad[0], int) and isinstance(ad[1], int):
-                                # Only handle nested Initializer list form: {{...},{...}}
+                                # Minimal multi-dimensional support for local arrays.
+                                # We treat the array as a flat backing store in row-major order.
+                                # Accept both:
+                                #  - nested brace lists: {{...},{...}}
+                                #  - brace elision: { 1,2,3,4 }
                                 from pycc.ast_nodes import Initializer as ASTInit
 
+                                flat: list[Expression] = []
                                 if any(isinstance(x, ASTInit) for x in inits):
-                                    flat: list[Expression] = []
                                     for row in inits:
                                         if isinstance(row, ASTInit):
                                             row_elems = [e for (_d, e) in (row.elements or [])]
                                             flat.extend(row_elems)
                                         else:
                                             flat.append(row)
+                                else:
+                                    flat = list(inits)
 
-                                    total = int(ad[0]) * int(ad[1])
-                                    for idx in range(total):
-                                        val_ast = flat[idx] if idx < len(flat) else IntLiteral(
-                                            value=0,
-                                            is_hex=False,
-                                            is_octal=False,
-                                            line=item.line,
-                                            column=item.column,
+                                total = int(ad[0]) * int(ad[1])
+                                for idx in range(total):
+                                    val_ast = flat[idx] if idx < len(flat) else IntLiteral(
+                                        value=0,
+                                        is_hex=False,
+                                        is_octal=False,
+                                        line=item.line,
+                                        column=item.column,
+                                    )
+                                    v = self._gen_expr(val_ast)
+                                    self.instructions.append(
+                                        IRInstruction(
+                                            op="store_index",
+                                            result=v,
+                                            operand1=f"@{item.name}",
+                                            operand2=f"${idx}",
+                                            label="char" if str(item.type.base).strip() in {"char", "unsigned char"} else "int",
                                         )
-                                        v = self._gen_expr(val_ast)
-                                        self.instructions.append(
-                                            IRInstruction(
-                                                op="store_index",
-                                                result=v,
-                                                operand1=f"@{item.name}",
-                                                operand2=f"${idx}",
-                                                label="char" if str(item.type.base).strip() in {"char", "unsigned char"} else "int",
-                                            )
-                                        )
-                                    continue
+                                    )
+                                continue
 
                             # int a[N] = {...}
                             n = int(item.array_size)
