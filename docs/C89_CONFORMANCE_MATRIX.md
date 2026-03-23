@@ -33,6 +33,7 @@ Snapshot (source of truth):
 | storage classes (`static/extern/auto/register`) | PARTIAL | `tests/test_storage_class*.py`, `tests/test_auto_register.py` |
 | qualifiers (`const/volatile`) | PARTIAL | `tests/test_const.py`, `tests/test_const_pointer.py` |
 | builtin types (`__builtin_va_list`) | PARTIAL | parsing support: `tests/test_builtin_va_list_parsing.py` |
+| array declarators + inferred sizes | PARTIAL -> PARTIAL+ | `tests/test_multi_dim_array_infer_inner_dim_from_initializer.py`, `tests/test_initializers.py` |
 
 ## Expressions / Semantics
 

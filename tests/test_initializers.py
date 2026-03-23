@@ -136,6 +136,26 @@ int main(){
         assert _compile_and_run(tmp_path, code) == 0
 
 
+def test_local_multi_dim_array_sizeof(tmp_path):
+        code = r"""
+int main(){
+    int a[2][3];
+    return sizeof(a) == 24 ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
+def test_local_multi_dim_array_initializer(tmp_path):
+        code = r"""
+int main(){
+    int a[2][2] = { {1, 2}, {3, 4} };
+    return (a[0][0] + a[0][1] + a[1][0] + a[1][1] == 10) ? 0 : 1;
+}
+""".lstrip()
+        assert _compile_and_run(tmp_path, code) == 0
+
+
 def test_local_char_array_infer_size_singleton_initializer(tmp_path):
         code = r"""
 int main(){

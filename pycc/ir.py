@@ -1425,8 +1425,36 @@ class IRGenerator:
                                 except Exception:
                                     pass
 
-                    # Multi-dimensional arrays are parsed (Declaration.array_dims)
-                    # but not yet supported in IR/type lowering.
+                    # C89: allow omitted first dimension in 2D arrays with known
+                    # inner dimension, inferred from a nested initializer list.
+                    # Example: `char a[][4] = { {..}, {..} };` => dims [2, 4].
+                    if op1 is None and getattr(item, "array_size", None) is None and item.initializer is not None:
+                        try:
+                            ad = getattr(item, "array_dims", None)
+                        except Exception:
+                            ad = None
+                        # Parser stores dims outer->inner; for `[][4]` it's [None, 4].
+                        if isinstance(ad, list) and len(ad) >= 2 and ad[0] is None and isinstance(ad[1], int):
+                            inits0 = self._const_initializer_list(item.initializer)
+                            from pycc.ast_nodes import Initializer as ASTInit
+
+                            if inits0 is not None and any(isinstance(x, ASTInit) for x in inits0):
+                                # Each top-level element corresponds to a row.
+                                outer_n = len(inits0)
+                                item.array_size = int(outer_n)
+                                try:
+                                    item.array_dims = [int(outer_n), int(ad[1])] + [int(x) if isinstance(x, int) else None for x in ad[2:]]
+                                except Exception:
+                                    pass
+                                op1 = f"array({item.type.base},${int(outer_n) * int(ad[1])})"
+                                try:
+                                    self._local_array_dims[item.name] = list(getattr(item, "array_dims", []) or [])
+                                except Exception:
+                                    pass
+
+                    # Multi-dimensional arrays: we only model a 1D backing store
+                    # plus optional dims metadata (used for pointer-to-row decay
+                    # and 2D initializer flattening).
 
                     # If this is an array with known/inferred size, record it
                     # as an array type even when element type is struct/union.
@@ -1926,6 +1954,35 @@ class IRGenerator:
                         return f"${_type_size(base_part) * max(0, n)}"
                     # fallback for local arrays
                     return "$4"
+
+                # If parser recorded multi-dimensional dims but we didn't mark
+                # it as a local array object (e.g. `char a[][4] = {...}` where
+                # we infer only at IR time), still compute sizeof from dims.
+                try:
+                    ad = getattr(self, "_local_array_dims", {}).get(op.name)
+                    if isinstance(ad, list) and len(ad) >= 2 and all(isinstance(d, int) for d in ad if d is not None):
+                        # Default element type for now comes from semantic context
+                        # when available; otherwise fall back to int.
+                        base_part = "int"
+                        try:
+                            sym = f"@{op.name}"
+                            bty = getattr(self, "_var_types", {}).get(sym)
+                            if isinstance(bty, str) and bty.strip().startswith("array("):
+                                inner = bty.strip()[len("array(") :]
+                                if inner.endswith(")"):
+                                    inner = inner[:-1]
+                                base_part = inner.split(",", 1)[0].strip() or base_part
+                        except Exception:
+                            pass
+                        n = 1
+                        for d in ad:
+                            if d is None:
+                                n = 0
+                                break
+                            n *= int(d)
+                        return f"${_type_size(base_part) * int(n)}"
+                except Exception:
+                    pass
                 # Global arrays: infer total byte size using semantic context
                 # (we record declared array sizes for globals when known).
                 try:
