@@ -1,2 +1,12 @@
 */__pycache__/*
 .vscode
+
+.pytest_cache/
+
+# Local build / scratch artifacts
+a.out
+*.o
+*.s
+
+# Local scratch files
+t.c
