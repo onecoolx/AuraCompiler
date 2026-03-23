@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **713 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **715 passed**.
 
 ### Recent changes
 

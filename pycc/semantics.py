@@ -877,11 +877,41 @@ class SemanticAnalyzer:
                 if getattr(ty, "is_const", False):
                     self.errors.append(f"Assignment to const-qualified variable '{expr.target.name}'")
 
+            def _expr_is_nonmodifiable_lvalue(e: Expression) -> bool:
+                """Return True if e is a non-modifiable lvalue (const-qualified).
+
+                Subset implemented:
+                - identifier of const-qualified object
+                - array element where the array element type is const-qualified
+                  (e.g. `const int a[2]; a[0] = 1;`)
+                """
+
+                if isinstance(e, Identifier):
+                    ty2 = self._lookup_decl_type(e.name)
+                    return bool(ty2 is not None and getattr(ty2, "is_const", False))
+
+                if isinstance(e, ArrayAccess) and isinstance(e.array, Identifier):
+                    aty = self._lookup_decl_type(e.array.name)
+                    # Parser encodes arrays via Declaration.array_size/array_dims; element type
+                    # qualifiers are carried on the base Type node.
+                    return bool(aty is not None and getattr(aty, "is_const", False))
+
+                return False
+
+            # Stricter rule: reject assignment to const-qualified subobjects
+            # like `a[0]` when `a` is `const T[]`.
+            if _expr_is_nonmodifiable_lvalue(expr.target):
+                self.errors.append("Assignment to non-modifiable lvalue")
+
             # Feature B (subset): reject writes through pointers-to-const.
             # Detect `*p = ...` where `p` was declared as `const T*`.
             if isinstance(expr.target, UnaryOp) and expr.target.operator == "*" and isinstance(expr.target.operand, Identifier):
                 p_name = expr.target.operand.name
-                p_ty = getattr(self, "_decl_types", {}).get(p_name)
+                p_ty = self._lookup_decl_type(p_name)
+                # NOTE: We currently approximate `const T*` (pointee-const) as
+                # `Type.is_const=True` on a pointer Type. This is not fully correct
+                # (it conflates `T* const` vs `const T*`), but it matches how the
+                # existing parser encodes qualifiers today.
                 if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
                     self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
 

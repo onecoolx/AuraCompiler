@@ -228,12 +228,21 @@ class Parser:
             self.advance()
 
         # handle pointer declarators like: `int *p;` or `struct S *p;`
-        # Also ignore pointer-level qualifiers like: `char *const p`.
+        # NOTE: This stage models only a *subset* of pointer qualifiers.
+        # - `const T *p` (pointee-const) is approximated by keeping `base_type.is_const=True`
+        #   on the pointer Type.
+        # - `T *const p` (const pointer) is currently ignored.
         while True:
             if self._match(TokenType.STAR):
                 base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
                 continue
+            # If we see `const` here (after consuming a `*`), treat it as applying
+            # to the pointee type for now (best-effort).
             if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+                try:
+                    base_type.is_const = True
+                except Exception:
+                    pass
                 self.advance()
                 continue
             break
@@ -248,6 +257,10 @@ class Parser:
                 base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
                 continue
             if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+                try:
+                    base_type.is_const = True
+                except Exception:
+                    pass
                 self.advance()
                 continue
             break
@@ -705,14 +718,36 @@ class Parser:
         base_type = self._parse_type_specifier()
         # Support parentheses around declarators (e.g. function pointers):
         #   int (*fp)(int);
+        # Keep qualifier flags from the base type (best-effort) when building
+        # pointer types.
         while self._match(TokenType.STAR):
-            base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+            base_type = Type(
+                base=base_type.base,
+                is_pointer=True,
+                is_const=getattr(base_type, "is_const", False),
+                is_volatile=getattr(base_type, "is_volatile", False),
+                is_restrict=getattr(base_type, "is_restrict", False),
+                is_unsigned=getattr(base_type, "is_unsigned", False),
+                is_signed=getattr(base_type, "is_signed", False),
+                line=base_type.line,
+                column=base_type.column,
+            )
 
         if self._match(TokenType.LPAREN):
             # parse inner pointer part: (*name)
             ptr_ty = base_type
             while self._match(TokenType.STAR):
-                ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                ptr_ty = Type(
+                    base=ptr_ty.base,
+                    is_pointer=True,
+                    is_const=getattr(ptr_ty, "is_const", False),
+                    is_volatile=getattr(ptr_ty, "is_volatile", False),
+                    is_restrict=getattr(ptr_ty, "is_restrict", False),
+                    is_unsigned=getattr(ptr_ty, "is_unsigned", False),
+                    is_signed=getattr(ptr_ty, "is_signed", False),
+                    line=ptr_ty.line,
+                    column=ptr_ty.column,
+                )
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
             # support array-of-function-pointer declarator: (*name[...])
             if self._match(TokenType.LBRACKET):
@@ -738,8 +773,41 @@ class Parser:
     def _finish_declarator(self, base_type: Type, name_tok: Token) -> Declaration:
         ty = base_type
         # pointers (limited: consume leading '*'s)
-        while self._match(TokenType.STAR):
-            ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
+        # NOTE: best-effort qualifier handling for pointer declarators.
+        # Current representation cannot distinguish `const T *p` vs `T *const p`.
+        # We treat any `const` seen before `*` (in the type specifier) as applying
+        # to the pointee and propagate it onto the resulting pointer Type.
+        while True:
+            if self._match(TokenType.STAR):
+                ty = Type(
+                    base=ty.base,
+                    is_pointer=True,
+                    is_const=getattr(ty, "is_const", False),
+                    is_volatile=getattr(ty, "is_volatile", False),
+                    is_restrict=getattr(ty, "is_restrict", False),
+                    is_unsigned=getattr(ty, "is_unsigned", False),
+                    is_signed=getattr(ty, "is_signed", False),
+                    line=ty.line,
+                    column=ty.column,
+                )
+                continue
+            # Allow pointer-level qualifiers after '*': we currently fold them
+            # into the same flags (best-effort).
+            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+                try:
+                    ty.is_const = True
+                except Exception:
+                    pass
+                self.advance()
+                continue
+            if self._at(TokenType.KEYWORD) and self.current_token.value == "volatile":
+                try:
+                    ty.is_volatile = True
+                except Exception:
+                    pass
+                self.advance()
+                continue
+            break
 
         # array declarator: name[expr]
         # NOTE: this parser milestone supports only a single array suffix.
