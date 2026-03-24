@@ -498,10 +498,13 @@ class IRGenerator:
                     bytes_vals = [ord(c) for c in s]
                     # C89: string literal used to initialize a character array
                     # includes the terminating '\0' (when space permits).
-                    if len(bytes_vals) + 1 <= n:
-                        bytes_vals.append(0)
-                    if len(bytes_vals) > n:
-                        bytes_vals = bytes_vals[:n]
+                    # Constraint: if the array is too small to contain the
+                    # string literal plus terminating NUL, it's an error.
+                    if len(bytes_vals) + 1 > n:
+                        raise IRGenError(
+                            f"string literal initializer too long for array '{decl.name}'"
+                        )
+                    bytes_vals.append(0)
                     if len(bytes_vals) < n:
                         bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
                     return "blob:" + "".join(f"{b & 0xFF:02x}" for b in bytes_vals)
@@ -510,6 +513,10 @@ class IRGenerator:
                 inits = self._const_initializer_list(init)
                 if inits is None:
                     return None
+                if len(inits) > n:
+                    raise IRGenError(
+                        f"excess elements in initializer for array '{decl.name}'"
+                    )
                 vals: list[int] = []
                 for e in inits[:n]:
                     imm = self._const_expr_to_int(e)
@@ -524,6 +531,10 @@ class IRGenerator:
                 inits = self._const_initializer_list(init)
                 if inits is None:
                     return None
+                if len(inits) > n:
+                    raise IRGenError(
+                        f"excess elements in initializer for array '{decl.name}'"
+                    )
                 vals: list[int] = []
                 for e in inits[:n]:
                     imm = self._const_expr_to_int(e)
@@ -773,10 +784,30 @@ class IRGenerator:
                             blob_ref[member_off + i] = (v >> (8 * i)) & 0xFF
                     eidx += 1
 
+                # Reject excess elements.
+                if eidx < len(elems3):
+                    raise IRGenError(
+                        f"excess elements in initializer for '{ty_name}'"
+                    )
+
                 return True
 
             if not _write_struct_from_init(str(base), init, 0, blob):
                 return None
+
+            # C89 union initialization: only one initializer element is allowed
+            # (it initializes the first member). Reject any excess elements.
+            try:
+                if str(base).strip().startswith("union "):
+                    inits_top2 = self._const_initializer_list(init) or []
+                    if len(inits_top2) > 1:
+                        raise IRGenError(
+                            f"excess elements in initializer for '{str(base).strip()}'"
+                        )
+            except IRGenError:
+                raise
+            except Exception:
+                pass
 
             # Defensive: if nested aggregate packing failed to write but a nested
             # brace-list element exists, try a simple direct copy path for the
