@@ -75,15 +75,15 @@ int main(){
 
 
 def test_local_int_array_brace_initializer_truncate(tmp_path):
-    code = r"""
+        code = r"""
 int main(){
         int a[2] = {1, 2, 3, 4};
         return (a[0] == 1 && a[1] == 2) ? 0 : 1;
 }
 """.lstrip()
-    # C89: excess initializer elements are a constraint violation.
-    res = _compile(tmp_path, code)
-    assert not res.success
+        # C89: excess initializer elements are a constraint violation.
+        res = _compile(tmp_path, code)
+        assert not res.success
 
 
 def test_local_char_array_infer_size_from_string_initializer(tmp_path):

@@ -1201,7 +1201,13 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0))
                 else:
                     self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0))
+                # Reject excess elements beyond the first subobject.
+                if len(elems_n) > 1:
+                    raise IRGenError(f"excess elements in initializer for '{ty_s}'")
                 return True
+
+                # Note: we reject excess elements for unions below after we
+                # determine how many elements were consumed.
 
             eidx = 0
             for m in members_n:
@@ -1262,6 +1268,12 @@ class IRGenerator:
                 else:
                     self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m))
                 eidx += 1
+
+            # Reject excess initializer elements.
+            if eidx < len(elems_n):
+                raise IRGenError(
+                    f"excess elements in initializer for '{ty_s}'"
+                )
 
             return True
 

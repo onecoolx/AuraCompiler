@@ -31,7 +31,7 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = subset implemented + test
 - **PARTIAL** 类型系统：整数提升/常见算术转换尚未完全实现（见阶段 2）
 
 补充（2026-03-20 现状）
-- `pytest -q`：**722 passed**（测试为准）。
+- `pytest -q`：**726 passed**（测试为准）。
 - 目标平台关键 ABI 点已覆盖并有回归测试：
 	- SysV AMD64 variadic ABI：`printf` 类调用点 `%al` 规则、以及 `va_list` 传递给 libc `v*` 系列（`vsnprintf` 等）。
 	- 相关实现与不变量记录：`docs/ARCHITECTURE.md` → “2.6.1 Variadic functions and `va_list`”。
