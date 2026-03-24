@@ -26,11 +26,18 @@ class Type(ASTNode):
     """Represents a C type"""
     base: str  # 'int', 'float', 'char', 'void', 'struct', 'union', etc.
     is_pointer: bool = False
+    # Qualifiers that apply to the base (non-pointer) type.
+    # Example: `const int *p` => is_const=True.
     is_const: bool = False
     is_volatile: bool = False
     is_restrict: bool = False
     is_unsigned: bool = False
     is_signed: bool = False
+    # Qualifiers that apply to the pointer itself (only meaningful when is_pointer=True).
+    # Example: `int *const p` => ptr_is_const=True.
+    ptr_is_const: bool = False
+    ptr_is_volatile: bool = False
+    ptr_is_restrict: bool = False
     
     def __str__(self) -> str:
         result = ""
@@ -47,6 +54,12 @@ class Type(ASTNode):
         result += self.base
         if self.is_pointer:
             result += " *"
+            if self.ptr_is_const:
+                result += " const"
+            if self.ptr_is_volatile:
+                result += " volatile"
+            if self.ptr_is_restrict:
+                result += " restrict"
         return result
 
     @property

@@ -231,18 +231,39 @@ class Parser:
         # NOTE: This stage models only a *subset* of pointer qualifiers.
         # - `const T *p` (pointee-const) is approximated by keeping `base_type.is_const=True`
         #   on the pointer Type.
-        # - `T *const p` (const pointer) is currently ignored.
+        # - `T *const p` (const pointer) is represented as `ptr_is_const=True`.
         while True:
             if self._match(TokenType.STAR):
-                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+                base_type = Type(
+                    base=base_type.base,
+                    is_pointer=True,
+                    is_const=getattr(base_type, "is_const", False),
+                    is_volatile=getattr(base_type, "is_volatile", False),
+                    is_restrict=getattr(base_type, "is_restrict", False),
+                    is_unsigned=getattr(base_type, "is_unsigned", False),
+                    is_signed=getattr(base_type, "is_signed", False),
+                    line=base_type.line,
+                    column=base_type.column,
+                )
                 continue
             # If we see `const` here (after consuming a `*`), treat it as applying
-            # to the pointee type for now (best-effort).
-            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
-                try:
-                    base_type.is_const = True
-                except Exception:
-                    pass
+            # to the pointer itself (e.g. `T *const p`).
+            if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
+                if self.current_token.value == "const":
+                    try:
+                        base_type.ptr_is_const = True
+                    except Exception:
+                        pass
+                elif self.current_token.value == "volatile":
+                    try:
+                        base_type.ptr_is_volatile = True
+                    except Exception:
+                        pass
+                elif self.current_token.value == "restrict":
+                    try:
+                        base_type.ptr_is_restrict = True
+                    except Exception:
+                        pass
                 self.advance()
                 continue
             break
@@ -254,13 +275,34 @@ class Parser:
         # where `T` is a typedef-name.
         while True:
             if self._match(TokenType.STAR):
-                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+                base_type = Type(
+                    base=base_type.base,
+                    is_pointer=True,
+                    is_const=getattr(base_type, "is_const", False),
+                    is_volatile=getattr(base_type, "is_volatile", False),
+                    is_restrict=getattr(base_type, "is_restrict", False),
+                    is_unsigned=getattr(base_type, "is_unsigned", False),
+                    is_signed=getattr(base_type, "is_signed", False),
+                    line=base_type.line,
+                    column=base_type.column,
+                )
                 continue
-            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
-                try:
-                    base_type.is_const = True
-                except Exception:
-                    pass
+            if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
+                if self.current_token.value == "const":
+                    try:
+                        base_type.ptr_is_const = True
+                    except Exception:
+                        pass
+                elif self.current_token.value == "volatile":
+                    try:
+                        base_type.ptr_is_volatile = True
+                    except Exception:
+                        pass
+                elif self.current_token.value == "restrict":
+                    try:
+                        base_type.ptr_is_restrict = True
+                    except Exception:
+                        pass
                 self.advance()
                 continue
             break
@@ -340,8 +382,23 @@ class Parser:
         name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
 
         # Allow multiple declarators for pointers, e.g. `char *const p` / `const char *const p`.
-        # We currently ignore pointer-level qualifiers like `const`.
-        if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+        # Capture pointer-level qualifiers like `const` here.
+        if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
+            if self.current_token.value == "const":
+                try:
+                    base_type.ptr_is_const = True
+                except Exception:
+                    pass
+            elif self.current_token.value == "volatile":
+                try:
+                    base_type.ptr_is_volatile = True
+                except Exception:
+                    pass
+            elif self.current_token.value == "restrict":
+                try:
+                    base_type.ptr_is_restrict = True
+                except Exception:
+                    pass
             self.advance()
 
         # function or variable?

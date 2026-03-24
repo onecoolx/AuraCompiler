@@ -877,6 +877,11 @@ class SemanticAnalyzer:
                 if getattr(ty, "is_const", False):
                     self.errors.append(f"Assignment to const-qualified variable '{expr.target.name}'")
 
+                # Also reject assignment to a const-qualified pointer object: `T *const p; p = ...;`
+                # This is distinct from `const T *p` (pointer-to-const), which remains assignable.
+                if getattr(ty, "is_pointer", False) and getattr(ty, "ptr_is_const", False):
+                    self.errors.append(f"Assignment to const-qualified pointer variable '{expr.target.name}'")
+
             def _expr_is_nonmodifiable_lvalue(e: Expression) -> bool:
                 """Return True if e is a non-modifiable lvalue (const-qualified).
 
@@ -909,9 +914,8 @@ class SemanticAnalyzer:
                 p_name = expr.target.operand.name
                 p_ty = self._lookup_decl_type(p_name)
                 # NOTE: We currently approximate `const T*` (pointee-const) as
-                # `Type.is_const=True` on a pointer Type. This is not fully correct
-                # (it conflates `T* const` vs `const T*`), but it matches how the
-                # existing parser encodes qualifiers today.
+                # `Type.is_const=True` on a pointer Type, where `is_const` applies to
+                # the base/pointee type and not the pointer itself.
                 if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
                     self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
 
