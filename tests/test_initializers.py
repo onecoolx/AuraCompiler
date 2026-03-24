@@ -1,6 +1,14 @@
 from pycc.compiler import Compiler
 
 
+def _compile(tmp_path, code: str):
+        c_path = tmp_path / "t.c"
+        out_path = tmp_path / "t"
+        c_path.write_text(code)
+        comp = Compiler(optimize=False)
+        return comp.compile_file(str(c_path), str(out_path))
+
+
 def _compile_and_run(tmp_path, code: str) -> int:
     import subprocess
 
@@ -67,13 +75,15 @@ int main(){
 
 
 def test_local_int_array_brace_initializer_truncate(tmp_path):
-                code = r"""
+    code = r"""
 int main(){
         int a[2] = {1, 2, 3, 4};
         return (a[0] == 1 && a[1] == 2) ? 0 : 1;
 }
 """.lstrip()
-                assert _compile_and_run(tmp_path, code) == 0
+    # C89: excess initializer elements are a constraint violation.
+    res = _compile(tmp_path, code)
+    assert not res.success
 
 
 def test_local_char_array_infer_size_from_string_initializer(tmp_path):

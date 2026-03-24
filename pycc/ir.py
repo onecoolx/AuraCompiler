@@ -1575,6 +1575,11 @@ class IRGenerator:
                                     flat = list(inits)
 
                                 total = int(ad[0]) * int(ad[1])
+                                # Reject excess elements.
+                                if len(flat) > total:
+                                    raise IRGenError(
+                                        f"excess elements in initializer for array '{item.name}'"
+                                    )
                                 for idx in range(total):
                                     val_ast = flat[idx] if idx < len(flat) else IntLiteral(
                                         value=0,
@@ -1597,6 +1602,10 @@ class IRGenerator:
 
                             # int a[N] = {...}
                             n = int(item.array_size)
+                            if len(inits) > n:
+                                raise IRGenError(
+                                    f"excess elements in initializer for array '{item.name}'"
+                                )
                             for idx in range(n):
                                 val_ast = inits[idx] if idx < len(inits) else IntLiteral(
                                     value=0,
