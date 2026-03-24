@@ -1531,6 +1531,12 @@ class IRGenerator:
                             if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
                                 s = inits[0].value
                                 n = int(item.array_size)
+                                # C89 constraint: string literal initialization requires
+                                # space for all chars plus the terminating NUL.
+                                if len(s) + 1 > n:
+                                    raise IRGenError(
+                                        f"string literal initializer too long for array '{item.name}'"
+                                    )
                                 bytes_vals = [ord(c) for c in s]
                                 if len(bytes_vals) < n:
                                     bytes_vals.append(0)

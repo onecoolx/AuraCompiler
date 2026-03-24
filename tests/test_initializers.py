@@ -61,7 +61,10 @@ int main(){
     return (s[0] == 'h' && s[1] == 'i') ? 0 : 1;
 }
 """.lstrip()
-        assert _compile_and_run(tmp_path, code) == 0
+        # C89 constraint: fixed-size char array must be large enough for the
+        # string literal including the terminating NUL.
+        res = _compile(tmp_path, code)
+        assert not res.success
 
 
 def test_local_int_array_zero_fill_brace_initializer(tmp_path):
