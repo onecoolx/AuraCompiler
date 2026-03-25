@@ -273,6 +273,20 @@ class SemanticAnalyzer:
             if isinstance(decl, FunctionDecl) and decl.body is not None:
                 self._analyze_function(decl)
             elif isinstance(decl, Declaration) and decl.initializer is not None:
+                # Reject classic const-dropping through pointer chains in global initializers.
+                src_ty: Optional[Type] = None
+                if isinstance(decl.initializer, Identifier):
+                    src_ty = self._lookup_decl_type(decl.initializer.name)
+                elif (
+                    isinstance(decl.initializer, UnaryOp)
+                    and decl.initializer.operator == "&"
+                    and isinstance(decl.initializer.operand, Identifier)
+                ):
+                    src_ty = self._type_after_address_of_identifier(decl.initializer.operand.name)
+                if self._reject_const_dropping_via_chain(decl.type, src_ty):
+                    self.errors.append(
+                        f"invalid conversion: initializer for '{decl.name}' drops const qualifiers in pointer chain"
+                    )
                 self._analyze_expr(decl.initializer)
             elif isinstance(decl, TypedefDecl):
                 # typedef has no further analysis
@@ -487,6 +501,64 @@ class SemanticAnalyzer:
             ty = getattr(self, "_global_decl_types", {}).get(name)
         return ty
 
+    def _pointer_level_count(self, ty: Optional[Type]) -> int:
+        if ty is None:
+            return 0
+        try:
+            return int(getattr(ty, "pointer_level", 1 if getattr(ty, "is_pointer", False) else 0))
+        except Exception:
+            return 1 if getattr(ty, "is_pointer", False) else 0
+
+    def _reject_const_dropping_via_chain(self, dst: Optional[Type], src: Optional[Type]) -> bool:
+        """Subset of C qualifier rules:
+
+        Reject converting `T **` to `const T **` (or equivalent via `&T*`) because it
+        permits writing through a non-const intermediate pointer.
+
+        This is intentionally narrow: it triggers only when both sides are at least
+        double pointers and the destination introduces ultimate pointee const.
+        """
+        if dst is None or src is None:
+            return False
+        dl = self._pointer_level_count(dst)
+        sl = self._pointer_level_count(src)
+
+        def _ultimate_pointee_is_const(t: Type) -> bool:
+            pq = getattr(t, "pointer_quals", None)
+            if isinstance(pq, list) and len(pq) >= 1:
+                try:
+                    return "const" in pq[-1]
+                except Exception:
+                    pass
+            # Back-compat: old approximation.
+            return bool(getattr(t, "is_const", False))
+
+        # Only enforce the classic constraint when both are at least double pointers
+        # and the destination introduces ultimate pointee const.
+        if dl >= 2 and sl >= 2 and _ultimate_pointee_is_const(dst) and not _ultimate_pointee_is_const(src):
+            return True
+        return False
+
+    def _type_after_address_of_identifier(self, ident_name: str) -> Optional[Type]:
+        base = self._lookup_decl_type(ident_name)
+        if base is None:
+            return None
+        if hasattr(base, "with_pointer_level"):
+            return base.with_pointer_level(self._pointer_level_count(base) + 1)
+        # Fallback for older Type shape
+        return Type(
+            base=getattr(base, "base", "int"),
+            is_pointer=True,
+            pointer_level=self._pointer_level_count(base) + 1,
+            is_const=bool(getattr(base, "is_const", False)),
+            is_volatile=bool(getattr(base, "is_volatile", False)),
+            is_restrict=bool(getattr(base, "is_restrict", False)),
+            is_unsigned=bool(getattr(base, "is_unsigned", False)),
+            is_signed=bool(getattr(base, "is_signed", False)),
+            line=getattr(base, "line", 1),
+            column=getattr(base, "column", 1),
+        )
+
     def _is_declared(self, name: str) -> bool:
         for scope in reversed(self._scopes):
             if name in scope:
@@ -544,7 +616,44 @@ class SemanticAnalyzer:
                     if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:
                         self.errors.append(f"extern declaration cannot have an initializer: '{item.name}'")
                     if item.initializer is not None:
+                        # Reject classic const-dropping through pointer chains in initializers.
+                        src_ty: Optional[Type] = None
+                        if isinstance(item.initializer, Identifier):
+                            src_ty = self._lookup_decl_type(item.initializer.name)
+                        elif (
+                            isinstance(item.initializer, UnaryOp)
+                            and item.initializer.operator == "&"
+                            and isinstance(item.initializer.operand, Identifier)
+                        ):
+                            src_ty = self._type_after_address_of_identifier(item.initializer.operand.name)
+                        if self._reject_const_dropping_via_chain(item.type, src_ty):
+                            self.errors.append(
+                                f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
+                            )
                         self._analyze_expr(item.initializer)
+                        # Extra: detect illegal pointer-chain qualifier conversions for
+                        # common initializer forms where expression typing isn't implemented.
+                        # Handles: `const int **cpp = pp;` and `const int **ppc = &pi;`.
+                        try:
+                            if isinstance(item.initializer, Identifier):
+                                src_name = item.initializer.name
+                                src_ty2 = self._lookup_decl_type(src_name)
+                                if self._reject_const_dropping_via_chain(item.type, src_ty2):
+                                    self.errors.append(
+                                        f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
+                                    )
+                            elif (
+                                isinstance(item.initializer, UnaryOp)
+                                and item.initializer.operator == "&"
+                                and isinstance(item.initializer.operand, Identifier)
+                            ):
+                                src_ty2 = self._type_after_address_of_identifier(item.initializer.operand.name)
+                                if self._reject_const_dropping_via_chain(item.type, src_ty2):
+                                    self.errors.append(
+                                        f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
+                                    )
+                        except Exception:
+                            pass
                 else:
                     self._analyze_stmt(item)
         else:
@@ -570,6 +679,19 @@ class SemanticAnalyzer:
                     if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:
                         self.errors.append(f"extern declaration cannot have an initializer: '{item.name}'")
                     if item.initializer is not None:
+                        src_ty: Optional[Type] = None
+                        if isinstance(item.initializer, Identifier):
+                            src_ty = self._lookup_decl_type(item.initializer.name)
+                        elif (
+                            isinstance(item.initializer, UnaryOp)
+                            and item.initializer.operator == "&"
+                            and isinstance(item.initializer.operand, Identifier)
+                        ):
+                            src_ty = self._type_after_address_of_identifier(item.initializer.operand.name)
+                        if self._reject_const_dropping_via_chain(item.type, src_ty):
+                            self.errors.append(
+                                f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
+                            )
                         self._analyze_expr(item.initializer)
                 else:
                     self._analyze_stmt(item)
@@ -610,6 +732,19 @@ class SemanticAnalyzer:
                 if getattr(stmt.init, "storage_class", None) == "extern" and stmt.init.initializer is not None:
                     self.errors.append(f"extern declaration cannot have an initializer: '{stmt.init.name}'")
                 if stmt.init.initializer is not None:
+                    src_ty: Optional[Type] = None
+                    if isinstance(stmt.init.initializer, Identifier):
+                        src_ty = self._lookup_decl_type(stmt.init.initializer.name)
+                    elif (
+                        isinstance(stmt.init.initializer, UnaryOp)
+                        and stmt.init.initializer.operator == "&"
+                        and isinstance(stmt.init.initializer.operand, Identifier)
+                    ):
+                        src_ty = self._type_after_address_of_identifier(stmt.init.initializer.operand.name)
+                    if self._reject_const_dropping_via_chain(stmt.init.type, src_ty):
+                        self.errors.append(
+                            f"invalid conversion: initializer for '{stmt.init.name}' drops const qualifiers in pointer chain"
+                        )
                     self._analyze_expr(stmt.init.initializer)
             elif stmt.init is not None:
                 self._analyze_expr(stmt.init)
@@ -913,11 +1048,83 @@ class SemanticAnalyzer:
             if isinstance(expr.target, UnaryOp) and expr.target.operator == "*" and isinstance(expr.target.operand, Identifier):
                 p_name = expr.target.operand.name
                 p_ty = self._lookup_decl_type(p_name)
-                # NOTE: We currently approximate `const T*` (pointee-const) as
-                # `Type.is_const=True` on a pointer Type, where `is_const` applies to
-                # the base/pointee type and not the pointer itself.
-                if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
+                def _pointee_is_const(t: Optional[Type]) -> bool:
+                    if t is None:
+                        return False
+                    pq = getattr(t, "pointer_quals", None)
+                    if isinstance(pq, list) and len(pq) >= 1:
+                        try:
+                            return "const" in pq[-1]
+                        except Exception:
+                            pass
+                    # Back-compat: older representation stored pointee const on Type.is_const.
+                    return bool(getattr(t, "is_const", False))
+
+                if p_ty is not None and getattr(p_ty, "is_pointer", False) and _pointee_is_const(p_ty):
                     self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
+
+            def _deref_depth(e: Expression) -> tuple[int, Optional[str]]:
+                d = 0
+                while isinstance(e, UnaryOp) and e.operator == "*":
+                    d += 1
+                    e = e.operand
+                if isinstance(e, Identifier):
+                    return d, e.name
+                return d, None
+
+            def _outermost_pointee_is_const(ty: Optional[Type]) -> bool:
+                if ty is None:
+                    return False
+                # Prefer the new multi-level representation.
+                pq = getattr(ty, "pointer_quals", None)
+                if isinstance(pq, list) and len(pq) >= 1:
+                    try:
+                        return "const" in pq[-1]
+                    except Exception:
+                        pass
+                # Back-compat: old approximation (pointee const stored in is_const).
+                return bool(getattr(ty, "is_const", False))
+
+            def _pointer_level_count(ty: Optional[Type]) -> int:
+                if ty is None:
+                    return 0
+                try:
+                    return int(getattr(ty, "pointer_level", 1 if getattr(ty, "is_pointer", False) else 0))
+                except Exception:
+                    return 1 if getattr(ty, "is_pointer", False) else 0
+
+            def _reject_const_dropping(dst: Optional[Type], src: Optional[Type]) -> bool:
+                if dst is None or src is None:
+                    return False
+                dl = _pointer_level_count(dst)
+                sl = _pointer_level_count(src)
+                if dl >= 2 and sl >= 2 and getattr(dst, "is_const", False) and not getattr(src, "is_const", False):
+                    return True
+                return False
+
+            # Multi-level write rejection: `**pp = ...` where ultimate pointee is const.
+            d, name = _deref_depth(expr.target)
+            if d >= 2 and name is not None:
+                ty = self._lookup_decl_type(name)
+                if ty is not None and _pointer_level_count(ty) >= d and _outermost_pointee_is_const(ty):
+                    self.errors.append(
+                        f"Assignment through pointer to const is not allowed: '{'*' * d}{name}'"
+                    )
+
+            # Multi-level conversion constraint (subset): reject const-dropping via pointer chains.
+            # - const int **cpp = pp; where pp is int **
+            # - const int **ppc = &pi; where pi is int *
+            if isinstance(expr.target, Identifier):
+                dst_ty = self._lookup_decl_type(expr.target.name)
+                src_ty: Optional[Type] = None
+                if isinstance(expr.value, Identifier):
+                    src_ty = self._lookup_decl_type(expr.value.name)
+                elif isinstance(expr.value, UnaryOp) and expr.value.operator == "&" and isinstance(expr.value.operand, Identifier):
+                    src_ty = self._type_after_address_of_identifier(expr.value.operand.name)
+                if self._reject_const_dropping_via_chain(dst_ty, src_ty) or _reject_const_dropping(dst_ty, src_ty):
+                    self.errors.append(
+                        f"invalid conversion: assignment to '{expr.target.name}' drops const qualifiers in pointer chain"
+                    )
 
             self._analyze_expr(expr.target)
             self._analyze_expr(expr.value)

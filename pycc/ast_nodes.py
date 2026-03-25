@@ -26,6 +26,12 @@ class Type(ASTNode):
     """Represents a C type"""
     base: str  # 'int', 'float', 'char', 'void', 'struct', 'union', etc.
     is_pointer: bool = False
+    # Pointer indirection level.
+    # - 0: non-pointer
+    # - 1: T*
+    # - 2: T**
+    # etc.
+    pointer_level: int = 0
     # Qualifiers that apply to the base (non-pointer) type.
     # Example: `const int *p` => is_const=True.
     is_const: bool = False
@@ -33,11 +39,15 @@ class Type(ASTNode):
     is_restrict: bool = False
     is_unsigned: bool = False
     is_signed: bool = False
-    # Qualifiers that apply to the pointer itself (only meaningful when is_pointer=True).
+    # Qualifiers that apply to the pointer itself (outermost pointer level).
     # Example: `int *const p` => ptr_is_const=True.
     ptr_is_const: bool = False
     ptr_is_volatile: bool = False
     ptr_is_restrict: bool = False
+
+    # Qualifiers per pointer indirection, outermost first.
+    # Example: `int *const *p` => pointer_level=2, pointer_quals[0] contains {'const'}.
+    pointer_quals: List[set[str]] = field(default_factory=list)
     
     def __str__(self) -> str:
         result = ""
@@ -52,15 +62,74 @@ class Type(ASTNode):
         if self.is_signed:
             result += "signed "
         result += self.base
-        if self.is_pointer:
-            result += " *"
-            if self.ptr_is_const:
-                result += " const"
-            if self.ptr_is_volatile:
-                result += " volatile"
-            if self.ptr_is_restrict:
-                result += " restrict"
+        level = self.pointer_level
+        if level <= 0 and self.is_pointer:
+            level = 1
+        if level > 0:
+            for i in range(level):
+                result += " *"
+                quals: set[str] = set()
+                if i < len(self.pointer_quals):
+                    quals = self.pointer_quals[i]
+                elif i == 0:
+                    # Back-compat: when pointer_quals isn't populated, reflect ptr_is_*.
+                    if self.ptr_is_const:
+                        quals.add("const")
+                    if self.ptr_is_volatile:
+                        quals.add("volatile")
+                    if self.ptr_is_restrict:
+                        quals.add("restrict")
+                if "const" in quals:
+                    result += " const"
+                if "volatile" in quals:
+                    result += " volatile"
+                if "restrict" in quals:
+                    result += " restrict"
         return result
+
+    def _normalize_pointer_state(self) -> None:
+        # Keep pointer_level / is_pointer consistent.
+        if self.pointer_level > 0:
+            self.is_pointer = True
+        elif self.is_pointer:
+            self.pointer_level = 1
+        # Ensure pointer_quals has at least pointer_level entries.
+        if self.pointer_level <= 0:
+            self.pointer_quals = []
+            return
+        if not self.pointer_quals:
+            self.pointer_quals = [set() for _ in range(self.pointer_level)]
+        elif len(self.pointer_quals) < self.pointer_level:
+            self.pointer_quals = list(self.pointer_quals) + [set() for _ in range(self.pointer_level - len(self.pointer_quals))]
+        elif len(self.pointer_quals) > self.pointer_level:
+            self.pointer_quals = self.pointer_quals[: self.pointer_level]
+        # Back-compat: mirror outermost qualifier flags.
+        try:
+            self.ptr_is_const = "const" in self.pointer_quals[0]
+            self.ptr_is_volatile = "volatile" in self.pointer_quals[0]
+            self.ptr_is_restrict = "restrict" in self.pointer_quals[0]
+        except Exception:
+            pass
+
+    def with_pointer_level(self, new_level: int) -> "Type":
+        t = Type(
+            base=self.base,
+            is_pointer=self.is_pointer,
+            pointer_level=int(new_level),
+            is_const=self.is_const,
+            is_volatile=self.is_volatile,
+            is_restrict=self.is_restrict,
+            is_unsigned=self.is_unsigned,
+            is_signed=self.is_signed,
+            ptr_is_const=self.ptr_is_const,
+            ptr_is_volatile=self.ptr_is_volatile,
+            ptr_is_restrict=self.ptr_is_restrict,
+            pointer_quals=list(self.pointer_quals or []),
+            line=self.line,
+            column=self.column,
+        )
+        t._normalize_pointer_state()
+        return t
 
     @property
     def is_array(self) -> bool:

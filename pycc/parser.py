@@ -202,7 +202,14 @@ class Parser:
             self.advance()
             base_type = self._parse_type_specifier()
             while self._match(TokenType.STAR):
-                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+                if isinstance(base_type, Type):
+                    base_type.pointer_level = int(getattr(base_type, "pointer_level", 0)) + 1
+                    if not getattr(base_type, "pointer_quals", None):
+                        base_type.pointer_quals = []
+                    base_type.pointer_quals.insert(0, set())
+                    base_type._normalize_pointer_state()
+                else:
+                    base_type = Type(base=getattr(base_type, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(base_type, "line", 1), column=getattr(base_type, "column", 1))
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
@@ -234,36 +241,30 @@ class Parser:
         # - `T *const p` (const pointer) is represented as `ptr_is_const=True`.
         while True:
             if self._match(TokenType.STAR):
-                base_type = Type(
-                    base=base_type.base,
-                    is_pointer=True,
-                    is_const=getattr(base_type, "is_const", False),
-                    is_volatile=getattr(base_type, "is_volatile", False),
-                    is_restrict=getattr(base_type, "is_restrict", False),
-                    is_unsigned=getattr(base_type, "is_unsigned", False),
-                    is_signed=getattr(base_type, "is_signed", False),
-                    line=base_type.line,
-                    column=base_type.column,
-                )
+                if isinstance(base_type, Type):
+                    base_type.pointer_level = int(getattr(base_type, "pointer_level", 0)) + 1
+                    if not getattr(base_type, "pointer_quals", None):
+                        base_type.pointer_quals = []
+                    base_type.pointer_quals.insert(0, set())
+                    base_type._normalize_pointer_state()
+                else:
+                    base_type = Type(
+                        base=getattr(base_type, "base", "int"),
+                        pointer_level=1,
+                        is_pointer=True,
+                        line=getattr(base_type, "line", 1),
+                        column=getattr(base_type, "column", 1),
+                    )
                 continue
             # If we see `const` here (after consuming a `*`), treat it as applying
             # to the pointer itself (e.g. `T *const p`).
             if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
-                if self.current_token.value == "const":
-                    try:
-                        base_type.ptr_is_const = True
-                    except Exception:
-                        pass
-                elif self.current_token.value == "volatile":
-                    try:
-                        base_type.ptr_is_volatile = True
-                    except Exception:
-                        pass
-                elif self.current_token.value == "restrict":
-                    try:
-                        base_type.ptr_is_restrict = True
-                    except Exception:
-                        pass
+                # Qualifiers after '*' apply to the outermost pointer level.
+                if isinstance(base_type, Type) and getattr(base_type, "pointer_level", 0) > 0:
+                    if not getattr(base_type, "pointer_quals", None):
+                        base_type.pointer_quals = [set()]
+                    base_type.pointer_quals[0].add(self.current_token.value)
+                    base_type._normalize_pointer_state()
                 self.advance()
                 continue
             break
@@ -275,34 +276,27 @@ class Parser:
         # where `T` is a typedef-name.
         while True:
             if self._match(TokenType.STAR):
-                base_type = Type(
-                    base=base_type.base,
-                    is_pointer=True,
-                    is_const=getattr(base_type, "is_const", False),
-                    is_volatile=getattr(base_type, "is_volatile", False),
-                    is_restrict=getattr(base_type, "is_restrict", False),
-                    is_unsigned=getattr(base_type, "is_unsigned", False),
-                    is_signed=getattr(base_type, "is_signed", False),
-                    line=base_type.line,
-                    column=base_type.column,
-                )
+                if isinstance(base_type, Type):
+                    base_type.pointer_level = int(getattr(base_type, "pointer_level", 0)) + 1
+                    if not getattr(base_type, "pointer_quals", None):
+                        base_type.pointer_quals = []
+                    base_type.pointer_quals.insert(0, set())
+                    base_type._normalize_pointer_state()
+                else:
+                    base_type = Type(
+                        base=getattr(base_type, "base", "int"),
+                        pointer_level=1,
+                        is_pointer=True,
+                        line=getattr(base_type, "line", 1),
+                        column=getattr(base_type, "column", 1),
+                    )
                 continue
             if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
-                if self.current_token.value == "const":
-                    try:
-                        base_type.ptr_is_const = True
-                    except Exception:
-                        pass
-                elif self.current_token.value == "volatile":
-                    try:
-                        base_type.ptr_is_volatile = True
-                    except Exception:
-                        pass
-                elif self.current_token.value == "restrict":
-                    try:
-                        base_type.ptr_is_restrict = True
-                    except Exception:
-                        pass
+                if isinstance(base_type, Type) and getattr(base_type, "pointer_level", 0) > 0:
+                    if not getattr(base_type, "pointer_quals", None):
+                        base_type.pointer_quals = [set()]
+                    base_type.pointer_quals[0].add(self.current_token.value)
+                    base_type._normalize_pointer_state()
                 self.advance()
                 continue
             break
@@ -323,7 +317,14 @@ class Parser:
             ptr_ty = base_type
             # Inside the parentheses we expect `*name` (possibly multiple `*`).
             while self._match(TokenType.STAR):
-                ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                if isinstance(ptr_ty, Type):
+                    ptr_ty.pointer_level = int(getattr(ptr_ty, "pointer_level", 0)) + 1
+                    if not getattr(ptr_ty, "pointer_quals", None):
+                        ptr_ty.pointer_quals = []
+                    ptr_ty.pointer_quals.insert(0, set())
+                    ptr_ty._normalize_pointer_state()
+                else:
+                    ptr_ty = Type(base=getattr(ptr_ty, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(ptr_ty, "line", 1), column=getattr(ptr_ty, "column", 1))
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
 
             # optional parameter list inside the parentheses: `(*name(void))`
@@ -355,7 +356,8 @@ class Parser:
                         depth -= 1
                         continue
                     self.advance()
-                ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, pointer_level=max(1, int(getattr(ptr_ty, "pointer_level", 0) or 1)), line=ptr_ty.line, column=ptr_ty.column)
+                ptr_ty._normalize_pointer_state()
 
             # prototype or definition
             if self._match(TokenType.SEMICOLON):
@@ -773,38 +775,38 @@ class Parser:
             return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
 
         base_type = self._parse_type_specifier()
-        # Support parentheses around declarators (e.g. function pointers):
-        #   int (*fp)(int);
-        # Keep qualifier flags from the base type (best-effort) when building
-        # pointer types.
+        # Consume any leading '*' tokens that appear before the identifier.
+        # This is common in declarations like `int **pp = ...;`.
         while self._match(TokenType.STAR):
-            base_type = Type(
-                base=base_type.base,
-                is_pointer=True,
-                is_const=getattr(base_type, "is_const", False),
-                is_volatile=getattr(base_type, "is_volatile", False),
-                is_restrict=getattr(base_type, "is_restrict", False),
-                is_unsigned=getattr(base_type, "is_unsigned", False),
-                is_signed=getattr(base_type, "is_signed", False),
-                line=base_type.line,
-                column=base_type.column,
-            )
+            base_type.pointer_level = int(getattr(base_type, "pointer_level", 0)) + 1
+            if not getattr(base_type, "pointer_quals", None):
+                base_type.pointer_quals = []
+            base_type.pointer_quals.insert(0, set())
+            base_type._normalize_pointer_state()
+
+        # If the base type had qualifiers (e.g. `const int`) and we built a pointer
+        # type, treat those qualifiers as applying to the pointed-to type.
+        # In this representation that means moving them onto the innermost pointer
+        # level's qualifier set.
+        if getattr(base_type, "pointer_level", 0) > 0 and getattr(base_type, "is_const", False):
+            try:
+                if not getattr(base_type, "pointer_quals", None):
+                    base_type.pointer_quals = [set() for _ in range(base_type.pointer_level)]
+                base_type.pointer_quals[-1].add("const")
+                base_type.is_const = False
+                base_type._normalize_pointer_state()
+            except Exception:
+                pass
 
         if self._match(TokenType.LPAREN):
             # parse inner pointer part: (*name)
             ptr_ty = base_type
             while self._match(TokenType.STAR):
-                ptr_ty = Type(
-                    base=ptr_ty.base,
-                    is_pointer=True,
-                    is_const=getattr(ptr_ty, "is_const", False),
-                    is_volatile=getattr(ptr_ty, "is_volatile", False),
-                    is_restrict=getattr(ptr_ty, "is_restrict", False),
-                    is_unsigned=getattr(ptr_ty, "is_unsigned", False),
-                    is_signed=getattr(ptr_ty, "is_signed", False),
-                    line=ptr_ty.line,
-                    column=ptr_ty.column,
-                )
+                ptr_ty.pointer_level = int(getattr(ptr_ty, "pointer_level", 0)) + 1
+                if not getattr(ptr_ty, "pointer_quals", None):
+                    ptr_ty.pointer_quals = []
+                ptr_ty.pointer_quals.insert(0, set())
+                ptr_ty._normalize_pointer_state()
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
             # support array-of-function-pointer declarator: (*name[...])
             if self._match(TokenType.LBRACKET):
@@ -829,42 +831,72 @@ class Parser:
 
     def _finish_declarator(self, base_type: Type, name_tok: Token) -> Declaration:
         ty = base_type
-        # pointers (limited: consume leading '*'s)
-        # NOTE: best-effort qualifier handling for pointer declarators.
-        # Current representation cannot distinguish `const T *p` vs `T *const p`.
-        # We treat any `const` seen before `*` (in the type specifier) as applying
-        # to the pointee and propagate it onto the resulting pointer Type.
+        if hasattr(ty, "_normalize_pointer_state"):
+            ty._normalize_pointer_state()
+        # pointers: consume leading '*'s and attach qualifiers per level.
         while True:
             if self._match(TokenType.STAR):
-                ty = Type(
-                    base=ty.base,
-                    is_pointer=True,
-                    is_const=getattr(ty, "is_const", False),
-                    is_volatile=getattr(ty, "is_volatile", False),
-                    is_restrict=getattr(ty, "is_restrict", False),
-                    is_unsigned=getattr(ty, "is_unsigned", False),
-                    is_signed=getattr(ty, "is_signed", False),
-                    line=ty.line,
-                    column=ty.column,
-                )
+                ty.pointer_level = int(getattr(ty, "pointer_level", 0)) + 1
+                if not getattr(ty, "pointer_quals", None):
+                    ty.pointer_quals = []
+                ty.pointer_quals.insert(0, set())
+                ty._normalize_pointer_state()
                 continue
             # Allow pointer-level qualifiers after '*': we currently fold them
             # into the same flags (best-effort).
             if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
                 try:
-                    ty.is_const = True
+                    if getattr(ty, "pointer_level", 0) > 0:
+                        if not getattr(ty, "pointer_quals", None):
+                            ty.pointer_quals = [set()]
+                        ty.pointer_quals[0].add("const")
+                        ty._normalize_pointer_state()
+                    else:
+                        ty.is_const = True
                 except Exception:
                     pass
                 self.advance()
                 continue
             if self._at(TokenType.KEYWORD) and self.current_token.value == "volatile":
                 try:
-                    ty.is_volatile = True
+                    if getattr(ty, "pointer_level", 0) > 0:
+                        if not getattr(ty, "pointer_quals", None):
+                            ty.pointer_quals = [set()]
+                        ty.pointer_quals[0].add("volatile")
+                        ty._normalize_pointer_state()
+                    else:
+                        ty.is_volatile = True
+                except Exception:
+                    pass
+                self.advance()
+                continue
+            if self._at(TokenType.KEYWORD) and self.current_token.value == "restrict":
+                try:
+                    if getattr(ty, "pointer_level", 0) > 0:
+                        if not getattr(ty, "pointer_quals", None):
+                            ty.pointer_quals = [set()]
+                        ty.pointer_quals[0].add("restrict")
+                        ty._normalize_pointer_state()
+                    else:
+                        ty.is_restrict = True
                 except Exception:
                     pass
                 self.advance()
                 continue
             break
+
+        # If the base type carried qualifiers like `const`, and we formed a pointer
+        # type, those qualifiers should apply to the pointed-to type. In this model,
+        # we record that on the innermost pointer level.
+        if getattr(ty, "pointer_level", 0) > 0 and getattr(ty, "is_const", False):
+            try:
+                if not getattr(ty, "pointer_quals", None):
+                    ty.pointer_quals = [set() for _ in range(ty.pointer_level)]
+                ty.pointer_quals[-1].add("const")
+                ty.is_const = False
+                ty._normalize_pointer_state()
+            except Exception:
+                pass
 
         # array declarator: name[expr]
         # NOTE: this parser milestone supports only a single array suffix.
@@ -906,8 +938,10 @@ class Parser:
                 self.advance()
             # Represent as pointer-to-function in a lightweight way.
             if not ty.is_pointer:
-                ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
-            ty = Type(base=f"{ty.base} (*)()", is_pointer=True, line=ty.line, column=ty.column)
+                ty = Type(base=ty.base, is_pointer=True, pointer_level=1, line=ty.line, column=ty.column)
+                ty._normalize_pointer_state()
+            ty = Type(base=f"{ty.base} (*)()", is_pointer=True, pointer_level=max(1, int(getattr(ty, "pointer_level", 0) or 1)), line=ty.line, column=ty.column)
+            ty._normalize_pointer_state()
 
         initializer = None
 
@@ -1216,7 +1250,11 @@ class Parser:
                 if self._is_type_specifier():
                     ty = self._parse_type_specifier()
                     while self._match(TokenType.STAR):
-                        ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
+                        ty.pointer_level = int(getattr(ty, "pointer_level", 0)) + 1
+                        if not getattr(ty, "pointer_quals", None):
+                            ty.pointer_quals = []
+                        ty.pointer_quals.insert(0, set())
+                        ty._normalize_pointer_state()
                     self._expect(TokenType.RPAREN, "Expected ')' after sizeof(type)")
                     return SizeOf(operand=None, type=ty, line=tok.line, column=tok.column)
                 expr = self._parse_expression()
@@ -1307,7 +1345,11 @@ class Parser:
             if self._is_type_specifier():
                 ty = self._parse_type_specifier()
                 while self._match(TokenType.STAR):
-                    ty = Type(base=ty.base, is_pointer=True, line=ty.line, column=ty.column)
+                    ty.pointer_level = int(getattr(ty, "pointer_level", 0)) + 1
+                    if not getattr(ty, "pointer_quals", None):
+                        ty.pointer_quals = []
+                    ty.pointer_quals.insert(0, set())
+                    ty._normalize_pointer_state()
                 self._expect(TokenType.RPAREN, "Expected ')' after cast type")
                 expr = self._parse_unary()
                 return Cast(type=ty, expression=expr, line=tok.line, column=tok.column)
