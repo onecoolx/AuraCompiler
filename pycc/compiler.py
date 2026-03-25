@@ -206,6 +206,7 @@ class Compiler:
             sym_has_non_extern: dict[str, bool] = {}
             sym_strong_defs: dict[str, int] = {}
             fn_sigs: dict[str, tuple[str, Optional[int], bool]] = {}
+            fn_param_types: dict[str, Optional[list[str]]] = {}
             for src in source_files:
                 try:
                     with open(src, "r", encoding="utf-8") as f:
@@ -230,6 +231,7 @@ class Compiler:
                 gkinds = getattr(sema_ctx, "global_kinds", {}) or {}
                 glink = getattr(sema_ctx, "global_linkage", {}) or {}
                 fsigs = getattr(sema_ctx, "function_sigs", {}) or {}
+                fptys = getattr(sema_ctx, "function_param_types", {}) or {}
 
                 for name, ty in gtypes.items():
                     # Functions: check signature compatibility across TUs (subset).
@@ -251,6 +253,12 @@ class Compiler:
                                         f"error: multi-tu: incompatible declarations for function '{name}'"
                                     ],
                                 )
+
+                        # Keep per-parameter prototype info for future tightening.
+                        # Do not enforce yet: the frontend does not encode full
+                        # parameter qualifier spellings reliably for all cases.
+                        cur_ptys = fptys.get(name)
+                        fn_param_types.setdefault(name, cur_ptys)
                         continue
                     # Skip internal linkage symbols (static) since they are TU-local.
                     if glink.get(name) == "internal":

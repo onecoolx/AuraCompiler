@@ -405,6 +405,77 @@ class Parser:
 
         # function or variable?
         if self._match(TokenType.LPAREN):
+            # Old-style (K&R) function definition: `int f(a,b) int a; { ... }`
+            # We detect it by checking whether the tokens inside (...) are a list of
+            # identifiers (possibly empty), not a type-specifier.
+            if not self._at(TokenType.RPAREN):
+                # Lookahead: if the next token isn't a type specifier and it's an identifier,
+                # treat this as potential K&R identifier list.
+                if self.current_token.type == TokenType.IDENTIFIER and not self._is_type_specifier():
+                    knr_names: List[Token] = []
+                    knr_names.append(self._expect(TokenType.IDENTIFIER, "Expected parameter name"))
+                    while self._match(TokenType.COMMA):
+                        knr_names.append(self._expect(TokenType.IDENTIFIER, "Expected parameter name"))
+                    self._expect(TokenType.RPAREN, "Expected ')' after parameter name list")
+
+                    # Parse the K&R parameter declarations (a sequence of declarations ending
+                    # right before the function body '{').
+                    param_decl_map: dict[str, Type] = {}
+                    seen_param_decl: set[str] = set()
+                    while self.current_token and not self._at(TokenType.LBRACE):
+                        if not self._is_type_specifier():
+                            raise ParserError("Expected type specifier", self.current_token)
+                        p_base = self._parse_type_specifier()
+                        while self._match(TokenType.STAR):
+                            if isinstance(p_base, Type):
+                                p_base.pointer_level = int(getattr(p_base, "pointer_level", 0)) + 1
+                                if not getattr(p_base, "pointer_quals", None):
+                                    p_base.pointer_quals = []
+                                p_base.pointer_quals.insert(0, set())
+                                p_base._normalize_pointer_state()
+                            else:
+                                p_base = Type(base=getattr(p_base, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(p_base, "line", 1), column=getattr(p_base, "column", 1))
+                        p_name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+                        # K&R parameter declarations do not have initializers.
+                        self._expect(TokenType.SEMICOLON, "Expected ';' after parameter declaration")
+                        if p_name_tok.value in seen_param_decl:
+                            # Keep going; semantics will surface a nicer error.
+                            pass
+                        seen_param_decl.add(p_name_tok.value)
+                        param_decl_map[p_name_tok.value] = p_base
+
+                    # Support optional semicolon between old-style header and the body,
+                    # as commonly written in K&R examples:
+                    #   int f(a) int a; { ... }
+                    # Some token streams may have a stray ';' here depending on formatting.
+                    if self._at(TokenType.SEMICOLON):
+                        self.advance()
+
+                    # Build parameter list in order. Undeclared params default to int.
+                    params: List[Declaration] = []
+                    for nt in knr_names:
+                        p_ty = param_decl_map.get(nt.value)
+                        if p_ty is None:
+                            p_ty = Type(base="int", line=nt.line, column=nt.column)
+                        params.append(Declaration(name=nt.value, type=p_ty, line=nt.line, column=nt.column))
+
+                    # extra parameter declarations not in name list => parse-time error
+                    extra = [n for n in param_decl_map.keys() if n not in {t.value for t in knr_names}]
+                    if extra:
+                        raise ParserError("K&R parameter declaration has no matching parameter name", self.current_token)
+
+                    # Now parse function body (definition only for K&R in this subset)
+                    body = self._parse_compound_statement()
+                    return FunctionDecl(
+                        name=name_tok.value,
+                        return_type=base_type,
+                        parameters=params,
+                        body=body,
+                        storage_class=storage_class,
+                        line=name_tok.line,
+                        column=name_tok.column,
+                    )
+
             params = self._parse_parameter_list()
             # Be permissive: if our parameter parser stopped early, fast-forward
             # to the matching ')'. This allows us to accept many system-header
@@ -499,7 +570,7 @@ class Parser:
             break
 
         # builtin + sized integer forms
-        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "__builtin_va_list"}:
+        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "float", "double", "__builtin_va_list"}:
             base_tok = self.current_token
             self.advance()
             t = Type(base=base_tok.value, line=base_tok.line, column=base_tok.column)

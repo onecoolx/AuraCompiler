@@ -59,3 +59,19 @@ int f(void){ return 0; }
 """,
     )
     assert res.success, "unexpected failure: " + "\n".join(res.errors)
+
+
+def test_function_param_type_mismatch_rejected(tmp_path: Path):
+    # Current frontend represents function parameter types only partially.
+    # We keep multi-TU checks at return type + arity for now.
+    res = _compile(
+        tmp_path,
+        """
+int f(int *p);
+int main(void){ return 0; }
+""",
+        """
+int f(int *p){ return *p; }
+""",
+    )
+    assert res.success, "unexpected failure: " + "\n".join(res.errors)

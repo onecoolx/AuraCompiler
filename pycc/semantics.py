@@ -84,6 +84,9 @@ class SemanticContext:
     # Best-effort function signature info (subset)
     # name -> (return_base, param_count or None, is_variadic)
     function_sigs: Dict[str, tuple[str, Optional[int], bool]]
+    # Optional per-parameter type strings for functions when declared with a prototype.
+    # None means non-prototype (`int f();`) or unknown.
+    function_param_types: Dict[str, Optional[List[str]]]
     # Global arrays: name -> (element_base, element_count)
     # For globals that are arrays, we track element base type and either:
     # - an int element count (1D), or
@@ -134,6 +137,9 @@ class SemanticAnalyzer:
         # Map: function name -> (return_type_base, param_count or None if unspecified)
         func_sigs: Dict[str, tuple[str, Optional[int]]] = {}
         self._function_sigs: Dict[str, tuple[str, Optional[int], bool]] = {}
+        # Full-ish function redeclaration signature tracking (C89 subset).
+        # Map: function name -> list of canonical parameter type strings (or None if unspecified).
+        self._function_param_types: Dict[str, Optional[List[str]]] = {}
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
@@ -142,18 +148,38 @@ class SemanticAnalyzer:
                 # (when parameters are specified).
                 ret_base = getattr(decl, "return_type", None)
                 ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
-                # Parser always provides a list; treat empty list as specified (0 params).
-                param_count: Optional[int] = len(getattr(decl, "parameters", []) or [])
+                params_list = list(getattr(decl, "parameters", []) or [])
+                # C89: an empty parameter list in a declaration is a non-prototype.
+                # Our parser represents `int foo();` as an empty parameters list.
+                # Track its count as unspecified (None) for compatibility checks.
+                param_count: Optional[int] = len(params_list)
+                is_nonprototype_decl = (param_count == 0 and decl.body is None)
+                if is_nonprototype_decl:
+                    param_count = None
                 prev = func_sigs.get(decl.name)
                 if prev is None:
-                    func_sigs[decl.name] = (str(ret_base_s), param_count)
+                    _pc = param_count
+                    # already normalized above
+                    func_sigs[decl.name] = (str(ret_base_s), _pc)
                 else:
                     prev_ret, prev_n = prev
                     if str(ret_base_s) != prev_ret:
                         self.errors.append(f"conflicting return type for function '{decl.name}'")
                     # If both sides have an explicit parameter list, require same count.
-                    if prev_n is not None and param_count is not None and prev_n != param_count:
+                    cur_n = param_count
+                    if prev_n is not None and cur_n is not None and prev_n != cur_n:
                         self.errors.append(f"conflicting parameter count for function '{decl.name}'")
+
+                    # C89 subset: if we saw a non-prototype declaration for this name,
+                    # and later we see a prototype with a different arity than a known
+                    # definition (or vice-versa), reject.
+                    # This is intentionally limited to arity checks.
+                    if prev_n is None and cur_n is not None:
+                        # prev was non-prototype; keep the prototype arity as the known one.
+                        func_sigs[decl.name] = (prev_ret, cur_n)
+                    elif prev_n is not None and cur_n is None:
+                        # later non-prototype after a prototype is ok; keep prev.
+                        pass
                 self._declare_global(decl.name, "function")
                 self._functions.add(decl.name)
                 # Record function type for codegen. We don't model full
@@ -172,6 +198,25 @@ class SemanticAnalyzer:
                     self._function_sigs[decl.name] = (str(ret_base_s), param_count, is_variadic)
                 except Exception:
                     self._function_sigs[decl.name] = ("int", None, False)
+
+                # Track per-parameter types for multi-TU checks / future work.
+                # NOTE: We do not yet enforce per-parameter compatibility at
+                # semantic time because parameter type qualifiers are not modeled
+                # robustly across all declarator spellings.
+                try:
+                    if len(params_list) == 0 and decl.body is None:
+                        self._function_param_types.setdefault(decl.name, None)
+                    else:
+                        def _canon_param_ty(t: Type) -> str:
+                            return " ".join(str(t).strip().split())
+
+                        typed_params = [p for p in params_list if getattr(p, "name", None) != "..."]
+                        self._function_param_types.setdefault(
+                            decl.name,
+                            [_canon_param_ty(p.type) for p in typed_params],
+                        )
+                except Exception:
+                    self._function_param_types.setdefault(decl.name, None)
                 try:
                     ret_base = getattr(decl, "return_type", None)
                     ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
@@ -305,6 +350,7 @@ class SemanticAnalyzer:
             global_linkage=dict(self._global_linkage),
             global_kinds=dict(self._global_kinds),
             function_sigs=dict(self._function_sigs),
+            function_param_types=dict(self._function_param_types),
             global_arrays=dict(self._global_arrays),
         )
 
@@ -1174,6 +1220,19 @@ class SemanticAnalyzer:
                     self.warnings.append(f"Implicit declaration of function: {expr.function.name}")
             else:
                 self._analyze_expr(expr.function)
+
+            # C89 default argument promotions apply for calls through a
+            # non-prototype function type (e.g. `int f();`).
+            # Minimal subset: integer promotions only (char/short -> int).
+            # We rewrite the AST to explicit Cast nodes so later IR/codegen
+            # sees the promoted value.
+            try:
+                if self._is_non_prototype_call(expr):
+                    expr.arguments = [self._apply_default_argument_promotions(a) for a in expr.arguments]
+            except Exception:
+                # Best-effort: never crash semantic analysis due to promotion logic.
+                pass
+
             for a in expr.arguments:
                 self._analyze_expr(a)
             return
@@ -1190,6 +1249,31 @@ class SemanticAnalyzer:
             return
 
         # Unknown expressions ignored
+
+    def _is_non_prototype_call(self, call: FunctionCall) -> bool:
+        if not isinstance(call.function, Identifier):
+            return False
+        name = call.function.name
+        sig = getattr(self, "_function_sigs", {}).get(name)
+        # Convention used elsewhere: param_count=None indicates an old-style
+        # (non-prototype) declaration `T f();`.
+        return bool(sig is not None and sig.get("param_count") is None)
+
+    def _apply_default_argument_promotions(self, arg: Expression) -> Expression:
+        # Only promote plain identifiers with known declared types.
+        # (This keeps the subset small and avoids needing full expression typing.)
+        from pycc.ast_nodes import Cast as _Cast
+
+        if not isinstance(arg, Identifier):
+            return arg
+        ty = self._lookup_decl_type(arg.name)
+        if ty is None or getattr(ty, "is_pointer", False):
+            return arg
+        base = str(getattr(ty, "base", ""))
+        if base in {"char", "signed char", "unsigned char", "short", "short int", "signed short", "signed short int", "unsigned short", "unsigned short int"}:
+            to_ty = Type(base="int", line=arg.line, column=arg.column)
+            return _Cast(line=arg.line, column=arg.column, type=to_ty, expression=arg)
+        return arg
 
     def _validate_member(self, base_ty: Type, member: str, base_name: str) -> None:
         # base_ty.base may be like "struct Point" or "union U".
