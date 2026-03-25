@@ -992,6 +992,10 @@ class IRGenerator:
         lt = self._integer_promote(lty)
         rt = self._integer_promote(rty)
 
+        # If either side is not an integer-like type, we can't apply integer UAC.
+        if not self._is_int_like_type(lt) or not self._is_int_like_type(rt):
+            return ""
+
         # After integer promotions, if both types are the same, keep it.
         # This matters for (unsigned short ? ... : ...) where both arms promote
         # to int on typical targets.

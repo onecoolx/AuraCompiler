@@ -823,7 +823,26 @@ class SemanticAnalyzer:
         # Unknown statement types are ignored for now
 
     def _analyze_expr(self, expr: Expression) -> None:
+        # Best-effort type propagation for later stages (IR/codegen).
+        # This is not a full C89 typing engine yet, but it gives us a stable
+        # place to start wiring type info into expressions.
+        try:
+            if not hasattr(expr, "type"):
+                setattr(expr, "type", None)
+        except Exception:
+            pass
+
         if isinstance(expr, (IntLiteral, StringLiteral, CharLiteral)):
+            try:
+                if isinstance(expr, IntLiteral):
+                    expr.type = Type(base="int", line=expr.line, column=expr.column)
+                elif isinstance(expr, CharLiteral):
+                    expr.type = Type(base="int", line=expr.line, column=expr.column)
+                elif isinstance(expr, StringLiteral):
+                    expr.type = Type(base="char", is_pointer=True, pointer_level=1, line=expr.line, column=expr.column)
+                    expr.type._normalize_pointer_state()
+            except Exception:
+                pass
             return
 
         if isinstance(expr, Identifier):
@@ -835,6 +854,12 @@ class SemanticAnalyzer:
                 # C89 implicit extern/implicit int isn't desired for variables.
                 # But allow unknown names if they are used as function identifiers.
                 self.errors.append(f"Use of undeclared identifier: {expr.name}")
+            try:
+                ty = self._lookup_decl_type(expr.name)
+                if ty is not None:
+                    expr.type = ty
+            except Exception:
+                pass
             return
 
         if isinstance(expr, BinaryOp):
