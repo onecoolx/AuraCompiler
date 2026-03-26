@@ -387,20 +387,11 @@ class Parser:
         # Capture pointer-level qualifiers like `const` here.
         if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
             if self.current_token.value == "const":
-                try:
-                    base_type.ptr_is_const = True
-                except Exception:
-                    pass
+                base_type.is_const = True
             elif self.current_token.value == "volatile":
-                try:
-                    base_type.ptr_is_volatile = True
-                except Exception:
-                    pass
+                base_type.is_volatile = True
             elif self.current_token.value == "restrict":
-                try:
-                    base_type.ptr_is_restrict = True
-                except Exception:
-                    pass
+                base_type.is_restrict = True
             self.advance()
 
         # function or variable?
@@ -855,19 +846,23 @@ class Parser:
             base_type.pointer_quals.insert(0, set())
             base_type._normalize_pointer_state()
 
-        # If the base type had qualifiers (e.g. `const int`) and we built a pointer
-        # type, treat those qualifiers as applying to the pointed-to type.
-        # In this representation that means moving them onto the innermost pointer
-        # level's qualifier set.
-        if getattr(base_type, "pointer_level", 0) > 0 and getattr(base_type, "is_const", False):
-            try:
-                if not getattr(base_type, "pointer_quals", None):
-                    base_type.pointer_quals = [set() for _ in range(base_type.pointer_level)]
-                base_type.pointer_quals[-1].add("const")
-                base_type.is_const = False
-                base_type._normalize_pointer_state()
-            except Exception:
-                pass
+            # Capture pointer-level qualifiers immediately after this '*', e.g.
+            #   int * const p;
+            #   int * volatile p;
+            while self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
+                try:
+                    if not getattr(base_type, "pointer_quals", None):
+                        base_type.pointer_quals = [set()]
+                    base_type.pointer_quals[0].add(self.current_token.value)
+                    base_type._normalize_pointer_state()
+                except Exception:
+                    pass
+                self.advance()
+
+        # NOTE: Base-type qualifiers (e.g. `const int`) are already represented
+        # on `Type.is_const/is_volatile/is_restrict`. Do NOT move them onto
+        # pointer_quals: that would incorrectly turn `const int *p` into
+        # `int *const p` (const-qualified pointer object).
 
         if self._match(TokenType.LPAREN):
             # parse inner pointer part: (*name)
@@ -905,69 +900,59 @@ class Parser:
         if hasattr(ty, "_normalize_pointer_state"):
             ty._normalize_pointer_state()
         # pointers: consume leading '*'s and attach qualifiers per level.
+        # IMPORTANT: qualifiers belong to the pointer level they appear on.
+        # Example:
+        #   const int *p;      -> pointee const (innermost level)
+        #   int * const p;     -> pointer-object const (outermost level)
+        #   const int * const p; -> both
         while True:
             if self._match(TokenType.STAR):
                 ty.pointer_level = int(getattr(ty, "pointer_level", 0)) + 1
                 if not getattr(ty, "pointer_quals", None):
                     ty.pointer_quals = []
+                # Insert a new *outermost* pointer level (closest to the declared name).
                 ty.pointer_quals.insert(0, set())
                 ty._normalize_pointer_state()
-                continue
-            # Allow pointer-level qualifiers after '*': we currently fold them
-            # into the same flags (best-effort).
-            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
-                try:
-                    if getattr(ty, "pointer_level", 0) > 0:
+                # Capture pointer-level qualifiers immediately following this '*'.
+                while self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
+                    try:
                         if not getattr(ty, "pointer_quals", None):
                             ty.pointer_quals = [set()]
-                        ty.pointer_quals[0].add("const")
+                        ty.pointer_quals[0].add(self.current_token.value)
                         ty._normalize_pointer_state()
-                    else:
-                        ty.is_const = True
+                    except Exception:
+                        pass
+                    self.advance()
+                continue
+
+            # Qualifiers that occur here (not after a '*') belong to the base type.
+            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
+                try:
+                    ty.is_const = True
                 except Exception:
                     pass
                 self.advance()
                 continue
             if self._at(TokenType.KEYWORD) and self.current_token.value == "volatile":
                 try:
-                    if getattr(ty, "pointer_level", 0) > 0:
-                        if not getattr(ty, "pointer_quals", None):
-                            ty.pointer_quals = [set()]
-                        ty.pointer_quals[0].add("volatile")
-                        ty._normalize_pointer_state()
-                    else:
-                        ty.is_volatile = True
+                    ty.is_volatile = True
                 except Exception:
                     pass
                 self.advance()
                 continue
             if self._at(TokenType.KEYWORD) and self.current_token.value == "restrict":
                 try:
-                    if getattr(ty, "pointer_level", 0) > 0:
-                        if not getattr(ty, "pointer_quals", None):
-                            ty.pointer_quals = [set()]
-                        ty.pointer_quals[0].add("restrict")
-                        ty._normalize_pointer_state()
-                    else:
-                        ty.is_restrict = True
+                    ty.is_restrict = True
                 except Exception:
                     pass
                 self.advance()
                 continue
             break
 
-        # If the base type carried qualifiers like `const`, and we formed a pointer
-        # type, those qualifiers should apply to the pointed-to type. In this model,
-        # we record that on the innermost pointer level.
-        if getattr(ty, "pointer_level", 0) > 0 and getattr(ty, "is_const", False):
-            try:
-                if not getattr(ty, "pointer_quals", None):
-                    ty.pointer_quals = [set() for _ in range(ty.pointer_level)]
-                ty.pointer_quals[-1].add("const")
-                ty.is_const = False
-                ty._normalize_pointer_state()
-            except Exception:
-                pass
+        # NOTE: Base-type qualifiers (e.g. `const int`) are represented on
+        # `Type.is_const/is_volatile/is_restrict` and must NOT be migrated to
+        # pointer_quals. Qualifiers in pointer_quals only represent
+        # `* const/* volatile/* restrict` (i.e. qualifiers on the pointer object).
 
         # array declarator: name[expr]
         # NOTE: this parser milestone supports only a single array suffix.

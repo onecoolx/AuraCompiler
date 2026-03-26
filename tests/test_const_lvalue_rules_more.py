@@ -28,9 +28,7 @@ int main(void){
 
 def test_assign_through_pointer_to_const_is_error(tmp_path):
     # Writing through `const int *` is invalid.
-    # NOTE: current parser does not model pointee-const for pointer declarators
-    # (it parses `const int *p` as `int *`). Keep this test to drive that
-    # improvement later.
+    # NOTE: parser/semantics now models pointee-const for pointer declarators.
     code = r'''
 int main(void){
   int x = 1;

@@ -6,7 +6,7 @@ def test_assignment_through_pointer_to_const_is_error(tmp_path):
     code = r'''
 int main(){
   const int x = 1;
-  int * const p = &x;
+  const int *p = &x;
   *p = 2;
   return 0;
 }

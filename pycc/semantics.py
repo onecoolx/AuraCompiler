@@ -570,13 +570,8 @@ class SemanticAnalyzer:
         sl = self._pointer_level_count(src)
 
         def _ultimate_pointee_is_const(t: Type) -> bool:
-            pq = getattr(t, "pointer_quals", None)
-            if isinstance(pq, list) and len(pq) >= 1:
-                try:
-                    return "const" in pq[-1]
-                except Exception:
-                    pass
-            # Back-compat: old approximation.
+            # Current representation: ultimate pointee const for `const T *...`
+            # is tracked on the base qualifier.
             return bool(getattr(t, "is_const", False))
 
         # Only enforce the classic constraint when both are at least double pointers
@@ -1080,13 +1075,31 @@ class SemanticAnalyzer:
                 ty = getattr(self, "_decl_types", {}).get(expr.target.name)
                 if ty is None:
                     ty = getattr(self, "_global_decl_types", {}).get(expr.target.name)
-                if getattr(ty, "is_const", False):
+                # C semantics: `const int *p` is an *assignable* pointer object.
+                # Only the referenced object is const. We only reject
+                # `T const p` (non-pointer const object) and `T * const p`
+                # (const-qualified pointer object).
+                if ty is not None and not getattr(ty, "is_pointer", False) and getattr(ty, "is_const", False):
                     self.errors.append(f"Assignment to const-qualified variable '{expr.target.name}'")
 
                 # Also reject assignment to a const-qualified pointer object: `T *const p; p = ...;`
                 # This is distinct from `const T *p` (pointer-to-const), which remains assignable.
-                if getattr(ty, "is_pointer", False) and getattr(ty, "ptr_is_const", False):
-                    self.errors.append(f"Assignment to const-qualified pointer variable '{expr.target.name}'")
+                if getattr(ty, "is_pointer", False):
+                    # Treat as pointer-object const only when the *outermost pointer*
+                    # level has const (i.e. `T * const p`). Base-type const
+                    # (i.e. `const T *p`) must remain assignable.
+                    try:
+                        is_ptr_obj_const = bool(
+                            getattr(ty, "pointer_level", 0) > 0
+                            and isinstance(getattr(ty, "pointer_quals", None), list)
+                            and len(ty.pointer_quals) > 0
+                            and ("const" in ty.pointer_quals[0])
+                        )
+                    except Exception:
+                        is_ptr_obj_const = False
+
+                    if is_ptr_obj_const:
+                        self.errors.append(f"Assignment to const-qualified pointer variable '{expr.target.name}'")
 
             def _expr_is_nonmodifiable_lvalue(e: Expression) -> bool:
                 """Return True if e is a non-modifiable lvalue (const-qualified).
@@ -1099,7 +1112,13 @@ class SemanticAnalyzer:
 
                 if isinstance(e, Identifier):
                     ty2 = self._lookup_decl_type(e.name)
-                    return bool(ty2 is not None and getattr(ty2, "is_const", False))
+                    # A pointer-to-const variable is still a modifiable lvalue;
+                    # const applies to what it points at.
+                    return bool(
+                        ty2 is not None
+                        and (not getattr(ty2, "is_pointer", False))
+                        and getattr(ty2, "is_const", False)
+                    )
 
                 if isinstance(e, ArrayAccess) and isinstance(e.array, Identifier):
                     aty = self._lookup_decl_type(e.array.name)
@@ -1116,23 +1135,16 @@ class SemanticAnalyzer:
 
             # Feature B (subset): reject writes through pointers-to-const.
             # Detect `*p = ...` where `p` was declared as `const T*`.
-            if isinstance(expr.target, UnaryOp) and expr.target.operator == "*" and isinstance(expr.target.operand, Identifier):
-                p_name = expr.target.operand.name
-                p_ty = self._lookup_decl_type(p_name)
-                def _pointee_is_const(t: Optional[Type]) -> bool:
-                    if t is None:
-                        return False
-                    pq = getattr(t, "pointer_quals", None)
-                    if isinstance(pq, list) and len(pq) >= 1:
-                        try:
-                            return "const" in pq[-1]
-                        except Exception:
-                            pass
-                    # Back-compat: older representation stored pointee const on Type.is_const.
-                    return bool(getattr(t, "is_const", False))
-
-                if p_ty is not None and getattr(p_ty, "is_pointer", False) and _pointee_is_const(p_ty):
-                    self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
+            if isinstance(expr.target, UnaryOp) and expr.target.operator == "*":
+                # Best-effort: only handle deref of a plain identifier.
+                # (Full lvalue type propagation is deferred.)
+                if isinstance(expr.target.operand, Identifier):
+                    p_name = expr.target.operand.name
+                    p_ty = self._lookup_decl_type(p_name)
+                    # Current representation: pointee const for `const T *p`
+                    # is stored on Type.is_const (even for pointers).
+                    if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
+                        self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
 
             def _deref_depth(e: Expression) -> tuple[int, Optional[str]]:
                 d = 0
@@ -1146,14 +1158,8 @@ class SemanticAnalyzer:
             def _outermost_pointee_is_const(ty: Optional[Type]) -> bool:
                 if ty is None:
                     return False
-                # Prefer the new multi-level representation.
-                pq = getattr(ty, "pointer_quals", None)
-                if isinstance(pq, list) and len(pq) >= 1:
-                    try:
-                        return "const" in pq[-1]
-                    except Exception:
-                        pass
-                # Back-compat: old approximation (pointee const stored in is_const).
+                # Current representation: ultimate pointee const for `const T *...`
+                # is stored on Type.is_const.
                 return bool(getattr(ty, "is_const", False))
 
             def _pointer_level_count(ty: Optional[Type]) -> int:

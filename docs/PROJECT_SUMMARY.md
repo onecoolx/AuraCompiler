@@ -1,6 +1,6 @@
 # AuraCompiler (pycc): Practical C89 Compiler - Project Summary
 
-Last updated: 2026-03-18
+Last updated: 2026-03-26
 
 ## Executive Summary
 
@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **752 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **753 passed**.
 
 ### Recent changes
 
