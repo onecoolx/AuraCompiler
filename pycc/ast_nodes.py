@@ -48,6 +48,14 @@ class Type(ASTNode):
     # Qualifiers per pointer indirection, outermost first.
     # Example: `int *const *p` => pointer_level=2, pointer_quals[0] contains {'const'}.
     pointer_quals: List[set[str]] = field(default_factory=list)
+
+    # Best-effort: function pointer signature metadata.
+    # When the Type represents a pointer-to-function (e.g. `int (*fp)(void)`),
+    # we keep the parameter count so semantic checks can reject incompatible
+    # assignments even though full prototype typing is not yet implemented.
+    # - None: unknown / unspecified
+    # - 0+: known arity
+    fn_param_count: Optional[int] = None
     
     def __str__(self) -> str:
         result = ""

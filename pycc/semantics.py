@@ -311,6 +311,8 @@ class SemanticAnalyzer:
                         init = getattr(decl, "initializer")
                         if isinstance(init, StringLiteral):
                             self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "char")), len(init.value) + 1)
+                except StopIteration:
+                    pass
                 except Exception:
                     pass
 
@@ -1196,6 +1198,17 @@ class SemanticAnalyzer:
                 src_ty: Optional[Type] = None
                 if isinstance(expr.value, Identifier):
                     src_ty = self._lookup_decl_type(expr.value.name)
+                    # If RHS is a function identifier used in expression context,
+                    # it decays to a function pointer. Use recorded function
+                    # signature info (arity) for compatibility checks.
+                    if src_ty is None and expr.value.name in getattr(self, "_function_sigs", {}):
+                        try:
+                            _ret, _pc, _is_var = self._function_sigs[expr.value.name]
+                            src_ty = Type(base=f"{_ret} (*)()", is_pointer=True, pointer_level=1, line=expr.value.line, column=expr.value.column)
+                            src_ty._normalize_pointer_state()
+                            src_ty.fn_param_count = _pc
+                        except Exception:
+                            src_ty = None
                 elif isinstance(expr.value, UnaryOp) and expr.value.operator == "&" and isinstance(expr.value.operand, Identifier):
                     src_ty = self._type_after_address_of_identifier(expr.value.operand.name)
                 if self._reject_const_dropping_via_chain(dst_ty, src_ty) or _reject_const_dropping(dst_ty, src_ty):
@@ -1215,11 +1228,25 @@ class SemanticAnalyzer:
                     ):
                         dst_base = str(getattr(dst_ty, "base", ""))
                         src_base = str(getattr(src_ty, "base", ""))
+                        # Function pointer compatibility (subset): when both sides are
+                        # pointers to functions (parser encodes base like `int (*)()`),
+                        # enforce arity if available.
+                        if "(*)" in dst_base and "(*)" in src_base:
+                            d_arity = getattr(dst_ty, "fn_param_count", None)
+                            s_arity = getattr(src_ty, "fn_param_count", None)
+                            if d_arity is not None and s_arity is not None and d_arity != s_arity:
+                                self.errors.append(
+                                    f"incompatible function pointer types in assignment: arity {d_arity} from arity {s_arity}"
+                                )
+                            # Do not apply object-pointer base checks to function pointers.
+                            raise StopIteration()
                         # void* <-> T* allowed (object pointers subset)
                         if dst_base != "void" and src_base != "void" and dst_base != src_base:
                             self.errors.append(
                                 f"incompatible pointer types in assignment: '{dst_base}*' from '{src_base}*'"
                             )
+                except StopIteration:
+                    pass
                 except Exception:
                     pass
 

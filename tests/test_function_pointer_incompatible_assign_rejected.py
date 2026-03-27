@@ -26,7 +26,5 @@ int main(void){
   return fp();
 }
 """.lstrip()
-    # NOTE: parser currently erases function pointer parameter lists
-    # (represents all as `int (*)()`), so we can't enforce this yet.
     res = _compile(tmp_path, code)
-    assert res.success, "unexpected failure: " + "\n".join(res.errors)
+    assert not res.success, "expected failure but succeeded"

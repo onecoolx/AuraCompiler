@@ -358,6 +358,11 @@ class Parser:
                     self.advance()
                 ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, pointer_level=max(1, int(getattr(ptr_ty, "pointer_level", 0) or 1)), line=ptr_ty.line, column=ptr_ty.column)
                 ptr_ty._normalize_pointer_state()
+                # Best-effort: preserve arity for function-pointer return types.
+                try:
+                    ptr_ty.fn_param_count = len(params)
+                except Exception:
+                    pass
 
             # prototype or definition
             if self._match(TokenType.SEMICOLON):
@@ -758,16 +763,28 @@ class Parser:
                 self._expect(TokenType.RPAREN, "Expected ')' in parameter declarator")
                 # consume trailing function parameter list
                 if self._match(TokenType.LPAREN):
-                    depth = 1
-                    while self.current_token and depth > 0:
-                        if self._match(TokenType.LPAREN):
-                            depth += 1
-                            continue
-                        if self._match(TokenType.RPAREN):
-                            depth -= 1
-                            continue
-                        self.advance()
+                    # Best-effort: parse parameter list so we can preserve arity.
+                    try:
+                        fp_params = self._parse_parameter_list()
+                        fp_arity: Optional[int] = len([p for p in fp_params if getattr(p, "name", None) != "..."])
+                    except Exception:
+                        fp_arity = None
+                        depth = 1
+                        while self.current_token and depth > 0:
+                            if self._match(TokenType.LPAREN):
+                                depth += 1
+                                continue
+                            if self._match(TokenType.RPAREN):
+                                depth -= 1
+                                continue
+                            self.advance()
+                    self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+
                     ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                    try:
+                        ptr_ty.fn_param_count = fp_arity
+                    except Exception:
+                        pass
                 params.append(Declaration(name=name_tok.value, type=ptr_ty, line=name_tok.line, column=name_tok.column))
             else:
                 # Allow unnamed parameters in prototypes (common in system headers).
@@ -980,24 +997,36 @@ class Parser:
         # Minimal support for function pointer declarations where the type is a
         # pointer, but the declarator has a trailing parameter list.
         if self._match(TokenType.LPAREN):
-            # Parse and discard parameter types/names for now (signature typing
-            # is deferred); we only need to consume tokens and mark it as a
-            # function pointer in the type string.
-            depth = 1
-            while self.current_token and depth > 0:
-                if self._match(TokenType.LPAREN):
-                    depth += 1
-                    continue
-                if self._match(TokenType.RPAREN):
-                    depth -= 1
-                    continue
-                self.advance()
+            # Best-effort: extract arity by reusing the normal parameter-list parser.
+            # This supports `(void)` as 0 parameters.
+            try:
+                params = self._parse_parameter_list()
+                fn_arity: Optional[int] = len([p for p in params if getattr(p, "name", None) != "..."])
+            except Exception:
+                params = None
+                fn_arity = None
+                # If parsing fails for any reason, consume until matching ')'.
+                depth = 1
+                while self.current_token and depth > 0:
+                    if self._match(TokenType.LPAREN):
+                        depth += 1
+                        continue
+                    if self._match(TokenType.RPAREN):
+                        depth -= 1
+                        continue
+                    self.advance()
+            self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+
             # Represent as pointer-to-function in a lightweight way.
             if not ty.is_pointer:
                 ty = Type(base=ty.base, is_pointer=True, pointer_level=1, line=ty.line, column=ty.column)
                 ty._normalize_pointer_state()
             ty = Type(base=f"{ty.base} (*)()", is_pointer=True, pointer_level=max(1, int(getattr(ty, "pointer_level", 0) or 1)), line=ty.line, column=ty.column)
             ty._normalize_pointer_state()
+            try:
+                ty.fn_param_count = fn_arity
+            except Exception:
+                pass
 
         initializer = None
 
