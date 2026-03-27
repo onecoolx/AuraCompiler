@@ -1203,6 +1203,26 @@ class SemanticAnalyzer:
                         f"invalid conversion: assignment to '{expr.target.name}' drops const qualifiers in pointer chain"
                     )
 
+                # Pointer compatibility (subset): reject incompatible object pointer assignment
+                # without an explicit cast, except for void* which is compatible with any
+                # object pointer.
+                try:
+                    if (
+                        dst_ty is not None
+                        and src_ty is not None
+                        and getattr(dst_ty, "is_pointer", False)
+                        and getattr(src_ty, "is_pointer", False)
+                    ):
+                        dst_base = str(getattr(dst_ty, "base", ""))
+                        src_base = str(getattr(src_ty, "base", ""))
+                        # void* <-> T* allowed (object pointers subset)
+                        if dst_base != "void" and src_base != "void" and dst_base != src_base:
+                            self.errors.append(
+                                f"incompatible pointer types in assignment: '{dst_base}*' from '{src_base}*'"
+                            )
+                except Exception:
+                    pass
+
             self._analyze_expr(expr.target)
             self._analyze_expr(expr.value)
             return
