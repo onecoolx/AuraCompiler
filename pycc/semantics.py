@@ -120,6 +120,9 @@ class SemanticAnalyzer:
         # Track globally known functions (including implicit decls)
         self._functions: Set[str] = set()
         self._layouts: Dict[str, StructLayout] = {}
+        # Control-flow context stacks (for validating break/continue).
+        self._loop_depth: int = 0
+        self._switch_depth: int = 0
     
     def analyze(self, ast: Program) -> SemanticContext:
         """Analyze AST for semantic errors"""
@@ -129,6 +132,8 @@ class SemanticAnalyzer:
         self._functions = set()
         self._typedefs = [{}]
         self._layouts = {}
+        self._loop_depth = 0
+        self._switch_depth = 0
         self._global_linkage: Dict[str, str] = {}
         self._global_kinds: Dict[str, str] = {}
 
@@ -800,11 +805,19 @@ class SemanticAnalyzer:
             self._analyze_expr(stmt.condition)
             if not self._is_scalar_expr(stmt.condition):
                 self.errors.append("while condition must have scalar type")
-            self._analyze_stmt(stmt.body)
+            self._loop_depth += 1
+            try:
+                self._analyze_stmt(stmt.body)
+            finally:
+                self._loop_depth -= 1
             return
 
         if isinstance(stmt, DoWhileStmt):
-            self._analyze_stmt(stmt.body)
+            self._loop_depth += 1
+            try:
+                self._analyze_stmt(stmt.body)
+            finally:
+                self._loop_depth -= 1
             self._analyze_expr(stmt.condition)
             if not self._is_scalar_expr(stmt.condition):
                 self.errors.append("do-while condition must have scalar type")
@@ -845,7 +858,11 @@ class SemanticAnalyzer:
             if stmt.update is not None:
                 self._analyze_expr(stmt.update)
             if stmt.body is not None:
-                self._analyze_stmt(stmt.body)
+                self._loop_depth += 1
+                try:
+                    self._analyze_stmt(stmt.body)
+                finally:
+                    self._loop_depth -= 1
             self._pop_scope()
             return
 
@@ -853,7 +870,11 @@ class SemanticAnalyzer:
             self._analyze_expr(stmt.expression)
             if not self._is_integer_expr(stmt.expression):
                 self.errors.append("switch controlling expression must have integer type")
-            self._analyze_stmt(stmt.body)
+            self._switch_depth += 1
+            try:
+                self._analyze_stmt(stmt.body)
+            finally:
+                self._switch_depth -= 1
             return
 
         if isinstance(stmt, ReturnStmt):
@@ -861,7 +882,14 @@ class SemanticAnalyzer:
                 self._analyze_expr(stmt.value)
             return
 
-        if isinstance(stmt, (BreakStmt, ContinueStmt)):
+        if isinstance(stmt, BreakStmt):
+            if self._loop_depth <= 0 and self._switch_depth <= 0:
+                self.errors.append("break statement not within loop or switch")
+            return
+
+        if isinstance(stmt, ContinueStmt):
+            if self._loop_depth <= 0:
+                self.errors.append("continue statement not within a loop")
             return
 
         if isinstance(stmt, LabelStmt):
