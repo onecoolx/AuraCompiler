@@ -205,8 +205,13 @@ class SemanticAnalyzer:
                     self._function_sigs[decl.name] = ("int", None, False)
 
                 # Track per-parameter types for multi-TU checks / future work.
-                # NOTE: We do not yet enforce per-parameter compatibility at
-                # semantic time because parameter type qualifiers are not modeled
+                    self._global_linkage: Dict[str, str] = {}
+                    self._global_kinds: Dict[str, str] = {}
+                    self._global_types: Dict[str, str] = {}
+                    # Preserve Type nodes for globals so we can check qualifiers like const.
+                    self._global_decl_types: Dict[str, Type] = {}
+                    self._enum_constants: Dict[str, int] = {}
+                    self._global_arrays: Dict[str, tuple[str, int]] = {}
                 # robustly across all declarator spellings.
                 try:
                     if len(params_list) == 0 and decl.body is None:
@@ -1164,6 +1169,24 @@ class SemanticAnalyzer:
                     if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
                         self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
 
+            # Pointer assignment from integer (subset): allow only 0 as a null
+            # pointer constant in plain '=' assignment.
+            # Reject `T* p; p = 1;` unless explicitly cast.
+            try:
+                if (
+                    getattr(expr, "operator", "=") == "="
+                    and isinstance(expr.target, Identifier)
+                    and not isinstance(expr.value, Cast)
+                ):
+                    dst_ty = self._lookup_decl_type(expr.target.name)
+                    if dst_ty is not None and getattr(dst_ty, "is_pointer", False):
+                        if isinstance(expr.value, IntLiteral) and int(expr.value.value) != 0:
+                            self.errors.append(
+                                "invalid conversion: assignment from non-zero integer constant to pointer requires a cast"
+                            )
+            except Exception:
+                pass
+
             def _deref_depth(e: Expression) -> tuple[int, Optional[str]]:
                 d = 0
                 while isinstance(e, UnaryOp) and e.operator == "*":
@@ -1231,6 +1254,29 @@ class SemanticAnalyzer:
                     self.errors.append(
                         f"invalid conversion: assignment to '{expr.target.name}' drops const qualifiers in pointer chain"
                     )
+
+                # Pointer from integer (subset): allow only null pointer constants.
+                # Reject `T* p; p = 1;` (no cast) but allow `p = 0;`.
+                # IMPORTANT: do not reject pointer arithmetic expressions like `p += 1`
+                # which are represented as an Assignment with a BinaryOp RHS.
+                # NOTE: This is a narrow rule intended to catch direct assignments like
+                # `p = 1;` while not breaking pointer arithmetic (`p += 1`).
+                try:
+                    if dst_ty is not None and getattr(dst_ty, "is_pointer", False) and getattr(expr, "operator", "=") == "=":
+                        if not isinstance(expr.value, Cast):
+                            # Skip if RHS is already pointer-typed.
+                            rhs_ty = self._infer_type(expr.value)
+                            if rhs_ty is not None and getattr(rhs_ty, "is_pointer", False):
+                                raise StopIteration()
+                            # Only reject literal integer constants that are non-zero.
+                            if isinstance(expr.value, IntLiteral) and int(expr.value.value) != 0:
+                                self.errors.append(
+                                    "invalid conversion: assignment from non-zero integer constant to pointer requires a cast"
+                                )
+                except StopIteration:
+                    pass
+                except Exception:
+                    pass
 
                 # Pointer compatibility (subset): reject incompatible object pointer assignment
                 # without an explicit cast, except for void* which is compatible with any
