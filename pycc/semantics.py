@@ -17,6 +17,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union, Tuple
 
+from pycc.ir import _type_size
+
 from pycc.ast_nodes import (
         Program,
         Declaration,
@@ -53,6 +55,7 @@ from pycc.ast_nodes import (
         MemberAccess,
         PointerMemberAccess,
     Cast,
+        SizeOf,
 )
 
 
@@ -416,6 +419,10 @@ class SemanticAnalyzer:
             return l >> r
         if isinstance(expr, Identifier) and expr.name in self._enum_constants:
             return self._enum_constants[expr.name]
+        if isinstance(expr, Cast):
+            # C89: casts may appear inside constant expressions in a limited way.
+            # For now, accept casts and evaluate the underlying expression.
+            return self._eval_const_int(expr.expression)
         if isinstance(expr, SizeOf):
             # C89: sizeof(type-name) is an integer constant expression.
             if expr.operand is None and expr.type is not None:
