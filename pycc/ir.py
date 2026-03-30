@@ -147,6 +147,10 @@ def _type_size(ty: Optional[object]) -> int:
         if getattr(ty, "is_pointer", False):
             return 8
         b = " ".join(base.strip().split())
+        # C89: function types are not object types and have no size.
+        # Treat non-pointer function types as an error.
+        if "(" in b and ")" in b and "*" not in b:
+            raise IRGenError("invalid application of sizeof to function type")
         if b == "char" or b == "unsigned char" or b == "signed char":
             return 1
         if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
@@ -1965,6 +1969,40 @@ class IRGenerator:
             op = expr.operand
             if op is None:
                 return "$8"
+
+            # Reject sizeof(function-designator) conservatively. We only apply
+            # this to the simple `sizeof(f)` form where `f` is an identifier
+            # and it is *not* known to be a local/global object.
+            try:
+                from pycc.ast_nodes import Identifier as ASTIdentifier
+
+                if isinstance(op, ASTIdentifier):
+                    sym = f"@{op.name}"
+                    ty_s = getattr(self, "_var_types", {}).get(sym)
+                    if isinstance(ty_s, str):
+                        # If we already know it's an object, it's fine.
+                        pass
+                    else:
+                        # Fall back to semantic context for globals.
+                        gty = None
+                        if getattr(self, "_sema_ctx", None) is not None:
+                            gty = getattr(self._sema_ctx, "global_decl_types", {}).get(op.name)
+
+                        # If it's a global object, it's fine.
+                        if gty is not None:
+                            pass
+                        else:
+                            # As a final step, if this identifier is the name of a
+                            # function (known in sema function_sigs), reject.
+                            fs = None
+                            if getattr(self, "_sema_ctx", None) is not None:
+                                fs = getattr(self._sema_ctx, "function_sigs", {})
+                            if isinstance(fs, dict) and op.name in fs:
+                                raise IRGenError("invalid application of sizeof to function type")
+            except IRGenError:
+                raise
+            except Exception:
+                pass
             # If semantics has already attached a type to the operand
             # expression, use it.
             try:

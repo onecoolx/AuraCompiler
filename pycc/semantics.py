@@ -74,6 +74,8 @@ class SemanticContext:
     typedefs: Dict[str, Type]
     layouts: Dict[str, StructLayout]  # key: "struct Tag" / "union Tag"
     global_types: Dict[str, str]
+    # Full declared Type nodes for globals (incl. qualifiers/pointerness).
+    global_decl_types: Dict[str, Type]
     global_linkage: Dict[str, str]
     # Kind of global declaration/definition per TU (subset):
     # - "extern_decl": `extern int g;`
@@ -349,6 +351,7 @@ class SemanticAnalyzer:
             typedefs=dict(self._typedefs[0]),
             layouts=dict(self._layouts),
             global_types=dict(self._global_types),
+            global_decl_types=dict(self._global_decl_types),
             global_linkage=dict(self._global_linkage),
             global_kinds=dict(self._global_kinds),
             function_sigs=dict(self._function_sigs),
@@ -413,6 +416,12 @@ class SemanticAnalyzer:
             return l >> r
         if isinstance(expr, Identifier) and expr.name in self._enum_constants:
             return self._enum_constants[expr.name]
+        if isinstance(expr, SizeOf):
+            # C89: sizeof(type-name) is an integer constant expression.
+            if expr.operand is None and expr.type is not None:
+                return int(_type_size(expr.type))
+            # sizeof(expression) is not an ICE in C89.
+            raise SemanticError("enum value must be an integer constant expression")
         raise SemanticError("enum value must be an integer constant expression")
 
     def _register_layout_decl(self, decl: Union[StructDecl, UnionDecl]) -> None:
