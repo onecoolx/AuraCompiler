@@ -52,6 +52,7 @@ from pycc.ast_nodes import (
         CommaOp,
         Expression,
         Type,
+        SwitchStmt,
         MemberAccess,
         PointerMemberAccess,
     Cast,
@@ -788,6 +789,8 @@ class SemanticAnalyzer:
 
         if isinstance(stmt, IfStmt):
             self._analyze_expr(stmt.condition)
+            if not self._is_scalar_expr(stmt.condition):
+                self.errors.append("if condition must have scalar type")
             self._analyze_stmt(stmt.then_stmt)
             if stmt.else_stmt is not None:
                 self._analyze_stmt(stmt.else_stmt)
@@ -795,12 +798,16 @@ class SemanticAnalyzer:
 
         if isinstance(stmt, WhileStmt):
             self._analyze_expr(stmt.condition)
+            if not self._is_scalar_expr(stmt.condition):
+                self.errors.append("while condition must have scalar type")
             self._analyze_stmt(stmt.body)
             return
 
         if isinstance(stmt, DoWhileStmt):
             self._analyze_stmt(stmt.body)
             self._analyze_expr(stmt.condition)
+            if not self._is_scalar_expr(stmt.condition):
+                self.errors.append("do-while condition must have scalar type")
             return
 
         if isinstance(stmt, ForStmt):
@@ -833,11 +840,20 @@ class SemanticAnalyzer:
                 self._analyze_expr(stmt.init)
             if stmt.condition is not None:
                 self._analyze_expr(stmt.condition)
+                if not self._is_scalar_expr(stmt.condition):
+                    self.errors.append("for condition must have scalar type")
             if stmt.update is not None:
                 self._analyze_expr(stmt.update)
             if stmt.body is not None:
                 self._analyze_stmt(stmt.body)
             self._pop_scope()
+            return
+
+        if isinstance(stmt, SwitchStmt):
+            self._analyze_expr(stmt.expression)
+            if not self._is_integer_expr(stmt.expression):
+                self.errors.append("switch controlling expression must have integer type")
+            self._analyze_stmt(stmt.body)
             return
 
         if isinstance(stmt, ReturnStmt):
@@ -859,28 +875,86 @@ class SemanticAnalyzer:
 
         # Unknown statement types are ignored for now
 
-    def _analyze_expr(self, expr: Expression) -> None:
-        # Best-effort type propagation for later stages (IR/codegen).
-        # This is not a full C89 typing engine yet, but it gives us a stable
-        # place to start wiring type info into expressions.
+    # NOTE: helpers for scalar/integer checks live below; keep a single
+    # `_analyze_expr` implementation (defined later in this file).
+
+    def _is_scalar_type(self, ty: Optional[Type]) -> bool:
+        """Return True if `ty` is a scalar type (arithmetic or pointer)."""
+
+        if ty is None:
+            return True
         try:
-            if not hasattr(expr, "type"):
-                setattr(expr, "type", None)
+            ty._normalize_pointer_state()
         except Exception:
             pass
+        if getattr(ty, "is_pointer", False) or getattr(ty, "pointer_level", 0) > 0:
+            return True
+        base = str(getattr(ty, "base", "")).strip()
+        if base.startswith("enum "):
+            return True
+        if base.startswith("struct ") or base.startswith("union "):
+            return False
+        return base in {
+            "char",
+            "signed char",
+            "unsigned char",
+            "short",
+            "short int",
+            "unsigned short",
+            "unsigned short int",
+            "int",
+            "unsigned",
+            "unsigned int",
+            "long",
+            "long int",
+            "unsigned long",
+            "unsigned long int",
+            "float",
+            "double",
+            "long double",
+            "_Bool",
+        }
 
-        if isinstance(expr, (IntLiteral, StringLiteral, CharLiteral)):
-            try:
-                if isinstance(expr, IntLiteral):
-                    expr.type = Type(base="int", line=expr.line, column=expr.column)
-                elif isinstance(expr, CharLiteral):
-                    expr.type = Type(base="int", line=expr.line, column=expr.column)
-                elif isinstance(expr, StringLiteral):
-                    expr.type = Type(base="char", is_pointer=True, pointer_level=1, line=expr.line, column=expr.column)
-                    expr.type._normalize_pointer_state()
-            except Exception:
-                pass
-            return
+    def _is_integer_type(self, ty: Optional[Type]) -> bool:
+        if ty is None:
+            return True
+        base = str(getattr(ty, "base", "")).strip()
+        if base.startswith("enum "):
+            return True
+        return base in {
+            "char",
+            "signed char",
+            "unsigned char",
+            "short",
+            "short int",
+            "unsigned short",
+            "unsigned short int",
+            "int",
+            "unsigned",
+            "unsigned int",
+            "long",
+            "long int",
+            "unsigned long",
+            "unsigned long int",
+            "_Bool",
+        }
+
+    def _expr_type(self, expr: Expression) -> Optional[Type]:
+        ty: Optional[Type] = getattr(expr, "type", None)
+        if ty is not None:
+            return ty
+        if isinstance(expr, Identifier):
+            return self._lookup_decl_type(expr.name)
+        return None
+
+    def _is_scalar_expr(self, expr: Expression) -> bool:
+        return self._is_scalar_type(self._expr_type(expr))
+
+    def _is_integer_expr(self, expr: Expression) -> bool:
+        return self._is_integer_type(self._expr_type(expr))
+
+    def _analyze_expr(self, expr: Expression) -> None:
+        # (implementation continues below)
 
         if isinstance(expr, Identifier):
             # enum constants are always in-scope as integer constants
