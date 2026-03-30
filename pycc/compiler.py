@@ -721,7 +721,7 @@ class Compiler:
         tokens = lexer.tokenize()
         if lexer.has_errors():
             errors = lexer.get_errors()
-            raise Exception("\n".join(str(e) for e in errors))
+            raise RuntimeError("\n".join(str(e) for e in errors))
         return tokens
     
     def get_ast(self, tokens: List[Token]):

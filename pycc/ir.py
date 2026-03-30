@@ -349,7 +349,7 @@ class IRGenerator:
                         imm = self._const_initializer_imm(init)
                         ptr = self._const_initializer_ptr(init)
                         if imm is None and ptr is None:
-                            raise Exception(
+                            raise IRGenError(
                                 f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
                             )
 
@@ -1420,7 +1420,7 @@ class IRGenerator:
                             imm = self._const_initializer_imm(item.initializer)
                             ptr = self._const_initializer_ptr(item.initializer)
                             if imm is None and ptr is None:
-                                raise Exception(
+                                raise IRGenError(
                                     f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
                                 )
                             self.instructions.append(
@@ -1603,7 +1603,7 @@ class IRGenerator:
                         if getattr(item, "array_size", None) is not None and not getattr(item.type, "is_pointer", False):
                             inits = self._const_initializer_list(item.initializer)
                             if inits is None:
-                                raise Exception("unsupported array initializer: expected initializer list")
+                                raise IRGenError("unsupported array initializer: expected initializer list")
 
                             # Minimal multi-dimensional support: if this is a
                             # 2D array with a nested initializer list, flatten
@@ -1706,7 +1706,7 @@ class IRGenerator:
                         # If we reached here and this is an array, it means we don't
                         # support the given initializer form for arrays yet.
                         if getattr(item, "array_size", None) is not None and not getattr(item.type, "is_pointer", False):
-                            raise Exception("unsupported array initializer")
+                            raise IRGenError("unsupported array initializer")
 
                         # Scalar init (existing path)
                         v = self._gen_expr(item.initializer)
