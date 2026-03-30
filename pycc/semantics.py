@@ -1180,7 +1180,14 @@ class SemanticAnalyzer:
                 ):
                     dst_ty = self._lookup_decl_type(expr.target.name)
                     if dst_ty is not None and getattr(dst_ty, "is_pointer", False):
-                        if isinstance(expr.value, IntLiteral) and int(expr.value.value) != 0:
+                        # Reject non-zero integer constant expressions. Keep this
+                        # best-effort and conservative to avoid blocking pointer
+                        # arithmetic forms.
+                        try:
+                            v = self._eval_const_int(expr.value)
+                        except Exception:
+                            v = None
+                        if v is not None and int(v) != 0:
                             self.errors.append(
                                 "invalid conversion: assignment from non-zero integer constant to pointer requires a cast"
                             )
