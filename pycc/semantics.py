@@ -1051,6 +1051,25 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, UnaryOp):
+            # C89: unary '&' requires an lvalue (subset).
+            # Allow identifiers, dereference, and member/array accesses.
+            if expr.operator == "&":
+                from pycc.ast_nodes import MemberAccess as _MemberAccess, PointerMemberAccess as _PointerMemberAccess
+
+                def _is_lvalue(e: Expression) -> bool:
+                    if isinstance(e, Identifier):
+                        return True
+                    if isinstance(e, UnaryOp) and e.operator == "*":
+                        return True
+                    if isinstance(e, ArrayAccess):
+                        return True
+                    if isinstance(e, (_MemberAccess, _PointerMemberAccess)):
+                        return True
+                    return False
+
+                if not _is_lvalue(expr.operand):
+                    self.errors.append("address-of operator requires an lvalue")
+
             # C89: cannot take the address of a register object.
             if expr.operator == "&" and isinstance(expr.operand, Identifier):
                 if expr.operand.name in getattr(self, "_register_locals", set()):
