@@ -151,6 +151,10 @@ def _type_size(ty: Optional[object]) -> int:
         # Treat non-pointer function types as an error.
         if "(" in b and ")" in b and "*" not in b:
             raise IRGenError("invalid application of sizeof to function type")
+        # Incomplete struct/union types have no size.
+        if b.startswith("struct ") or b.startswith("union "):
+            # If this is just a tag name, treat it as incomplete here.
+            raise IRGenError("invalid application of sizeof to incomplete type")
         if b == "char" or b == "unsigned char" or b == "signed char":
             return 1
         if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
