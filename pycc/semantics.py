@@ -1603,7 +1603,8 @@ class SemanticAnalyzer:
             # IMPORTANT: do not break existing array-vs-pointer behavior.
             # Our current type model does not reliably distinguish arrays from
             # pointers in expression context, so for now we only enforce the
-            # simple void-expression rejection.
+            # simple void-expression rejection and a few cases we can
+            # determine from declarations without forcing expression typing.
             try:
                 # sizeof(type)
                 if getattr(expr, "operand", None) is None and getattr(expr, "type", None) is not None:
@@ -1624,6 +1625,20 @@ class SemanticAnalyzer:
                 # sizeof(expression)
                 op = getattr(expr, "operand", None)
                 if op is not None:
+                    # Reject sizeof on incomplete array objects (e.g. `extern int a[]; sizeof(a)`)
+                    # when we can see the declaration. This does not require
+                    # expression typing and preserves array-vs-pointer behavior.
+                    if isinstance(op, Identifier):
+                        g = getattr(self, "_global_arrays", {}).get(op.name)
+                        if g is not None:
+                            _elem, dims = g
+                            # Parser stores single-dim arrays as int, multi-dim as list.
+                            if isinstance(dims, int):
+                                dims = [dims]
+                            if isinstance(dims, list) and any(d is None for d in dims):
+                                self.errors.append("invalid application of sizeof to incomplete array")
+                                return
+
                     # sizeof((void)0) (cast-to-void) is invalid.
                     if isinstance(op, Cast):
                         to_ty = getattr(op, "type", None)
