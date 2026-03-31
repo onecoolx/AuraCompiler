@@ -16,7 +16,7 @@ Generates **x86-64 SysV** assembly and uses **binutils `as`/`ld`** to produce EL
   - Code Generation (x86-64 Assembly)
   - Assemble/link via `as`/`ld`
 - **Pure Python Implementation**: No external compiler dependencies (except for final linking)
-- **Comprehensive Error Reporting**: Detailed error messages with line/column information
+- **Comprehensive Error Reporting**: Detailed error messages with file/line/column information
 
 ### Implemented language features (high level)
 

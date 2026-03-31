@@ -1,6 +1,6 @@
 # AuraCompiler Feature Tracker (Living)
 
-Last updated: 2026-03-02
+Last updated: 2026-03-31
 
 Status: **DEPRECATED** (kept for historical context).
 
@@ -9,6 +9,8 @@ Current sources of truth:
 - Language roadmap: `docs/C89_ROADMAP.md`
 - Preprocessor checklist (quantified): `docs/PREPROCESSOR_C89_CHECKLIST.md`
 - Project summary: `docs/PROJECT_SUMMARY.md`
+
+Note: diagnostics unification work is tracked in `docs/DIAGNOSTICS_PLAN.md` and validated by dedicated tests under `tests/test_diagnostics_*.py`.
 
 Rules:
 - Status is **test-driven**: mark **DONE** only when at least one test proves it.
