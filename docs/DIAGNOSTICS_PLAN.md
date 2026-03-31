@@ -36,3 +36,11 @@ This enables stable tests without depending on exact wording.
    - correct severity
    - location present
    - code present (if enabled)
+
+## Current state (2026-03-31)
+
+- Compiler driver (`pycc/compiler.py`) formats errors uniformly and attaches `(at <file>:<line>:<col>)`.
+- Semantic analysis now records best-effort locations by appending ` at <line>:<col>` to specific error messages when an AST node has `line/column`. The driver extracts this suffix and uses it for stable location formatting.
+- Tests cover semantics-location formatting for representative errors:
+  - `tests/test_diagnostics_semantics_location_for_sizeof.py`
+  - `tests/test_diagnostics_semantics_location_for_cast.py`
