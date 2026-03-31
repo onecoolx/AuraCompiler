@@ -134,23 +134,21 @@ class SemanticAnalyzer:
         self._layouts = {}
         self._loop_depth = 0
         self._switch_depth = 0
-        self._global_linkage: Dict[str, str] = {}
-        self._global_kinds: Dict[str, str] = {}
 
-        self._global_types: Dict[str, str] = {}
-        # Preserve Type nodes for globals so we can check qualifiers like const.
-        self._global_decl_types: Dict[str, Type] = {}
-        self._enum_constants: Dict[str, int] = {}
-        self._global_arrays: Dict[str, tuple[str, int]] = {}
+        self._global_linkage = {}
+        self._global_kinds = {}
+
+        self._global_types = {}
+        self._global_decl_types = {}
+        self._enum_constants = {}
+        self._global_arrays = {}
 
         seen_globals: Dict[str, str] = {}
         # Minimal function redeclaration compatibility tracking (C89 subset).
         # Map: function name -> (return_type_base, param_count or None if unspecified)
         func_sigs: Dict[str, tuple[str, Optional[int]]] = {}
-        self._function_sigs: Dict[str, tuple[str, Optional[int], bool]] = {}
-        # Full-ish function redeclaration signature tracking (C89 subset).
-        # Map: function name -> list of canonical parameter type strings (or None if unspecified).
-        self._function_param_types: Dict[str, Optional[List[str]]] = {}
+        self._function_sigs = {}
+        self._function_param_types = {}
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
@@ -193,17 +191,15 @@ class SemanticAnalyzer:
                         pass
                 self._declare_global(decl.name, "function")
                 self._functions.add(decl.name)
-                # Record function type for codegen. We don't model full
-                # prototypes yet, but we need to know whether it's variadic.
-                # Encode as a simple string so codegen can check for "...".
 
-                # Record function signature info for multi-TU driver checks.
+                # Record function signature info for multi-TU checks and
+                # function-pointer compatibility checks.
                 try:
                     ret_base = getattr(decl, "return_type", None)
                     ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
-                    params = getattr(decl, "parameters", []) or []
+                    params = list(getattr(decl, "parameters", []) or [])
+                    # Compute param_count; treat single (void) as 0.
                     param_count: Optional[int] = len(params)
-                    # C89: f(void) is a prototype with zero parameters.
                     try:
                         if (
                             param_count == 1
@@ -220,57 +216,19 @@ class SemanticAnalyzer:
                 except Exception:
                     self._function_sigs[decl.name] = ("int", None, False)
 
-                # Track per-parameter types for multi-TU checks / future work.
-                # NOTE: We do not yet enforce per-parameter compatibility at
-                # semantic time because parameter type qualifiers are not modeled
-                # robustly across all declarator spellings.
-                try:
-                    if len(params_list) == 0 and decl.body is None:
-                        self._function_param_types.setdefault(decl.name, None)
-                    else:
-                        def _canon_param_ty(t: Type) -> str:
-                            return " ".join(str(t).strip().split())
-
-                        typed_params = [p for p in params_list if getattr(p, "name", None) != "..."]
-                        self._function_param_types.setdefault(
-                            decl.name,
-                            [_canon_param_ty(p.type) for p in typed_params],
-                        )
-                except Exception:
-                    self._function_param_types.setdefault(decl.name, None)
-
-                # Record parameter-count signature, treating (void) as 0 params.
-                try:
-                    typed_params = [p for p in params_list if getattr(p, "name", None) != "..."]
-                    if len(typed_params) == 1 and getattr(getattr(typed_params[0], "type", None), "base", None) == "void":
-                        if len(params_list) == 1:
-                            self._function_sigs[decl.name] = (
-                                self._function_sigs.get(decl.name, ("int", None, False))[0],
-                                0,
-                                bool(getattr(decl, "is_variadic", False)),
-                            )
-                            self._function_param_types[decl.name] = ["void"]
-                except Exception:
-                    pass
+                # Best-effort for codegen: mark global type as a function.
                 try:
                     ret_base = getattr(decl, "return_type", None)
                     ret_base_s = getattr(ret_base, "base", "int") if ret_base is not None else "int"
-                    params = getattr(decl, "parameters", []) or []
-                    is_variadic = bool(getattr(decl, "is_variadic", False)) or any(
-                        getattr(p, "name", None) == "..." for p in params
-                    )
-                    self._global_types[decl.name] = (
-                        f"function {ret_base_s}(... )" if is_variadic else f"function {ret_base_s}"
-                    )
+                    _ret, _pc, _is_var = self._function_sigs.get(decl.name, (str(ret_base_s), None, False))
+                    self._global_types[decl.name] = f"function {_ret}" + ("(... )" if _is_var else "")
                 except Exception:
                     self._global_types[decl.name] = "function int"
-                # Record linkage for function declarations.
-                sc = getattr(decl, "storage_class", None)
-                if sc == "static":
-                    self._global_linkage[decl.name] = "internal"
-                else:
-                    # extern or default
-                    self._global_linkage[decl.name] = "external"
+
+                # Analyze function body after recording decls/types.
+                if getattr(decl, "body", None) is not None:
+                    self._analyze_function(decl)
+
             elif isinstance(decl, EnumDecl):
                 self._register_enum_decl(decl)
             elif isinstance(decl, TypedefDecl):
@@ -280,16 +238,10 @@ class SemanticAnalyzer:
                 self._register_layout_decl(decl)
             elif isinstance(decl, Declaration):
                 if decl.name == "__tagdecl__":
-                    # struct/union tag-only declarations are ignored in MVP
+                    # struct/union tag-only declarations are ignored
                     continue
                 # minimal duplicate/ABI checks for globals
                 sc = getattr(decl, "storage_class", None)
-                # C89: objects cannot have type void.
-                if getattr(decl, "type", None) is not None and getattr(decl.type, "base", None) == "void":
-                    self.errors.append(f"variable '{decl.name}' declared with type void")
-                # C89: `extern` is a declaration; it cannot have an initializer.
-                if sc == "extern" and getattr(decl, "initializer", None) is not None:
-                    self.errors.append(f"extern declaration cannot have an initializer: '{decl.name}'")
                 kind = "static" if sc == "static" else "nonstatic"
                 prev = seen_globals.get(decl.name)
                 if prev is not None and prev != kind:
@@ -298,42 +250,46 @@ class SemanticAnalyzer:
                     seen_globals[decl.name] = kind
 
                 self._declare_global(decl.name, "variable")
-                # record linkage (minimal, single TU): static = internal, otherwise external
+                # record linkage (minimal, single TU)
                 if sc == "static":
                     self._global_linkage[decl.name] = "internal"
+                    self._global_kinds[decl.name] = "internal"
                 else:
                     self._global_linkage[decl.name] = "external"
+                    if sc == "extern":
+                        self._global_kinds[decl.name] = "extern_decl"
+                    else:
+                        self._global_kinds[decl.name] = (
+                            "definition" if getattr(decl, "initializer", None) is not None else "tentative"
+                        )
 
-                # Record kind for multi-TU validation (subset).
-                if sc == "static":
-                    self._global_kinds[decl.name] = "internal"
-                elif sc == "extern":
-                    self._global_kinds[decl.name] = "extern_decl"
-                else:
-                    self._global_kinds[decl.name] = "definition" if getattr(decl, "initializer", None) is not None else "tentative"
-                # record declared base type string for codegen (e.g. "int", "char", "struct S*", etc.)
+                # C89: objects cannot have type void.
+                if getattr(decl, "type", None) is not None and getattr(decl.type, "base", None) == "void":
+                    self.errors.append(f"variable '{decl.name}' declared with type void")
+
+                # C89: `extern` is a declaration; it cannot have an initializer.
+                if sc == "extern" and getattr(decl, "initializer", None) is not None:
+                    self.errors.append(f"extern declaration cannot have an initializer: '{decl.name}'")
+
+                # record declared base type string for codegen
                 try:
-                    # `decl.type` is a Type node; its `is_pointer` determines pointer-ness.
-                    # Record a normalized string so codegen can cheaply detect pointers.
                     if getattr(decl.type, "is_pointer", False):
                         self._global_types[decl.name] = f"{decl.type.base}*"
                     else:
                         self._global_types[decl.name] = str(decl.type.base)
-                    # keep full Type node (incl. qualifiers)
                     self._global_decl_types[decl.name] = decl.type
                 except Exception:
                     self._global_types[decl.name] = "int"
 
                 # Record global array element type and count when available.
-                # Parser encodes arrays via Declaration.array_size, and multi-dim arrays
-                # via Declaration.array_dims.
                 try:
                     n = getattr(decl, "array_size", None)
                     dims = getattr(decl, "array_dims", None)
                     if dims:
-                        # Preserve full dims (outer->inner). We'll use this in sizeof and
-                        # later nested initializer lowering.
-                        self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "int")), [int(x) if x is not None else None for x in dims])
+                        self._global_arrays[decl.name] = (
+                            str(getattr(decl.type, "base", "int")),
+                            [int(x) if x is not None else None for x in dims],
+                        )
                     if n is not None:
                         self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "int")), int(n))
                     # Infer `char s[] = "...";` size when unsized and initialized.
@@ -345,41 +301,34 @@ class SemanticAnalyzer:
                     ):
                         init = getattr(decl, "initializer")
                         if isinstance(init, StringLiteral):
-                            self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "char")), len(init.value) + 1)
-                except StopIteration:
-                    pass
+                            self._global_arrays[decl.name] = (
+                                str(getattr(decl.type, "base", "char")),
+                                len(init.value) + 1,
+                            )
                 except Exception:
                     pass
 
-        for decl in ast.declarations:
-            if isinstance(decl, FunctionDecl) and decl.body is not None:
-                self._analyze_function(decl)
-            elif isinstance(decl, Declaration) and decl.initializer is not None:
-                # Reject classic const-dropping through pointer chains in global initializers.
-                src_ty: Optional[Type] = None
-                if isinstance(decl.initializer, Identifier):
-                    src_ty = self._lookup_decl_type(decl.initializer.name)
-                elif (
-                    isinstance(decl.initializer, UnaryOp)
-                    and decl.initializer.operator == "&"
-                    and isinstance(decl.initializer.operand, Identifier)
-                ):
-                    src_ty = self._type_after_address_of_identifier(decl.initializer.operand.name)
-                if self._reject_const_dropping_via_chain(decl.type, src_ty):
-                    self.errors.append(
-                        f"invalid conversion: initializer for '{decl.name}' drops const qualifiers in pointer chain"
-                    )
-                self._analyze_expr(decl.initializer)
-            elif isinstance(decl, TypedefDecl):
-                # typedef has no further analysis
-                pass
-            elif isinstance(decl, EnumDecl):
-                # already processed
-                pass
+                # Analyze initializer (if any)
+                if getattr(decl, "initializer", None) is not None:
+                    # Reject classic const-drop in pointer chain when obvious.
+                    src_ty: Optional[Type] = None
+                    if isinstance(decl.initializer, Identifier):
+                        src_ty = self._lookup_decl_type(decl.initializer.name)
+                    elif (
+                        isinstance(decl.initializer, UnaryOp)
+                        and decl.initializer.operator == "&"
+                        and isinstance(decl.initializer.operand, Identifier)
+                    ):
+                        src_ty = self._type_after_address_of_identifier(decl.initializer.operand.name)
+                    if self._reject_const_dropping_via_chain(decl.type, src_ty):
+                        self.errors.append(
+                            f"invalid conversion: initializer for '{decl.name}' drops const qualifiers in pointer chain"
+                        )
+                    self._analyze_expr(decl.initializer)
 
         if self.errors:
             raise SemanticError("\n".join(self.errors))
-        # flatten typedefs (global scope only for now)
+
         return SemanticContext(
             typedefs=dict(self._typedefs[0]),
             layouts=dict(self._layouts),
@@ -391,6 +340,26 @@ class SemanticAnalyzer:
             function_param_types=dict(self._function_param_types),
             global_arrays=dict(self._global_arrays),
         )
+
+    def _err(self, msg: str, node: object = None) -> None:
+        """Record a semantic error with best-effort source location.
+
+        The compiler driver formats errors as:
+          error: semantics: <message> (at <file>:<line>:<col>)
+
+        `Compiler._fmt_error` also recognizes messages containing ` at L:C`.
+        We append that suffix when we can.
+        """
+
+        try:
+            line = getattr(node, "line", None)
+            col = getattr(node, "column", None)
+            if isinstance(line, int) and isinstance(col, int):
+                self.errors.append(f"{msg} at {line}:{col}")
+                return
+        except Exception:
+            pass
+        self.errors.append(msg)
 
     def _register_enum_decl(self, decl: EnumDecl) -> None:
         cur = -1
@@ -671,7 +640,7 @@ class SemanticAnalyzer:
         for p in fn.parameters:
             # C89: parameter of type void is invalid (except sole parameter list 'void').
             if getattr(p, "type", None) is not None and getattr(p.type, "base", None) == "void":
-                self.errors.append(f"parameter '{p.name}' declared with type void")
+                self._err(f"parameter '{p.name}' declared with type void", p)
             self._declare_local(p.name, "param")
             self._decl_types[p.name] = p.type
         # track register locals so we can reject `&register_var` (C89 rule)
@@ -703,7 +672,7 @@ class SemanticAnalyzer:
                     if getattr(item, "storage_class", None) == "register":
                         self._register_locals.add(item.name)
                     if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:
-                        self.errors.append(f"extern declaration cannot have an initializer: '{item.name}'")
+                        self._err(f"extern declaration cannot have an initializer: '{item.name}'", item)
                     if item.initializer is not None:
                         # Reject classic const-dropping through pointer chains in initializers.
                         src_ty: Optional[Type] = None
@@ -766,7 +735,7 @@ class SemanticAnalyzer:
                     # local `static` is supported (subset); handled by IR/codegen as a global-like symbol.
                     # C89: `extern` is a declaration; it cannot have an initializer.
                     if getattr(item, "storage_class", None) == "extern" and item.initializer is not None:
-                        self.errors.append(f"extern declaration cannot have an initializer: '{item.name}'")
+                        self._err(f"extern declaration cannot have an initializer: '{item.name}'", item)
                     if item.initializer is not None:
                         src_ty: Optional[Type] = None
                         if isinstance(item.initializer, Identifier):
@@ -795,7 +764,7 @@ class SemanticAnalyzer:
         if isinstance(stmt, IfStmt):
             self._analyze_expr(stmt.condition)
             if not self._is_scalar_expr(stmt.condition):
-                self.errors.append("if condition must have scalar type")
+                self._err("if condition must have scalar type", stmt)
             self._analyze_stmt(stmt.then_stmt)
             if stmt.else_stmt is not None:
                 self._analyze_stmt(stmt.else_stmt)
@@ -804,7 +773,7 @@ class SemanticAnalyzer:
         if isinstance(stmt, WhileStmt):
             self._analyze_expr(stmt.condition)
             if not self._is_scalar_expr(stmt.condition):
-                self.errors.append("while condition must have scalar type")
+                self._err("while condition must have scalar type", stmt)
             self._loop_depth += 1
             try:
                 self._analyze_stmt(stmt.body)
@@ -820,7 +789,7 @@ class SemanticAnalyzer:
                 self._loop_depth -= 1
             self._analyze_expr(stmt.condition)
             if not self._is_scalar_expr(stmt.condition):
-                self.errors.append("do-while condition must have scalar type")
+                self._err("do-while condition must have scalar type", stmt)
             return
 
         if isinstance(stmt, ForStmt):
@@ -833,7 +802,7 @@ class SemanticAnalyzer:
                 # local `static` is supported (subset); handled by IR/codegen as a global-like symbol.
                 # C89: `extern` is a declaration; it cannot have an initializer.
                 if getattr(stmt.init, "storage_class", None) == "extern" and stmt.init.initializer is not None:
-                    self.errors.append(f"extern declaration cannot have an initializer: '{stmt.init.name}'")
+                    self._err(f"extern declaration cannot have an initializer: '{stmt.init.name}'", stmt.init)
                 if stmt.init.initializer is not None:
                     src_ty: Optional[Type] = None
                     if isinstance(stmt.init.initializer, Identifier):
@@ -854,7 +823,7 @@ class SemanticAnalyzer:
             if stmt.condition is not None:
                 self._analyze_expr(stmt.condition)
                 if not self._is_scalar_expr(stmt.condition):
-                    self.errors.append("for condition must have scalar type")
+                    self._err("for condition must have scalar type", stmt)
             if stmt.update is not None:
                 self._analyze_expr(stmt.update)
             if stmt.body is not None:
@@ -869,7 +838,7 @@ class SemanticAnalyzer:
         if isinstance(stmt, SwitchStmt):
             self._analyze_expr(stmt.expression)
             if not self._is_integer_expr(stmt.expression):
-                self.errors.append("switch controlling expression must have integer type")
+                self._err("switch controlling expression must have integer type", stmt)
             self._switch_depth += 1
             try:
                 self._analyze_stmt(stmt.body)
@@ -884,12 +853,12 @@ class SemanticAnalyzer:
 
         if isinstance(stmt, BreakStmt):
             if self._loop_depth <= 0 and self._switch_depth <= 0:
-                self.errors.append("break statement not within loop or switch")
+                self._err("break statement not within loop or switch", stmt)
             return
 
         if isinstance(stmt, ContinueStmt):
             if self._loop_depth <= 0:
-                self.errors.append("continue statement not within a loop")
+                self._err("continue statement not within a loop", stmt)
             return
 
         if isinstance(stmt, LabelStmt):
@@ -1179,10 +1148,10 @@ class SemanticAnalyzer:
                 b = str(getattr(to_ty, "base", "")).strip()
                 # Disallow casts to aggregate types.
                 if b.startswith("struct ") or b.startswith("union "):
-                    self.errors.append("invalid cast to aggregate type")
+                    self._err("invalid cast to aggregate type", expr)
                 # Disallow cast to function type (non-pointer).
                 if "(" in b and ")" in b and "*" not in b:
-                    self.errors.append("invalid cast to function type")
+                    self._err("invalid cast to function type", expr)
 
             # Disallow casting an aggregate *expression* to a scalar (e.g. (int)s).
             # NOTE: do not treat `struct S*` as an aggregate here.
@@ -1192,7 +1161,7 @@ class SemanticAnalyzer:
                 if from_ty is not None and not getattr(from_ty, "is_pointer", False):
                     fb = str(getattr(from_ty, "base", "")).strip()
                     if fb.startswith("struct ") or fb.startswith("union "):
-                        self.errors.append("invalid cast from aggregate type")
+                        self._err("invalid cast from aggregate type", expr)
             return
 
         if isinstance(expr, UnaryOp):
@@ -1213,13 +1182,14 @@ class SemanticAnalyzer:
                     return False
 
                 if not _is_lvalue(expr.operand):
-                    self.errors.append("address-of operator requires an lvalue")
+                    self._err("address-of operator requires an lvalue", expr)
 
             # C89: cannot take the address of a register object.
             if expr.operator == "&" and isinstance(expr.operand, Identifier):
                 if expr.operand.name in getattr(self, "_register_locals", set()):
-                    self.errors.append(
-                        f"Cannot take address of register variable '{expr.operand.name}' at {expr.operand.line}:{expr.operand.column}"
+                    self._err(
+                        f"Cannot take address of register variable '{expr.operand.name}'",
+                        expr.operand,
                     )
             # Also reject taking the address of any subobject of a register
             # object (e.g. `&s.x` where `s` is `register struct S s;`).
@@ -1234,9 +1204,7 @@ class SemanticAnalyzer:
 
                 b = _base_ident(expr.operand)
                 if b is not None and b.name in getattr(self, "_register_locals", set()):
-                    self.errors.append(
-                        f"Cannot take address of register variable '{b.name}' at {b.line}:{b.column}"
-                    )
+                    self._err(f"Cannot take address of register variable '{b.name}'", b)
             if expr.operator == "+":
                 def _is_ptrlike(e: Expression) -> bool:
                     if isinstance(e, Identifier):
@@ -1636,14 +1604,14 @@ class SemanticAnalyzer:
                     try:
                         _type_size(expr.type)
                     except Exception:
-                        self.errors.append("invalid application of sizeof")
+                        self._err("invalid application of sizeof", expr)
                     return
 
                 # Reject sizeof(void) where the parser interpreted `void` as an
                 # expression identifier rather than a type-name.
                 op0 = getattr(expr, "operand", None)
                 if isinstance(op0, Identifier) and op0.name == "void":
-                    self.errors.append("invalid application of sizeof to void expression")
+                    self._err("invalid application of sizeof to void expression", expr)
                     return
 
                 # sizeof(expression)
@@ -1660,7 +1628,7 @@ class SemanticAnalyzer:
                             if isinstance(dims, int):
                                 dims = [dims]
                             if isinstance(dims, list) and any(d is None for d in dims):
-                                self.errors.append("invalid application of sizeof to incomplete array")
+                                self._err("invalid application of sizeof to incomplete array", expr)
                                 return
 
                     # sizeof((void)0) (cast-to-void) is invalid.
@@ -1669,7 +1637,7 @@ class SemanticAnalyzer:
                         if to_ty is not None and str(getattr(to_ty, "base", "")).strip() == "void" and not getattr(
                             to_ty, "is_pointer", False
                         ):
-                            self.errors.append("invalid application of sizeof to void expression")
+                            self._err("invalid application of sizeof to void expression", expr)
                             return
 
                     # sizeof(*(void *)p) is invalid (sizeof applied to void).
@@ -1681,7 +1649,7 @@ class SemanticAnalyzer:
                         if isinstance(inner, Cast):
                             to_ty = getattr(inner, "type", None)
                             if to_ty is not None and str(getattr(to_ty, "base", "")).strip() == "void":
-                                self.errors.append("invalid application of sizeof to void expression")
+                                self._err("invalid application of sizeof to void expression", expr)
                                 return
 
                     # sizeof applied to an expression of type void is invalid.
@@ -1704,7 +1672,7 @@ class SemanticAnalyzer:
                                 and str(getattr(to_ty, "base", "")).strip() == "void"
                                 and bool(getattr(to_ty, "is_pointer", False))
                             ):
-                                self.errors.append("invalid application of sizeof to void expression")
+                                self._err("invalid application of sizeof to void expression", expr)
                                 return
 
                         # If the operand is `*p` and we can see p has type
@@ -1716,7 +1684,7 @@ class SemanticAnalyzer:
                                 and bool(getattr(ty, "is_pointer", False))
                                 and str(getattr(ty, "base", "")).strip() == "void"
                             ):
-                                self.errors.append("invalid application of sizeof to void expression")
+                                self._err("invalid application of sizeof to void expression", expr)
                                 return
 
                     # Do not analyze op eagerly here; sizeof should not require
@@ -1728,7 +1696,7 @@ class SemanticAnalyzer:
                         if sig is not None:
                             ret_base = str(sig[0])
                             if ret_base.strip() == "void":
-                                self.errors.append("invalid application of sizeof to void expression")
+                                self._err("invalid application of sizeof to void expression", expr)
             except Exception:
                 pass
             return
