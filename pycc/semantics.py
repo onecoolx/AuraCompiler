@@ -1223,6 +1223,8 @@ class SemanticAnalyzer:
                     if isinstance(e, Cast):
                         to_ty = getattr(e, "to_type", None)
                         return bool(to_ty is not None and getattr(to_ty, "is_pointer", False))
+
+            
                     # Handle simple pointer expressions like `a + 1`.
                     if isinstance(e, BinaryOp) and e.operator in {"+", "-"}:
                         return _is_ptrlike(e.left) or _is_ptrlike(e.right)
@@ -1594,6 +1596,102 @@ class SemanticAnalyzer:
 
             for a in expr.arguments:
                 self._analyze_expr(a)
+            return
+
+        if isinstance(expr, SizeOf):
+            # Best-effort semantic constraints for sizeof.
+            # IMPORTANT: do not break existing array-vs-pointer behavior.
+            # Our current type model does not reliably distinguish arrays from
+            # pointers in expression context, so for now we only enforce the
+            # simple void-expression rejection.
+            try:
+                # sizeof(type)
+                if getattr(expr, "operand", None) is None and getattr(expr, "type", None) is not None:
+                    # Let IR/type_size be the source of truth for completeness.
+                    try:
+                        _type_size(expr.type)
+                    except Exception:
+                        self.errors.append("invalid application of sizeof")
+                    return
+
+                # Reject sizeof(void) where the parser interpreted `void` as an
+                # expression identifier rather than a type-name.
+                op0 = getattr(expr, "operand", None)
+                if isinstance(op0, Identifier) and op0.name == "void":
+                    self.errors.append("invalid application of sizeof to void expression")
+                    return
+
+                # sizeof(expression)
+                op = getattr(expr, "operand", None)
+                if op is not None:
+                    # sizeof((void)0) (cast-to-void) is invalid.
+                    if isinstance(op, Cast):
+                        to_ty = getattr(op, "type", None)
+                        if to_ty is not None and str(getattr(to_ty, "base", "")).strip() == "void" and not getattr(
+                            to_ty, "is_pointer", False
+                        ):
+                            self.errors.append("invalid application of sizeof to void expression")
+                            return
+
+                    # sizeof(*(void *)p) is invalid (sizeof applied to void).
+                    # Our Cast node does not reliably preserve pointer-ness for
+                    # `(void *)p`, so match structurally: deref of Cast to base
+                    # 'void'.
+                    if isinstance(op, UnaryOp) and getattr(op, "operator", None) == "*":
+                        inner = getattr(op, "operand", None)
+                        if isinstance(inner, Cast):
+                            to_ty = getattr(inner, "type", None)
+                            if to_ty is not None and str(getattr(to_ty, "base", "")).strip() == "void":
+                                self.errors.append("invalid application of sizeof to void expression")
+                                return
+
+                    # sizeof applied to an expression of type void is invalid.
+                    # Handle common patterns where the operand is a cast to void
+                    # or a dereference of a void*.
+                    if isinstance(op, Cast):
+                        to_ty = getattr(op, "type", None)
+                        if to_ty is not None and str(getattr(to_ty, "base", "")).strip() == "void" and not getattr(
+                            to_ty, "is_pointer", False
+                        ):
+                            self.errors.append("invalid application of sizeof to void expression")
+                            return
+                    if isinstance(op, UnaryOp) and getattr(op, "operator", None) == "*":
+                        # If we can determine the operand is a void*, reject sizeof(*p).
+                        inner = getattr(op, "operand", None)
+                        if isinstance(inner, Cast):
+                            to_ty = getattr(inner, "type", None)
+                            if (
+                                to_ty is not None
+                                and str(getattr(to_ty, "base", "")).strip() == "void"
+                                and bool(getattr(to_ty, "is_pointer", False))
+                            ):
+                                self.errors.append("invalid application of sizeof to void expression")
+                                return
+
+                        # If the operand is `*p` and we can see p has type
+                        # `void*`, reject as sizeof(void).
+                        if isinstance(inner, Identifier):
+                            ty = self._lookup_decl_type(inner.name)
+                            if (
+                                ty is not None
+                                and bool(getattr(ty, "is_pointer", False))
+                                and str(getattr(ty, "base", "")).strip() == "void"
+                            ):
+                                self.errors.append("invalid application of sizeof to void expression")
+                                return
+
+                    # Do not analyze op eagerly here; sizeof should not require
+                    # evaluation and our existing IR handles many cases.
+                    # Instead, detect the specific pattern `sizeof(f())` where
+                    # f is a void-returning function we can see.
+                    if isinstance(op, FunctionCall) and isinstance(op.function, Identifier):
+                        sig = getattr(self, "_function_sigs", {}).get(op.function.name)
+                        if sig is not None:
+                            ret_base = str(sig[0])
+                            if ret_base.strip() == "void":
+                                self.errors.append("invalid application of sizeof to void expression")
+            except Exception:
+                pass
             return
 
         if isinstance(expr, TernaryOp):
