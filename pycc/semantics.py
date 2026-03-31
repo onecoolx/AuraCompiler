@@ -1151,7 +1151,7 @@ class SemanticAnalyzer:
                             return None
                         return str(getattr(ty, "base", ""))
                     if isinstance(e, Cast):
-                        to_ty = getattr(e, "to_type", None)
+                        to_ty = getattr(e, "type", None)
                         if to_ty is None or not getattr(to_ty, "is_pointer", False):
                             return None
                         return str(getattr(to_ty, "base", ""))
@@ -1167,7 +1167,8 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, Cast):
-            # Analyze the inner expression; type-checking is minimal for now.
+            # Analyze the inner expression. Cast constraints are handled as part
+            # of assignment/argument conversion rules in this compiler stage.
             self._analyze_expr(expr.expression)
             return
 
