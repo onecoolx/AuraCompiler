@@ -201,14 +201,12 @@ def main(argv: List[str] | None = None) -> int:
     cmd = [sys.executable, "-m", "pytest", "-q", *tests, *args.pytest_args]
 
     if args.dry_run:
-        print("# changed paths")
-        for p in paths:
-            print(p)
-        print("# selected tests")
-        for t in tests:
-            print(t)
-        print("# command")
-        print(" ".join(cmd))
+        sys.stdout.write("# changed paths\n")
+        sys.stdout.write("\n".join(paths) + "\n")
+        sys.stdout.write("# selected tests\n")
+        sys.stdout.write("\n".join(tests) + "\n")
+        sys.stdout.write("# command\n")
+        sys.stdout.write(" ".join(cmd) + "\n")
         return 0
 
     return subprocess.call(cmd, cwd=str(REPO_ROOT))

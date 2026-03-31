@@ -1,6 +1,6 @@
 # AuraCompiler (pycc) Development Plan & Roadmap
 
-Last updated: 2026-03-02
+Last updated: 2026-03-31
 
 This document is a **living plan**. It reflects the current repo reality and is updated as features land.
 

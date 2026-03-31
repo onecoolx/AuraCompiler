@@ -93,7 +93,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--dump-preprocessed-to",
         dest="dump_preprocessed_to",
         metavar="PATH",
-        help="Write preprocessed output to PATH (single input only; debug)",
+        help="Write preprocessed output to PATH (single input only)",
     )
     ap.add_argument(
         "--dump-preprocessed-only-to",
@@ -109,13 +109,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--dump-ir",
         action="store_true",
-        help="Write IR to pycc-tmp.ir (single input only; debug)",
+        help="Write IR to pycc-tmp.ir (single input only)",
     )
     ap.add_argument(
         "--dump-ir-to",
         dest="dump_ir_to",
         metavar="PATH",
-        help="Write IR to PATH (single input only; debug)",
+        help="Write IR to PATH (single input only)",
     )
     ap.add_argument(
         "--dump-ir-only-to",
@@ -126,13 +126,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--dump-asm",
         action="store_true",
-        help="Write assembly to pycc-tmp.s (single input only; debug)",
+        help="Write assembly to pycc-tmp.s (single input only)",
     )
     ap.add_argument(
         "--dump-asm-to",
         dest="dump_asm_to",
         metavar="PATH",
-        help="Write assembly to PATH (single input only; debug)",
+        help="Write assembly to PATH (single input only)",
     )
     ap.add_argument(
         "--dump-asm-only-to",
@@ -143,13 +143,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--dump-tokens",
         action="store_true",
-        help="Write lexer tokens to pycc-tmp.tokens (single input only; debug)",
+        help="Write lexer tokens to pycc-tmp.tokens (single input only)",
     )
     ap.add_argument(
         "--dump-tokens-to",
         dest="dump_tokens_to",
         metavar="PATH",
-        help="Write lexer tokens to PATH (single input only; debug)",
+        help="Write lexer tokens to PATH (single input only)",
     )
     ap.add_argument(
         "--dump-tokens-only-to",
@@ -172,7 +172,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Support a gcc-like --save-temps for the main compilation pipeline.
     # We implement this by asking Compiler to write sidecar outputs.
-    # (Debug dump flags remain separate and can be used independently.)
     if args.save_temps:
         # Policy B: avoid redundant sidecars.
         # - always keep preprocessed (.i)
@@ -187,7 +186,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # --dump-preprocessed is handled later, after compile_defines is built.
 
     if args.print_asm:
-        # Convenience mode for debugging; does not change Compiler internals.
+        # Convenience mode; does not change Compiler internals.
         # Only support one input for now.
         if len(args.source) != 1:
             print("Error: --print-asm currently supports exactly one input file")
@@ -308,9 +307,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                 pass
         return 0
 
-    # NOTE: -D/-U/-I are accepted for compilation as well; they are wired into
-    # Compiler(define/include_paths) below. The help text previously said
-    # "-E only"; that is outdated and should be updated in a follow-up.
+    # -D/-U/-I are accepted for compilation as well; they are wired into
+    # Compiler(defines/include_paths) below.
 
     # If --print-asm, we may override output path to a temporary .s file.
     temp_asm_path: Optional[str] = None

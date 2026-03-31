@@ -1,6 +1,6 @@
 # C89 推进计划（按模块拆分）
 
-Last updated: 2026-03-02
+Last updated: 2026-03-31
 
 本文档用于：
 - 汇总当前 AuraCompiler（`pycc`）已支持的 C89 子集能力
