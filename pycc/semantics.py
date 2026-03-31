@@ -1169,7 +1169,30 @@ class SemanticAnalyzer:
         if isinstance(expr, Cast):
             # Analyze the inner expression. Cast constraints are handled as part
             # of assignment/argument conversion rules in this compiler stage.
+            # However, a few casts are unconditionally invalid in C89: casts
+            # only apply to scalar types.
+
             self._analyze_expr(expr.expression)
+
+            to_ty = getattr(expr, "type", None)
+            if to_ty is not None:
+                b = str(getattr(to_ty, "base", "")).strip()
+                # Disallow casts to aggregate types.
+                if b.startswith("struct ") or b.startswith("union "):
+                    self.errors.append("invalid cast to aggregate type")
+                # Disallow cast to function type (non-pointer).
+                if "(" in b and ")" in b and "*" not in b:
+                    self.errors.append("invalid cast to function type")
+
+            # Disallow casting an aggregate *expression* to a scalar (e.g. (int)s).
+            # NOTE: do not treat `struct S*` as an aggregate here.
+            inner = getattr(expr, "expression", None)
+            if isinstance(inner, Identifier):
+                from_ty = self._lookup_decl_type(inner.name)
+                if from_ty is not None and not getattr(from_ty, "is_pointer", False):
+                    fb = str(getattr(from_ty, "base", "")).strip()
+                    if fb.startswith("struct ") or fb.startswith("union "):
+                        self.errors.append("invalid cast from aggregate type")
             return
 
         if isinstance(expr, UnaryOp):
