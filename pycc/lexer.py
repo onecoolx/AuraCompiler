@@ -368,6 +368,17 @@ class Lexer:
             
             # Identifiers and keywords
             elif char.isalpha() or char == '_':
+                # Wide character/string: L'x' or L"str"
+                if char == 'L' and self.peek_char() in ("'", '"'):
+                    self.advance()  # consume L
+                    if self.current_char() == "'":
+                        value = self.read_string()
+                        # Wide char: type is int (wchar_t), value is the character code
+                        self.tokens.append(Token(TokenType.CHAR, value, token_line, token_column))
+                    else:
+                        value = self.read_string()
+                        self.tokens.append(Token(TokenType.STRING, value, token_line, token_column))
+                    continue
                 ident = self.read_identifier()
                 if ident in self.KEYWORDS:
                     self.tokens.append(Token(TokenType.KEYWORD, ident, token_line, token_column))
