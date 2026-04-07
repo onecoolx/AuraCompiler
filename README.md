@@ -21,12 +21,13 @@ Generates **x86-64 SysV** assembly and uses **binutils `as`/`ld`** to produce EL
 ### Implemented language features (high level)
 
 - Declarations: globals/locals, `static`/`extern`, function prototypes + definitions
-- Types: `int`, `char`, pointers, arrays (int arrays), `typedef`
-- Aggregates: `struct`/`union` (basic layout + member access `.` / `->`)
+- Types: `int`, `char`, `short`, `long` (signed/unsigned), `float`, `double`, pointers, arrays, `typedef`
+- Aggregates: `struct`/`union` (layout + member access `.` / `->`)
 - Control flow: `if/else`, `for`, `while`, `do/while`, `switch/case/default`, `break/continue`, `goto`/labels
 - Expressions: arithmetic/bitwise/compare, assignment, calls, `?:`, `&` (address-of), member access
 - Operators: `sizeof`, C-style cast `(type)expr`
 - Enums: `enum` definitions + enumerator constants
+- Floating point: `float`/`double` literals, arithmetic (`+`/`-`/`*`/`/`), comparisons, int↔float casts (SSE/SSE2 codegen)
 
 ## Project Structure
 
@@ -37,10 +38,12 @@ pycc/
 │   ├── lexer.py                  # Tokenization
 │   ├── parser.py                 # Syntax analysis & AST
 │   ├── ast_nodes.py              # AST node definitions
+│   ├── types.py                  # Structured C89 type system (CType)
 │   ├── semantics.py              # Semantic analysis & type checking
 │   ├── ir.py                     # Intermediate representation (3-address code)
 │   ├── optimizer.py              # IR optimization passes
-│   ├── codegen.py                # x86-64 code generation
+│   ├── codegen.py                # x86-64 code generation (incl. SSE/SSE2)
+│   ├── preprocessor.py           # C preprocessor (built-in + PPToken engine)
 │   └── compiler.py               # Main compiler driver
 ├── tests/                         # Test suite
 │   ├── test_lexer.py
@@ -120,26 +123,26 @@ else:
 - **Lexer**: Converts source code into tokens
 - **Parser**: Builds Abstract Syntax Tree (AST) from tokens
 
-### 2. Middle-End (Optimization)
-- Converts AST to 3-Address Code (TAC)
+### 2. Middle-End (Semantic Analysis + IR)
+- Structured type system (`CType` hierarchy) with integer promotion and UAC
+- const/volatile enforcement, pointer compatibility checks
+- Converts AST to 3-Address Code (TAC) with float-aware IR (fmov/fadd/fsub/fmul/fdiv/fcmp)
 - Constant folding
-- Dead code elimination
-- Common subexpression elimination
-- Loop optimization
 
 ### 3. Backend (Code Generation)
 - x86-64 assembly generation
-- Register allocation
+- Integer ops via general-purpose registers
+- Float ops via SSE/SSE2 (xmm registers, .rodata literals)
 - Stack frame management
 - Function prologue/epilogue
 
 ## Notes / current limitations
 
 - Not a full C89 implementation yet (work in progress).
-- Preprocessor exists but is incomplete; see `docs/PREPROCESSOR_C89_CHECKLIST.md`.
-- Type system is partial (integer promotions/usual arithmetic conversions not fully modeled).
+- Preprocessor has both a built-in token engine and system `cpp` mode; see `docs/PREPROCESSOR_C89_CHECKLIST.md`.
+- Structured type system (`pycc/types.py`) with CType hierarchy, integer promotion, and UAC.
 - `&&`/`||` are short-circuiting.
-- No floating point.
+- Floating point: `float`/`double` variables, arithmetic, comparisons, and int↔float casts via SSE/SSE2.
 
 ## Preprocessing modes (recommended)
 

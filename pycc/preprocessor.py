@@ -5,8 +5,305 @@ import re
 import subprocess
 import shutil
 from datetime import datetime
-from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple, Union
+from dataclasses import dataclass, field
+from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+
+
+# ---------------------------------------------------------------------------
+# PPToken and token-based macro expansion infrastructure (C89 §3.8)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PPToken:
+    """Preprocessing token with hide-set for macro expansion."""
+    kind: str  # 'ident', 'number', 'string', 'char', 'punct', 'space', 'other'
+    text: str
+    hide_set: FrozenSet[str] = field(default_factory=frozenset)
+    line: int = 0
+    column: int = 0
+
+
+@dataclass
+class MacroDef:
+    """Macro definition for the token-based expander."""
+    name: str
+    is_function_like: bool = False
+    params: List[str] = field(default_factory=list)
+    is_variadic: bool = False
+    replacement: List[PPToken] = field(default_factory=list)
+
+
+class PPTokenizer:
+    """Tokenize source text into PPToken stream."""
+
+    _PUNCT = frozenset('(){}[];,~?') | frozenset([
+        '...', '<<=', '>>=', '##',
+        '<<', '>>', '<=', '>=', '==', '!=', '&&', '||',
+        '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=',
+        '->', '++', '--',
+        '+', '-', '*', '/', '%', '&', '|', '^', '!',
+        '<', '>', '=', '.', '#',
+    ])
+
+    def tokenize(self, text: str) -> List[PPToken]:
+        tokens: List[PPToken] = []
+        i, n = 0, len(text)
+        line, col = 1, 1
+        while i < n:
+            c = text[i]
+            # whitespace (not newline)
+            if c in ' \t':
+                j = i
+                while j < n and text[j] in ' \t':
+                    j += 1
+                tokens.append(PPToken('space', text[i:j], line=line, column=col))
+                col += j - i
+                i = j
+                continue
+            if c == '\n':
+                tokens.append(PPToken('space', '\n', line=line, column=col))
+                line += 1
+                col = 1
+                i += 1
+                continue
+            # identifier
+            if c.isalpha() or c == '_':
+                j = i
+                while j < n and (text[j].isalnum() or text[j] == '_'):
+                    j += 1
+                tokens.append(PPToken('ident', text[i:j], line=line, column=col))
+                col += j - i
+                i = j
+                continue
+            # number (pp-number: digit or .digit, then digits/letters/dots/signs)
+            if c.isdigit() or (c == '.' and i + 1 < n and text[i + 1].isdigit()):
+                j = i
+                while j < n and (text[j].isalnum() or text[j] in '.+-'):
+                    if text[j] in '+-' and j > i and text[j - 1] not in 'eEpP':
+                        break
+                    j += 1
+                tokens.append(PPToken('number', text[i:j], line=line, column=col))
+                col += j - i
+                i = j
+                continue
+            # string literal
+            if c == '"':
+                j = i + 1
+                while j < n and text[j] != '"':
+                    if text[j] == '\\' and j + 1 < n:
+                        j += 1
+                    j += 1
+                j = min(j + 1, n)
+                tokens.append(PPToken('string', text[i:j], line=line, column=col))
+                col += j - i
+                i = j
+                continue
+            # char literal
+            if c == "'":
+                j = i + 1
+                while j < n and text[j] != "'":
+                    if text[j] == '\\' and j + 1 < n:
+                        j += 1
+                    j += 1
+                j = min(j + 1, n)
+                tokens.append(PPToken('char', text[i:j], line=line, column=col))
+                col += j - i
+                i = j
+                continue
+            # multi-char punctuation (try longest match)
+            matched = False
+            for plen in (3, 2, 1):
+                candidate = text[i:i + plen]
+                if candidate in self._PUNCT:
+                    tokens.append(PPToken('punct', candidate, line=line, column=col))
+                    col += plen
+                    i += plen
+                    matched = True
+                    break
+            if matched:
+                continue
+            # other
+            tokens.append(PPToken('other', c, line=line, column=col))
+            col += 1
+            i += 1
+        return tokens
+
+
+class MacroExpander:
+    """Hide-set based macro expander (C89 §3.8.3).
+
+    Implements the standard algorithm:
+    1. Scan token sequence left-to-right
+    2. When an identifier matches a macro name and is not in its own hide-set:
+       - Object-like: substitute replacement, add macro name to hide-set, rescan
+       - Function-like: collect args, expand args, substitute, add to hide-set, rescan
+    3. Stringize (#) and token-paste (##) are handled during substitution
+    """
+
+    def __init__(self, macros: Optional[Dict[str, MacroDef]] = None):
+        self.macros: Dict[str, MacroDef] = macros or {}
+
+    def expand(self, tokens: List[PPToken]) -> List[PPToken]:
+        """Expand all macros in the token sequence."""
+        result: List[PPToken] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if (tok.kind == 'ident' and tok.text in self.macros
+                    and tok.text not in tok.hide_set):
+                macro = self.macros[tok.text]
+                if macro.is_function_like:
+                    args, end = self._collect_args(tokens, i + 1)
+                    if args is not None:
+                        expanded = self._expand_function_macro(macro, args, tok.hide_set)
+                        result.extend(expanded)
+                        i = end + 1
+                        continue
+                else:
+                    expanded = self._expand_object_macro(macro, tok.hide_set)
+                    result.extend(expanded)
+                    i += 1
+                    continue
+            result.append(tok)
+            i += 1
+        return result
+
+    def _expand_object_macro(self, macro: MacroDef, caller_hs: FrozenSet[str]) -> List[PPToken]:
+        new_hs = caller_hs | {macro.name}
+        replacement = [
+            PPToken(t.kind, t.text, t.hide_set | new_hs, t.line, t.column)
+            for t in macro.replacement
+        ]
+        return self.expand(replacement)
+
+    def _expand_function_macro(self, macro: MacroDef, args: List[List[PPToken]],
+                                caller_hs: FrozenSet[str]) -> List[PPToken]:
+        # 1. Expand each argument (for non-# / non-## operands)
+        expanded_args = [self.expand(arg) for arg in args]
+        # 2. Substitute into replacement list
+        replacement = self._substitute(macro, args, expanded_args)
+        # 3. Process ## token paste
+        replacement = self._process_paste(replacement)
+        # 4. Add hide-set and rescan
+        new_hs = caller_hs | {macro.name}
+        replacement = [
+            PPToken(t.kind, t.text, t.hide_set | new_hs, t.line, t.column)
+            for t in replacement
+        ]
+        return self.expand(replacement)
+
+    def _substitute(self, macro: MacroDef, raw_args: List[List[PPToken]],
+                     expanded_args: List[List[PPToken]]) -> List[PPToken]:
+        """Substitute parameters in replacement list."""
+        result: List[PPToken] = []
+        repl = macro.replacement
+        i = 0
+        while i < len(repl):
+            tok = repl[i]
+            # # stringize
+            if tok.kind == 'punct' and tok.text == '#' and i + 1 < len(repl):
+                next_tok = repl[i + 1]
+                if next_tok.kind == 'ident' and next_tok.text in macro.params:
+                    idx = macro.params.index(next_tok.text)
+                    arg = raw_args[idx] if idx < len(raw_args) else []
+                    s = self._stringize(arg)
+                    result.append(PPToken('string', s, line=tok.line, column=tok.column))
+                    i += 2
+                    continue
+            # Parameter substitution
+            if tok.kind == 'ident' and tok.text in macro.params:
+                idx = macro.params.index(tok.text)
+                # Check if adjacent to ##
+                is_paste = False
+                if i > 0 and repl[i - 1].kind == 'punct' and repl[i - 1].text == '##':
+                    is_paste = True
+                if i + 1 < len(repl) and repl[i + 1].kind == 'punct' and repl[i + 1].text == '##':
+                    is_paste = True
+                if is_paste:
+                    arg = raw_args[idx] if idx < len(raw_args) else []
+                else:
+                    arg = expanded_args[idx] if idx < len(expanded_args) else []
+                result.extend(arg)
+                i += 1
+                continue
+            result.append(tok)
+            i += 1
+        return result
+
+    def _process_paste(self, tokens: List[PPToken]) -> List[PPToken]:
+        """Process ## token-paste operators."""
+        result: List[PPToken] = []
+        i = 0
+        while i < len(tokens):
+            if (tokens[i].kind == 'punct' and tokens[i].text == '##'
+                    and result and i + 1 < len(tokens)):
+                lhs = result.pop()
+                rhs = tokens[i + 1]
+                pasted_text = lhs.text + rhs.text
+                # Determine kind of pasted token
+                if pasted_text.isidentifier():
+                    kind = 'ident'
+                elif pasted_text and (pasted_text[0].isdigit() or pasted_text[0] == '.'):
+                    kind = 'number'
+                else:
+                    kind = 'other'
+                result.append(PPToken(kind, pasted_text,
+                                       lhs.hide_set & rhs.hide_set,
+                                       lhs.line, lhs.column))
+                i += 2
+                continue
+            result.append(tokens[i])
+            i += 1
+        return result
+
+    @staticmethod
+    def _stringize(tokens: List[PPToken]) -> str:
+        """Convert token sequence to a string literal (# operator)."""
+        parts: List[str] = []
+        for t in tokens:
+            if t.kind == 'space':
+                if parts and parts[-1] != ' ':
+                    parts.append(' ')
+            else:
+                text = t.text
+                if t.kind in ('string', 'char'):
+                    text = text.replace('\\', '\\\\').replace('"', '\\"')
+                parts.append(text)
+        inner = ''.join(parts).strip()
+        return f'"{inner}"'
+
+    def _collect_args(self, tokens: List[PPToken], start: int
+                       ) -> Tuple[Optional[List[List[PPToken]]], int]:
+        """Collect function-like macro arguments starting after the macro name.
+
+        Returns (args, end_index) or (None, start) if no '(' follows.
+        """
+        # Skip whitespace to find '('
+        i = start
+        while i < len(tokens) and tokens[i].kind == 'space':
+            i += 1
+        if i >= len(tokens) or tokens[i].text != '(':
+            return None, start
+        i += 1  # skip '('
+        args: List[List[PPToken]] = [[]]
+        depth = 1
+        while i < len(tokens) and depth > 0:
+            if tokens[i].text == '(':
+                depth += 1
+                args[-1].append(tokens[i])
+            elif tokens[i].text == ')':
+                depth -= 1
+                if depth > 0:
+                    args[-1].append(tokens[i])
+            elif tokens[i].text == ',' and depth == 1:
+                args.append([])
+            else:
+                args[-1].append(tokens[i])
+            i += 1
+        # If only one empty arg, treat as zero args
+        if len(args) == 1 and all(t.kind == 'space' for t in args[0]):
+            args = []
+        return args, i - 1
 
 
 def _parse_gcc_include_paths(gcc_stderr: str) -> List[str]:

@@ -16,6 +16,7 @@ class TokenType(Enum):
     """Token types for C99 lexer"""
     # Literals
     NUMBER = auto()
+    NUMBER_FLOAT = auto()
     CHAR = auto()
     STRING = auto()
     
@@ -291,16 +292,20 @@ class Lexer:
             while self.current_char() and self.current_char().isdigit():
                 num_str += self.advance()
         
-        # Check for float suffix (f, F, l, L)
-        if self.current_char() and self.current_char() in 'fFlL':
+        # Check for float suffix (f, F) — always makes it float
+        # l/L suffix: only float if already has decimal/exponent
+        if self.current_char() and self.current_char() in 'fF':
             is_float = True
+            num_str += self.advance()
+        elif is_float and self.current_char() and self.current_char() in 'lL':
             num_str += self.advance()
         
         # Check for integer suffix (u, U, l, L, ll, LL)
-        while self.current_char() and self.current_char() in 'uUlL':
-            num_str += self.advance()
+        if not is_float:
+            while self.current_char() and self.current_char() in 'uUlL':
+                num_str += self.advance()
         
-        return (num_str, TokenType.NUMBER)
+        return (num_str, TokenType.NUMBER_FLOAT if is_float else TokenType.NUMBER)
     
     def read_identifier(self) -> str:
         """Read identifier or keyword"""

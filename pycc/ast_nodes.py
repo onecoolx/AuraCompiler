@@ -362,6 +362,7 @@ class IntLiteral(Expression):
 class FloatLiteral(Expression):
     """Float literal"""
     value: float
+    suffix: str = ''  # 'f'/'F' for float, 'l'/'L' for long double, '' for double
 
 
 @dataclass

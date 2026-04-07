@@ -37,6 +37,8 @@ class CodeGenerator:
         self.assembly_lines: List[str] = []
         self._string_pool: Dict[str, str] = {}
         self._string_counter = 0
+        self._float_pool: Dict[str, str] = {}  # key: "type:bits" -> label
+        self._float_counter = 0
 
         # SysV AMD64 varargs ABI constants (glibc).
         self._VARARGS_GP_SAVE_AREA_SIZE = 48
@@ -285,11 +287,26 @@ class CodeGenerator:
             i += 1
 
         # Emit rodata for strings
-        if self._string_pool:
+        if self._string_pool or self._float_pool:
             self._emit(".section .rodata")
             for s, lbl in self._string_pool.items():
                 self._emit(f"{lbl}:")
                 self._emit(f"  .string {self._gas_escape(s)}")
+            # Emit float constants
+            import struct
+            for key, lbl in self._float_pool.items():
+                fp_type, bits_hex = key.split(":", 1)
+                raw = bytes.fromhex(bits_hex)
+                if fp_type == "float":
+                    self._emit(f"  .align 4")
+                    self._emit(f"{lbl}:")
+                    val = struct.unpack('<I', raw)[0]
+                    self._emit(f"  .long {val}")
+                else:
+                    self._emit(f"  .align 8")
+                    self._emit(f"{lbl}:")
+                    val = struct.unpack('<Q', raw)[0]
+                    self._emit(f"  .quad {val}")
 
         return "\n".join(self.assembly_lines) + "\n"
 
@@ -642,6 +659,97 @@ class CodeGenerator:
                         self._ptr_step_bytes[str(ins.result)] = int(step)
             except Exception:
                 pass
+            return
+
+        if op == "fmov":
+            fp_type = (ins.meta or {}).get("fp_type", "double")
+            val_str = ins.operand1 or "0.0"
+            lbl = self._intern_float_literal(float(val_str), fp_type)
+            if fp_type == "float":
+                self._emit(f"  movss {lbl}(%rip), %xmm0")
+            else:
+                self._emit(f"  movsd {lbl}(%rip), %xmm0")
+            if ins.result:
+                off = self._ensure_local(ins.result)
+                if fp_type == "float":
+                    self._emit(f"  movss %xmm0, -{off}(%rbp)")
+                else:
+                    self._emit(f"  movsd %xmm0, -{off}(%rbp)")
+            return
+
+        if op in ("fadd", "fsub", "fmul", "fdiv"):
+            fp_type = (ins.meta or {}).get("fp_type", "double")
+            s = "s" if fp_type == "float" else "d"
+            mov = f"movs{s}"
+            off1 = self._ensure_local(ins.operand1)
+            self._emit(f"  {mov} -{off1}(%rbp), %xmm0")
+            off2 = self._ensure_local(ins.operand2)
+            self._emit(f"  {mov} -{off2}(%rbp), %xmm1")
+            sse_ops = {"fadd": f"adds{s}", "fsub": f"subs{s}",
+                       "fmul": f"muls{s}", "fdiv": f"divs{s}"}
+            self._emit(f"  {sse_ops[op]} %xmm1, %xmm0")
+            off_r = self._ensure_local(ins.result)
+            self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)")
+            return
+
+        if op == "fcmp":
+            fp_type = (ins.meta or {}).get("fp_type", "double")
+            s = "s" if fp_type == "float" else "d"
+            mov = f"movs{s}"
+            off1 = self._ensure_local(ins.operand1)
+            self._emit(f"  {mov} -{off1}(%rbp), %xmm0")
+            off2 = self._ensure_local(ins.operand2)
+            self._emit(f"  {mov} -{off2}(%rbp), %xmm1")
+            self._emit(f"  ucomis{s} %xmm1, %xmm0")
+            cmp_op = ins.label or "<"
+            set_map = {"<": "setb", "<=": "setbe", ">": "seta", ">=": "setae",
+                       "==": "sete", "!=": "setne"}
+            self._emit(f"  {set_map.get(cmp_op, 'setb')} %al")
+            self._emit("  movzbl %al, %eax")
+            self._emit("  movslq %eax, %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op in ("i2f", "i2d"):
+            fp_type = (ins.meta or {}).get("fp_type", "double")
+            self._load_operand(ins.operand1, "%rax")
+            if fp_type == "float":
+                self._emit("  cvtsi2ssl %eax, %xmm0")
+                off_r = self._ensure_local(ins.result)
+                self._emit(f"  movss %xmm0, -{off_r}(%rbp)")
+            else:
+                self._emit("  cvtsi2sdq %rax, %xmm0")
+                off_r = self._ensure_local(ins.result)
+                self._emit(f"  movsd %xmm0, -{off_r}(%rbp)")
+            return
+
+        if op in ("f2i", "d2i"):
+            fp_type = (ins.meta or {}).get("fp_type", "float" if op == "f2i" else "double")
+            off1 = self._ensure_local(ins.operand1)
+            if fp_type == "float":
+                self._emit(f"  movss -{off1}(%rbp), %xmm0")
+                self._emit("  cvttss2si %xmm0, %eax")
+            else:
+                self._emit(f"  movsd -{off1}(%rbp), %xmm0")
+                self._emit("  cvttsd2si %xmm0, %rax")
+            self._emit("  cltq")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "f2d":
+            off1 = self._ensure_local(ins.operand1)
+            self._emit(f"  movss -{off1}(%rbp), %xmm0")
+            self._emit("  cvtss2sd %xmm0, %xmm0")
+            off_r = self._ensure_local(ins.result)
+            self._emit(f"  movsd %xmm0, -{off_r}(%rbp)")
+            return
+
+        if op == "d2f":
+            off1 = self._ensure_local(ins.operand1)
+            self._emit(f"  movsd -{off1}(%rbp), %xmm0")
+            self._emit("  cvtsd2ss %xmm0, %xmm0")
+            off_r = self._ensure_local(ins.result)
+            self._emit(f"  movss %xmm0, -{off_r}(%rbp)")
             return
 
         if op == "sext16":
@@ -2272,6 +2380,20 @@ class CodeGenerator:
         lbl = f".LC{self._string_counter}"
         self._string_counter += 1
         self._string_pool[s] = lbl
+        return lbl
+
+    def _intern_float_literal(self, value: float, fp_type: str) -> str:
+        import struct
+        if fp_type == "float":
+            bits = struct.pack('<f', value).hex()
+        else:
+            bits = struct.pack('<d', value).hex()
+        key = f"{fp_type}:{bits}"
+        if key in self._float_pool:
+            return self._float_pool[key]
+        lbl = f".LF{self._float_counter}"
+        self._float_counter += 1
+        self._float_pool[key] = lbl
         return lbl
 
     def _gas_escape(self, s: str) -> str:

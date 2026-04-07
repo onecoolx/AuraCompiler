@@ -1,15 +1,7 @@
-"""pycc.semantics
+"""pycc.semantics — Semantic analysis for C89.
 
-Minimal semantic analysis for the current project stage.
-
-Goals (MVP):
-- scope tracking (global / function / block)
-- record variable declarations
-- allow implicit function declarations (C89 style) for external calls like printf
-- basic checks: duplicate declarations in same scope, undefined identifiers in
-    expressions (best-effort)
-
-This is intentionally conservative; full C99 type system will be added later.
+Provides scope tracking, type checking (via CType bridge), const/volatile
+enforcement, pointer compatibility checks, and ICE evaluation.
 """
 
 from __future__ import annotations
@@ -18,6 +10,12 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union, Tuple
 
 from pycc.ir import _type_size
+from pycc.types import (
+    ast_type_to_ctype,
+    is_integer as ctype_is_integer,
+    is_scalar as ctype_is_scalar,
+    TypeKind,
+)
 
 from pycc.ast_nodes import (
         Program,
@@ -392,7 +390,7 @@ class SemanticAnalyzer:
             if expr.operator == "-":
                 return -v
             return ~v
-        if isinstance(expr, BinaryOp) and expr.operator in {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>", "<"}:
+        if isinstance(expr, BinaryOp) and expr.operator in {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>", "<", ">", "<=", ">=", "==", "!=", "&&", "||"}:
             l = self._eval_const_int(expr.left)
             r = self._eval_const_int(expr.right)
             if expr.operator == "+":
@@ -415,6 +413,20 @@ class SemanticAnalyzer:
                 return l << r
             if expr.operator == "<":
                 return 1 if l < r else 0
+            if expr.operator == ">":
+                return 1 if l > r else 0
+            if expr.operator == "<=":
+                return 1 if l <= r else 0
+            if expr.operator == ">=":
+                return 1 if l >= r else 0
+            if expr.operator == "==":
+                return 1 if l == r else 0
+            if expr.operator == "!=":
+                return 1 if l != r else 0
+            if expr.operator == "&&":
+                return 1 if (l != 0 and r != 0) else 0
+            if expr.operator == "||":
+                return 1 if (l != 0 or r != 0) else 0
             return l >> r
         if isinstance(expr, Identifier) and expr.name in self._enum_constants:
             return self._enum_constants[expr.name]
@@ -573,29 +585,70 @@ class SemanticAnalyzer:
             return 1 if getattr(ty, "is_pointer", False) else 0
 
     def _reject_const_dropping_via_chain(self, dst: Optional[Type], src: Optional[Type]) -> bool:
-        """Subset of C qualifier rules:
+        """Reject pointer assignments that drop const qualifiers.
 
-        Reject converting `T **` to `const T **` (or equivalent via `&T*`) because it
-        permits writing through a non-const intermediate pointer.
-
-        This is intentionally narrow: it triggers only when both sides are at least
-        double pointers and the destination introduces ultimate pointee const.
+        Covers:
+        - Single-level: `const int *` -> `int *` (drops pointee const)
+        - Multi-level: `T **` -> `const T **` (classic C constraint)
         """
         if dst is None or src is None:
             return False
         dl = self._pointer_level_count(dst)
         sl = self._pointer_level_count(src)
 
-        def _ultimate_pointee_is_const(t: Type) -> bool:
-            # Current representation: ultimate pointee const for `const T *...`
-            # is tracked on the base qualifier.
-            return bool(getattr(t, "is_const", False))
+        # Single-level pointer: reject removing const from pointee.
+        # `const int *cp; int *p = cp;` is invalid.
+        if dl == 1 and sl == 1:
+            src_base_const = bool(getattr(src, "is_const", False))
+            dst_base_const = bool(getattr(dst, "is_const", False))
+            if src_base_const and not dst_base_const:
+                return True
 
-        # Only enforce the classic constraint when both are at least double pointers
-        # and the destination introduces ultimate pointee const.
-        if dl >= 2 and sl >= 2 and _ultimate_pointee_is_const(dst) and not _ultimate_pointee_is_const(src):
-            return True
+        # Multi-level: reject when destination introduces ultimate pointee const
+        # that source doesn't have (classic C constraint).
+        if dl >= 2 and sl >= 2:
+            src_base_const = bool(getattr(src, "is_const", False))
+            dst_base_const = bool(getattr(dst, "is_const", False))
+            if dst_base_const and not src_base_const:
+                return True
+
         return False
+
+    def _check_pointer_base_compat(self, dst: Optional[Type], src: Optional[Type], name: str) -> None:
+        """Reject assignment between pointers with incompatible base types.
+
+        Allows void* <-> T* conversions. Rejects int* = char*, etc.
+        Also checks function pointer arity compatibility.
+        """
+        if dst is None or src is None:
+            return
+        dl = self._pointer_level_count(dst)
+        sl = self._pointer_level_count(src)
+        if dl != 1 or sl != 1:
+            return
+        if not getattr(dst, "is_pointer", False) or not getattr(src, "is_pointer", False):
+            return
+        db = str(getattr(dst, "base", "")).strip()
+        sb = str(getattr(src, "base", "")).strip()
+        # void* is compatible with any object pointer
+        if db == "void" or sb == "void":
+            return
+        # Function pointer: if dst is a function pointer type, check arity only
+        if "(*)" in db or "(*)" in sb:
+            dst_pc = getattr(dst, "fn_param_count", None)
+            src_pc = getattr(src, "fn_param_count", None)
+            if dst_pc is not None and src_pc is not None and dst_pc != src_pc:
+                self.errors.append(
+                    f"incompatible function pointer assignment: '{name}' expects {dst_pc} params but source has {src_pc}"
+                )
+            return
+        # Normalize base type strings for comparison
+        def _norm(b: str) -> str:
+            return " ".join(b.split())
+        if _norm(db) != _norm(sb):
+            self.errors.append(
+                f"incompatible pointer types: '{name}' has type '{db} *' but initializer/rhs has type '{sb} *'"
+            )
 
     def _type_after_address_of_identifier(self, ident_name: str) -> Optional[Type]:
         base = self._lookup_decl_type(ident_name)
@@ -678,6 +731,16 @@ class SemanticAnalyzer:
                         src_ty: Optional[Type] = None
                         if isinstance(item.initializer, Identifier):
                             src_ty = self._lookup_decl_type(item.initializer.name)
+                            # Function name decays to function pointer
+                            if src_ty is None and item.initializer.name in getattr(self, "_function_sigs", {}):
+                                try:
+                                    _ret, _pc, _is_var = self._function_sigs[item.initializer.name]
+                                    src_ty = Type(base=_ret, is_pointer=True, pointer_level=1,
+                                                  line=item.initializer.line, column=item.initializer.column)
+                                    src_ty._normalize_pointer_state()
+                                    src_ty.fn_param_count = _pc
+                                except Exception:
+                                    pass
                         elif (
                             isinstance(item.initializer, UnaryOp)
                             and item.initializer.operator == "&"
@@ -688,6 +751,7 @@ class SemanticAnalyzer:
                             self.errors.append(
                                 f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
                             )
+                        self._check_pointer_base_compat(item.type, src_ty, item.name)
                         self._analyze_expr(item.initializer)
                         # Extra: detect illegal pointer-chain qualifier conversions for
                         # common initializer forms where expression typing isn't implemented.
@@ -740,6 +804,16 @@ class SemanticAnalyzer:
                         src_ty: Optional[Type] = None
                         if isinstance(item.initializer, Identifier):
                             src_ty = self._lookup_decl_type(item.initializer.name)
+                            # Function name decays to function pointer
+                            if src_ty is None and item.initializer.name in getattr(self, "_function_sigs", {}):
+                                try:
+                                    _ret, _pc, _is_var = self._function_sigs[item.initializer.name]
+                                    src_ty = Type(base=_ret, is_pointer=True, pointer_level=1,
+                                                  line=item.initializer.line, column=item.initializer.column)
+                                    src_ty._normalize_pointer_state()
+                                    src_ty.fn_param_count = _pc
+                                except Exception:
+                                    pass
                         elif (
                             isinstance(item.initializer, UnaryOp)
                             and item.initializer.operator == "&"
@@ -750,6 +824,7 @@ class SemanticAnalyzer:
                             self.errors.append(
                                 f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
                             )
+                        self._check_pointer_base_compat(item.type, src_ty, item.name)
                         self._analyze_expr(item.initializer)
                 else:
                     self._analyze_stmt(item)
@@ -817,6 +892,7 @@ class SemanticAnalyzer:
                         self.errors.append(
                             f"invalid conversion: initializer for '{stmt.init.name}' drops const qualifiers in pointer chain"
                         )
+                    self._check_pointer_base_compat(stmt.init.type, src_ty, stmt.init.name)
                     self._analyze_expr(stmt.init.initializer)
             elif stmt.init is not None:
                 self._analyze_expr(stmt.init)
@@ -877,9 +953,14 @@ class SemanticAnalyzer:
 
     def _is_scalar_type(self, ty: Optional[Type]) -> bool:
         """Return True if `ty` is a scalar type (arithmetic or pointer)."""
-
         if ty is None:
             return True
+        try:
+            ct = ast_type_to_ctype(ty)
+            return ctype_is_scalar(ct)
+        except Exception:
+            pass
+        # Fallback for edge cases the bridge doesn't handle yet
         try:
             ty._normalize_pointer_state()
         except Exception:
@@ -887,52 +968,27 @@ class SemanticAnalyzer:
         if getattr(ty, "is_pointer", False) or getattr(ty, "pointer_level", 0) > 0:
             return True
         base = str(getattr(ty, "base", "")).strip()
-        if base.startswith("enum "):
-            return True
         if base.startswith("struct ") or base.startswith("union "):
             return False
-        return base in {
-            "char",
-            "signed char",
-            "unsigned char",
-            "short",
-            "short int",
-            "unsigned short",
-            "unsigned short int",
-            "int",
-            "unsigned",
-            "unsigned int",
-            "long",
-            "long int",
-            "unsigned long",
-            "unsigned long int",
-            "float",
-            "double",
-            "long double",
-            "_Bool",
-        }
+        return True
 
     def _is_integer_type(self, ty: Optional[Type]) -> bool:
         if ty is None:
             return True
+        try:
+            ct = ast_type_to_ctype(ty)
+            return ctype_is_integer(ct)
+        except Exception:
+            pass
+        # Fallback
         base = str(getattr(ty, "base", "")).strip()
         if base.startswith("enum "):
             return True
         return base in {
-            "char",
-            "signed char",
-            "unsigned char",
-            "short",
-            "short int",
-            "unsigned short",
-            "unsigned short int",
-            "int",
-            "unsigned",
-            "unsigned int",
-            "long",
-            "long int",
-            "unsigned long",
-            "unsigned long int",
+            "char", "signed char", "unsigned char",
+            "short", "short int", "unsigned short", "unsigned short int",
+            "int", "unsigned", "unsigned int",
+            "long", "long int", "unsigned long", "unsigned long int",
             "_Bool",
         }
 
@@ -1357,6 +1413,11 @@ class SemanticAnalyzer:
                     return False
                 dl = _pointer_level_count(dst)
                 sl = _pointer_level_count(src)
+                # Single-level: reject removing const from pointee
+                if dl == 1 and sl == 1:
+                    if getattr(src, "is_const", False) and not getattr(dst, "is_const", False):
+                        return True
+                # Multi-level
                 if dl >= 2 and sl >= 2 and getattr(dst, "is_const", False) and not getattr(src, "is_const", False):
                     return True
                 return False

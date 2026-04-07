@@ -47,6 +47,7 @@ from pycc.ast_nodes import (
     DeclStmt,
     Identifier,
     IntLiteral,
+    FloatLiteral,
     StringLiteral,
     CharLiteral,
     BinaryOp,
@@ -164,6 +165,8 @@ class Parser:
             "int",
             "void",
             "char",
+            "float",
+            "double",
             "__builtin_va_list",
             "struct",
             "union",
@@ -1419,6 +1422,16 @@ class Parser:
                 vv = vv[:-1]
             value_int = int(vv, base)
             return IntLiteral(value=value_int, is_hex=is_hex, is_octal=is_octal, line=tok.line, column=tok.column)
+        if tok.type == TokenType.NUMBER_FLOAT:
+            self.advance()
+            v = tok.value
+            # Strip float suffix
+            suffix = ''
+            if v and v[-1] in 'fFlL':
+                suffix = v[-1]
+                v = v[:-1]
+            value_float = float(v)
+            return FloatLiteral(value=value_float, suffix=suffix, line=tok.line, column=tok.column)
         if tok.type == TokenType.STRING:
             self.advance()
             return StringLiteral(value=tok.value, line=tok.line, column=tok.column)

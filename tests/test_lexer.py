@@ -92,21 +92,21 @@ class TestNumbers:
         """Test float literal"""
         lexer = Lexer("3.14")
         tokens = lexer.tokenize()
-        assert tokens[0].type == TokenType.NUMBER
+        assert tokens[0].type == TokenType.NUMBER_FLOAT
         assert tokens[0].value == "3.14"
     
     def test_float_with_exponent(self):
         """Test float with exponent"""
         lexer = Lexer("1.0e-5")
         tokens = lexer.tokenize()
-        assert tokens[0].type == TokenType.NUMBER
+        assert tokens[0].type == TokenType.NUMBER_FLOAT
         assert tokens[0].value == "1.0e-5"
     
     def test_float_with_suffix(self):
         """Test float with suffix"""
         lexer = Lexer("3.14f")
         tokens = lexer.tokenize()
-        assert tokens[0].type == TokenType.NUMBER
+        assert tokens[0].type == TokenType.NUMBER_FLOAT
         assert tokens[0].value == "3.14f"
     
     def test_multiple_numbers(self):

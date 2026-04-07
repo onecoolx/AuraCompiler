@@ -41,6 +41,7 @@ from pycc.ast_nodes import (
     LabelStmt,
     Identifier,
     IntLiteral,
+    FloatLiteral,
     StringLiteral,
     BinaryOp,
     UnaryOp,
@@ -66,53 +67,72 @@ class IRGenError(Exception):
 
 
 def _eval_const_int_expr(expr: Expression) -> int:
-    """Evaluate a minimal integer constant expression (C89 subset).
+    """Unified integer constant expression (ICE) evaluator (C89).
 
-    Used for switch case labels (and similar contexts) at IR-generation time.
+    Supports: integer/char literals, sizeof(type-name), enum constants (via
+    attached value), unary +/-/~/!, all binary arithmetic/bitwise/relational/
+    logical operators, ternary, comma, and casts.
     """
 
     if isinstance(expr, IntLiteral):
         return int(expr.value)
     if isinstance(expr, CharLiteral):
         return ord(expr.value)
-    if isinstance(expr, UnaryOp) and expr.operator in {"+", "-", "~"}:
+    if isinstance(expr, UnaryOp) and expr.operator in {"+", "-", "~", "!"}:
         v = _eval_const_int_expr(expr.operand)
         if expr.operator == "+":
             return v
         if expr.operator == "-":
             return -v
+        if expr.operator == "!":
+            return 0 if v != 0 else 1
         return ~v
-    if isinstance(expr, BinaryOp) and expr.operator in {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>"}:
+    _binops = {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>",
+               "<", ">", "<=", ">=", "==", "!=", "&&", "||"}
+    if isinstance(expr, BinaryOp) and expr.operator in _binops:
         l = _eval_const_int_expr(expr.left)
         r = _eval_const_int_expr(expr.right)
-        if expr.operator == "+":
-            return l + r
-        if expr.operator == "-":
-            return l - r
-        if expr.operator == "*":
-            return l * r
-        if expr.operator == "/":
-            return int(l / r)
-        if expr.operator == "%":
-            return l % r
-        if expr.operator == "|":
-            return l | r
-        if expr.operator == "&":
-            return l & r
-        if expr.operator == "^":
-            return l ^ r
-        if expr.operator == "<<":
-            return l << r
-        return l >> r
+        op = expr.operator
+        if op == "+": return l + r
+        if op == "-": return l - r
+        if op == "*": return l * r
+        if op == "/": return int(l / r) if r != 0 else 0
+        if op == "%": return l % r if r != 0 else 0
+        if op == "|": return l | r
+        if op == "&": return l & r
+        if op == "^": return l ^ r
+        if op == "<<": return l << r
+        if op == ">>": return l >> r
+        if op == "<": return 1 if l < r else 0
+        if op == ">": return 1 if l > r else 0
+        if op == "<=": return 1 if l <= r else 0
+        if op == ">=": return 1 if l >= r else 0
+        if op == "==": return 1 if l == r else 0
+        if op == "!=": return 1 if l != r else 0
+        if op == "&&": return 1 if (l != 0 and r != 0) else 0
+        if op == "||": return 1 if (l != 0 or r != 0) else 0
     if isinstance(expr, CommaOp):
         _eval_const_int_expr(expr.left)
         return _eval_const_int_expr(expr.right)
-
     if isinstance(expr, TernaryOp):
         cond = _eval_const_int_expr(expr.condition)
         if cond != 0:
             return _eval_const_int_expr(expr.true_expr)
         return _eval_const_int_expr(expr.false_expr)
+    # Cast: evaluate inner expression
+    if isinstance(expr, Cast):
+        return _eval_const_int_expr(expr.expression)
+    # sizeof(type-name)
+    from pycc.ast_nodes import SizeOf
+    if isinstance(expr, SizeOf):
+        if expr.type is not None:
+            return int(_type_size(expr.type))
+        raise IRGenError("sizeof(expression) is not an integer constant expression")
+    # Identifier with attached enum value
+    if isinstance(expr, Identifier):
+        v = getattr(expr, '_enum_value', None)
+        if v is not None:
+            return int(v)
 
     raise IRGenError("not an integer constant expression")
 
@@ -1953,6 +1973,16 @@ class IRGenerator:
     def _gen_expr(self, expr: Expression) -> str:
         if isinstance(expr, IntLiteral):
             return f"${expr.value}"
+        if isinstance(expr, FloatLiteral):
+            t = self._new_temp()
+            suffix = getattr(expr, 'suffix', '')
+            fp_type = "float" if suffix in ('f', 'F') else "double"
+            self.instructions.append(IRInstruction(
+                op="fmov", result=t, operand1=str(expr.value),
+                meta={"fp_type": fp_type}
+            ))
+            self._var_types[t] = fp_type
+            return t
         if isinstance(expr, CharLiteral):
             # In C, character constants have type int.
             # Our AST stores the raw single-character string.
@@ -2147,21 +2177,42 @@ class IRGenerator:
             return "$4"
 
         if isinstance(expr, Cast):
-            # MVP: keep casts as value-preserving for ints/pointers.
-            # This is enough for common C89 patterns like `(int*)0`, `(char)65`.
             v = self._gen_expr(expr.expression)
-            # Best-effort: record cast destination type for later signedness decisions.
+            # Float casts: int↔float/double, float↔double
             try:
                 dst_ty = getattr(expr, "type", None)
+                dst_base = str(getattr(dst_ty, "base", "")).strip() if dst_ty else ""
+                src_fp = self._var_types.get(v, "") if isinstance(v, str) else ""
+                if dst_base in ("float", "double") and src_fp not in ("float", "double"):
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="i2f" if dst_base == "float" else "i2d",
+                        result=t, operand1=v, meta={"fp_type": dst_base}))
+                    self._var_types[t] = dst_base
+                    return t
+                if dst_base in ("float", "double") and src_fp in ("float", "double") and dst_base != src_fp:
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="f2d" if dst_base == "double" else "d2f",
+                        result=t, operand1=v, meta={"fp_type": dst_base}))
+                    self._var_types[t] = dst_base
+                    return t
+                if dst_base not in ("float", "double") and src_fp in ("float", "double"):
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="f2i" if src_fp == "float" else "d2i",
+                        result=t, operand1=v, meta={"fp_type": src_fp}))
+                    self._var_types[t] = "int"
+                    return t
+            except Exception:
+                pass
+            # Integer cast: record destination type for signedness decisions
+            try:
                 dst_str = str(dst_ty) if dst_ty is not None else None
             except Exception:
                 dst_ty = None
                 dst_str = None
             if isinstance(dst_str, str):
-                # Narrow integer casts must truncate/extend, otherwise expressions like
-                # `(unsigned char)x` won't behave correctly (e.g. after a sign-extended
-                # byte load).
-                # Normalize spaces to make downstream string checks stable.
                 dst_norm = " ".join(dst_str.strip().lower().split())
                 # Parser encodes explicit signedness via Type flags while keeping
                 # base == "char".
@@ -2818,10 +2869,50 @@ class IRGenerator:
             l = self._gen_expr(expr.left)
             r = self._gen_expr(expr.right)
 
-            # Materialize integer promotions (C89): many operations promote
-            # smaller integer types (char/short) to int (or unsigned int).
-            # Our codegen executes ops in 64-bit, so we must explicitly
-            # sign/zero-extend masked/narrow temps to preserve semantics.
+            # Float binary operations: emit float IR when either operand is float/double
+            lty_fp = self._var_types.get(l, "") if isinstance(l, str) else ""
+            rty_fp = self._var_types.get(r, "") if isinstance(r, str) else ""
+            if lty_fp in ("float", "double") or rty_fp in ("float", "double"):
+                fp_type = "double" if "double" in (lty_fp, rty_fp) else "float"
+                # Promote operands to common fp type
+                if lty_fp not in ("float", "double"):
+                    conv = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="i2f" if fp_type == "float" else "i2d",
+                        result=conv, operand1=l, meta={"fp_type": fp_type}))
+                    self._var_types[conv] = fp_type
+                    l = conv
+                elif lty_fp == "float" and fp_type == "double":
+                    conv = self._new_temp()
+                    self.instructions.append(IRInstruction(op="f2d", result=conv, operand1=l, meta={"fp_type": "double"}))
+                    self._var_types[conv] = "double"
+                    l = conv
+                if rty_fp not in ("float", "double"):
+                    conv = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="i2f" if fp_type == "float" else "i2d",
+                        result=conv, operand1=r, meta={"fp_type": fp_type}))
+                    self._var_types[conv] = fp_type
+                    r = conv
+                elif rty_fp == "float" and fp_type == "double":
+                    conv = self._new_temp()
+                    self.instructions.append(IRInstruction(op="f2d", result=conv, operand1=r, meta={"fp_type": "double"}))
+                    self._var_types[conv] = "double"
+                    r = conv
+                t = self._new_temp()
+                meta = {"fp_type": fp_type}
+                if expr.operator in {"+", "-", "*", "/"}:
+                    fp_ops = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}
+                    self.instructions.append(IRInstruction(op=fp_ops[expr.operator], result=t, operand1=l, operand2=r, meta=meta))
+                    self._var_types[t] = fp_type
+                elif expr.operator in {"==", "!=", "<", "<=", ">", ">="}:
+                    self.instructions.append(IRInstruction(op="fcmp", result=t, operand1=l, operand2=r, label=expr.operator, meta=meta))
+                    self._var_types[t] = "int"
+                else:
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator))
+                return t
+
+            # Integer promotions (C89): sign/zero-extend narrow types before ops
             def _materialize_int_promotion(opnd: str, ty: object) -> str:
                 tyn = self._canon_int_type(ty)
                 if tyn == "char":
