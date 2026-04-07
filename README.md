@@ -20,14 +20,16 @@ Generates **x86-64 SysV** assembly and uses **binutils `as`/`ld`** to produce EL
 
 ### Implemented language features (high level)
 
-- Declarations: globals/locals, `static`/`extern`, function prototypes + definitions
+- Declarations: globals/locals, `static`/`extern`, function prototypes + definitions, multi-declarator (`int a, b;`)
 - Types: `int`, `char`, `short`, `long` (signed/unsigned), `float`, `double`, pointers, arrays, `typedef`
-- Aggregates: `struct`/`union` (layout + member access `.` / `->`)
+- Aggregates: `struct`/`union` (layout + member access `.` / `->`, bit-fields, `typedef struct {} T;`)
 - Control flow: `if/else`, `for`, `while`, `do/while`, `switch/case/default`, `break/continue`, `goto`/labels
-- Expressions: arithmetic/bitwise/compare, assignment, calls, `?:`, `&` (address-of), member access
-- Operators: `sizeof`, C-style cast `(type)expr`
+- Expressions: arithmetic/bitwise/compare, assignment, `++`/`--` (pre/post), calls, `?:`, `&`, member access
+- Operators: `sizeof` (incl. struct/union), C-style cast `(type)expr`, comma operator
 - Enums: `enum` definitions + enumerator constants
-- Floating point: `float`/`double` literals, arithmetic (`+`/`-`/`*`/`/`), comparisons, int↔float casts (SSE/SSE2 codegen)
+- Floating point: `float`/`double` literals, arithmetic, comparisons, int↔float casts, function params/return (SSE/SSE2)
+- Preprocessor: `#define`/`#undef`, `#include`, `#if`/`#ifdef`/`#elif`/`#else`, `#`/`##`, `#line`, trigraphs
+- String literals: adjacent concatenation (`"ab" "cd"`), wide chars (`L'x'`, `L"str"`)
 
 ## Project Structure
 

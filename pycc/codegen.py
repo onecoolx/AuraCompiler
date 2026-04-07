@@ -1,9 +1,6 @@
-"""pycc.codegen
+"""pycc.codegen — x86-64 SysV code generator.
 
-x86-64 (System V AMD64 ABI) code generator.
-
-This is an MVP backend to make `examples/*.c` compile and run by producing a
-single assembly (.s) file that can be assembled and linked using system tools.
+Produces assembly (.s) from IR, supporting integer and SSE/SSE2 float ops.
 
 Supported IR ops (see `pycc.ir`):
 - func_begin/func_end
@@ -57,7 +54,7 @@ class CodeGenerator:
         self._spill_used = 0
         # Total size of declared locals area for current function (bytes).
         self._locals_base = 0
-        # MVP struct layout: hardcode offset map per function as discovered
+        # struct layout: per-function member offset map
         # (until full semantic layout is implemented).
         self._member_offsets: Dict[tuple[str, str], int] = {}
     
@@ -161,7 +158,7 @@ class CodeGenerator:
                 elif isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
                     self._emit(f"  .byte {imm.lstrip('$')}")
                 else:
-                    # MVP: int
+                    # int
                     self._emit(f"  .long {imm.lstrip('$')}")
 
             import struct as _struct
@@ -414,9 +411,7 @@ class CodeGenerator:
                 return mt
         return None
 
-    # -----------------
     # Function framing
-    # -----------------
 
     def _begin_function(self, name: str, decls: List[IRInstruction]) -> None:
         self._locals = {}
@@ -640,9 +635,7 @@ class CodeGenerator:
             self._emit(f"  movq %r9,  -{base + 40}(%rbp)")
 
         
-    # -----------------
     # Instruction emission
-    # -----------------
 
     def _emit_ins(self, ins: IRInstruction) -> None:
         op = ins.op
@@ -1686,7 +1679,7 @@ class CodeGenerator:
                     elem_sz = self._pointee_size_bytes(tyt)
                 else:
                     # Fall back: if the base temp comes from an address-of array,
-                    # its pointee is typically an int-sized element in our MVP.
+                    # its pointee is typically an int-sized element .
                     # Keep elem_sz as-is.
                     pass
 
@@ -1737,7 +1730,7 @@ class CodeGenerator:
             return
 
         if op == "load_member":
-            # MVP: treat operand1 as addressable base (stack local), operand2 as member name.
+            # treat operand1 as addressable base (stack local), operand2 as member name.
             base = ins.operand1 or ""
             member = ins.operand2 or ""
             # Compute base address.
@@ -2020,9 +2013,7 @@ class CodeGenerator:
 
         # decl/param are handled in prologue
 
-    # -----------------
     # Operand helpers
-    # -----------------
 
     def _load_operand(self, operand: Optional[str], reg: str) -> None:
         if operand is None:
@@ -2333,7 +2324,7 @@ class CodeGenerator:
             if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
                 self._emit(f"  movq {reg}, {sym}(%rip)")
             else:
-                # MVP: store 32-bit int
+                # store 32-bit int
                 self._emit(f"  movl %eax, {sym}(%rip)")
             return
 
@@ -2484,9 +2475,7 @@ class CodeGenerator:
                     return members[member]
         return None
 
-    # -----------------
     # Strings
-    # -----------------
 
     def _intern_string(self, s: str) -> str:
         if s in self._string_pool:

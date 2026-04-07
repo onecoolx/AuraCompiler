@@ -1,10 +1,7 @@
-"""pycc.ir
+"""pycc.ir — Intermediate Representation for AuraCompiler.
 
-Intermediate Representation (IR) for AuraCompiler.
-
-This project originally planned a full TAC-based middle-end. To keep progress
-incremental, this module now provides a *minimal* IR that is still a list of
-instructions, but is tailored to the current code generator implementation.
+TAC-like instruction list with float-aware ops (fmov/fadd/fsub/fmul/fdiv/fcmp)
+and type conversion instructions (i2f/i2d/f2i/d2i/f2d/d2f).
 
 IR is organized as a list of `IRInstruction` plus a few container records:
 
@@ -1146,9 +1143,7 @@ class IRGenerator:
             return [init]
         return None
 
-    # -------------
     # Helpers
-    # -------------
 
     def _new_temp(self) -> str:
         t = f"%t{self.temp_counter}"
@@ -1361,9 +1356,7 @@ class IRGenerator:
             return False
         return True
 
-    # -------------
     # Functions
-    # -------------
 
     def _gen_function(self, fn: FunctionDecl) -> None:
         self._fn_name = fn.name
@@ -1438,9 +1431,7 @@ class IRGenerator:
         if not hasattr(self, "_local_static_syms"):
             self._local_static_syms = {}
 
-    # -------------
     # Statements
-    # -------------
 
     def _gen_stmt(self, stmt: Statement) -> None:
         if isinstance(stmt, CompoundStmt):
@@ -1982,9 +1973,7 @@ class IRGenerator:
 
         # ignore unsupported statements
 
-    # -------------
     # Expressions
-    # -------------
 
     def _gen_expr(self, expr: Expression) -> str:
         if isinstance(expr, IntLiteral):
@@ -2595,7 +2584,7 @@ class IRGenerator:
             return t
         if isinstance(expr, Assignment):
             rhs = self._gen_expr(expr.value)
-            # only handle identifier targets in MVP
+            # only handle identifier targets 
             if isinstance(expr.target, Identifier):
                 # local statics lower to unique global symbols
                 if hasattr(self, "_local_static_syms") and expr.target.name in getattr(self, "_local_static_syms", {}):
@@ -2798,7 +2787,7 @@ class IRGenerator:
             self.instructions.append(IRInstruction(op="mov", result=t, operand1=rhs))
             return t
         if isinstance(expr, UnaryOp):
-            # Special-case: `&array` should yield a pointer to the first element in this MVP.
+            # Special-case: `&array` should yield a pointer to the first element .
             # This makes `int (*p)[N]; p = &a;` usable as a subset (we treat it as `p = a`).
             if expr.operator == "&" and isinstance(expr.operand, Identifier):
                 sym = f"@{expr.operand.name}"
@@ -2859,7 +2848,7 @@ class IRGenerator:
             v = self._gen_expr(expr.operand)
             t = self._new_temp()
             if expr.operator == "&":
-                # address-of: only meaningful for identifiers/locals in MVP
+                # address-of: only meaningful for identifiers/locals 
                 self.instructions.append(IRInstruction(op="addr_of", result=t, operand1=v))
                 # Best-effort: carry pointer type info for address temps so
                 # codegen can emit correct `load/store` widths.

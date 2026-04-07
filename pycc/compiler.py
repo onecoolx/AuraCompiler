@@ -759,7 +759,7 @@ class Compiler:
 if __name__ == "__main__":
     import argparse
 
-    ap = argparse.ArgumentParser(prog="pycc", description="AuraCompiler (MVP)")
+    ap = argparse.ArgumentParser(prog="pycc", description="AuraCompiler")
     ap.add_argument("source", help="Input C file")
     ap.add_argument("-o", dest="output", required=True, help="Output: .s, .o, or executable path")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")

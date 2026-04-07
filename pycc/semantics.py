@@ -478,7 +478,7 @@ class SemanticAnalyzer:
         self._layouts[key] = layout
 
     def _compute_layout(self, kind: str, tag: str, members: List[Declaration]) -> StructLayout:
-        # MVP: only handle members of builtin int/char and pointers.
+        # Compute struct/union layout with padding and alignment.
         offsets: Dict[str, int] = {}
         sizes: Dict[str, int] = {}
         mtypes: Dict[str, str] = {}
@@ -588,9 +588,7 @@ class SemanticAnalyzer:
                     layout._bf_info[m.name] = (m._bit_offset, m._bit_width)
         return layout
 
-    # -----------------
     # Scopes
-    # -----------------
 
     def _push_scope(self) -> None:
         self._scopes.append({})
@@ -748,9 +746,7 @@ class SemanticAnalyzer:
                 return True
         return False
 
-    # -----------------
     # Analyze nodes
-    # -----------------
 
     def _analyze_function(self, fn: FunctionDecl) -> None:
         # Ensure function locals/params are declared in a scope that remains
@@ -1161,7 +1157,7 @@ class SemanticAnalyzer:
                 rp = _is_ptrlike(expr.right)
                 if lp != rp:
                     # Allow relational comparisons on ptrdiff-like integer
-                    # expressions produced by `ptr - ptr` in this MVP.
+                    # expressions produced by `ptr - ptr` .
                     def _is_ptrdiff_like(e: Expression) -> bool:
                         return (
                             isinstance(e, BinaryOp)
@@ -1204,7 +1200,7 @@ class SemanticAnalyzer:
                     if (lp and _is_zero_int_const(expr.right)) or (rp and _is_zero_int_const(expr.left)):
                         pass
                     # Allow comparing pointers against ptrdiff-like integer expressions
-                    # produced by `ptr - ptr` in this MVP.
+                    # produced by `ptr - ptr` .
                     elif (
                         lp
                         and isinstance(expr.left, BinaryOp)

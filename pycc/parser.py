@@ -131,9 +131,7 @@ class Parser:
             return self.tokens[pos]
         return None
 
-    # -----------------
     # Helpers
-    # -----------------
 
     def _at(self, t: TokenType) -> bool:
         return self.current_token is not None and self.current_token.type == t
@@ -188,9 +186,7 @@ class Parser:
             return True
         return False
 
-    # -----------------
     # External decls
-    # -----------------
 
     def _parse_external_declaration(self) -> Union[Declaration, FunctionDecl]:
         storage_class: Optional[str] = None
@@ -873,9 +869,7 @@ class Parser:
             and self.current_token.value == kw
         )
 
-    # -----------------
     # Statements
-    # -----------------
 
     def _parse_compound_statement(self) -> CompoundStmt:
         lbrace = self._expect(TokenType.LBRACE, "Expected '{'")
@@ -1286,9 +1280,7 @@ class Parser:
         self._expect(TokenType.SEMICOLON, "Expected ';' after expression")
         return ExpressionStmt(expression=expr, line=tok.line, column=tok.column)
 
-    # -----------------
     # Expressions (precedence climbing)
-    # -----------------
 
     def _parse_expression(self):
         # C comma operator has the lowest precedence.
