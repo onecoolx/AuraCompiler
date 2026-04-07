@@ -673,9 +673,20 @@ class CodeGenerator:
             return
 
         if op == "mov":
+            # Float-aware move: if source is a float-typed temp, use SSE move
+            src_ty = self._var_types.get(ins.operand1, "")
+            if isinstance(src_ty, str) and src_ty in ("float", "double"):
+                s = "s" if src_ty == "float" else "d"
+                mov = f"movs{s}"
+                off1 = self._ensure_local(ins.operand1)
+                self._emit(f"  {mov} -{off1}(%rbp), %xmm0")
+                off_r = self._ensure_local(ins.result)
+                self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)")
+                # Propagate float type
+                self._var_types[ins.result] = src_ty
+                return
             self._load_operand(ins.operand1, "%rax")
             self._store_result(ins.result, "%rax")
-            # Propagate pointer arithmetic step metadata through moves.
             try:
                 if ins.operand1 is not None:
                     step = self._ptr_step_bytes.get(str(ins.operand1))
@@ -750,22 +761,22 @@ class CodeGenerator:
         if op in ("f2i", "d2i"):
             fp_type = (ins.meta or {}).get("fp_type", "float" if op == "f2i" else "double")
             src = ins.operand1 or ""
-            if src.startswith("@"):
+            if src.startswith("@") and not self._is_local(src):
                 gname = src.lstrip("@")
                 if fp_type == "float":
                     self._emit(f"  movss {gname}(%rip), %xmm0")
-                    self._emit("  cvttss2si %xmm0, %eax")
                 else:
                     self._emit(f"  movsd {gname}(%rip), %xmm0")
-                    self._emit("  cvttsd2si %xmm0, %rax")
             else:
                 off1 = self._ensure_local(src)
                 if fp_type == "float":
                     self._emit(f"  movss -{off1}(%rbp), %xmm0")
-                    self._emit("  cvttss2si %xmm0, %eax")
                 else:
                     self._emit(f"  movsd -{off1}(%rbp), %xmm0")
-                    self._emit("  cvttsd2si %xmm0, %rax")
+            if fp_type == "float":
+                self._emit("  cvttss2si %xmm0, %eax")
+            else:
+                self._emit("  cvttsd2si %xmm0, %rax")
             self._emit("  cltq")
             self._store_result(ins.result, "%rax")
             return
