@@ -374,7 +374,20 @@ class IRGenerator:
                     else:
                         imm = self._const_initializer_imm(init)
                         ptr = self._const_initializer_ptr(init)
-                        if imm is None and ptr is None:
+                        # Float global initializer
+                        if isinstance(init, FloatLiteral):
+                            suffix = getattr(init, 'suffix', '')
+                            fp_type = "float" if suffix in ('f', 'F') else "double"
+                            self.instructions.append(
+                                IRInstruction(
+                                    op="gdef_float",
+                                    result=f"@{decl.name}",
+                                    operand1=str(init.value),
+                                    label=sc,
+                                    meta={"fp_type": fp_type},
+                                )
+                            )
+                        elif imm is None and ptr is None:
                             raise IRGenError(
                                 f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
                             )

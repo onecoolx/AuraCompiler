@@ -79,6 +79,7 @@ class CodeGenerator:
         # First pass: emit global declarations/definitions.
         gdefs = [ins for ins in instructions if ins.op == "gdef"]
         gblobs = [ins for ins in instructions if ins.op == "gdef_blob"]
+        gfloats = [ins for ins in instructions if ins.op == "gdef_float"]
         gdecls = [ins for ins in instructions if ins.op == "gdecl"]
 
         if gdecls:
@@ -104,7 +105,7 @@ class CodeGenerator:
                     sz = 8
                 self._emit(f"  .comm {name},{sz},{sz}")
 
-        if gdefs or gblobs:
+        if gdefs or gblobs or gfloats:
             self._emit(".data")
             for gd in gblobs:
                 name = (gd.result or "").lstrip("@")
@@ -158,11 +159,29 @@ class CodeGenerator:
                     # MVP: int
                     self._emit(f"  .long {imm.lstrip('$')}")
 
+            import struct as _struct
+            for gf in gfloats:
+                name = (gf.result or "").lstrip("@")
+                fp_type = (gf.meta or {}).get("fp_type", "double")
+                val = float(gf.operand1 or "0.0")
+                if gf.label != "static":
+                    self._emit(f".globl {name}")
+                if fp_type == "float":
+                    self._emit(f"  .align 4")
+                    self._emit(f"{name}:")
+                    bits = _struct.unpack('<I', _struct.pack('<f', val))[0]
+                    self._emit(f"  .long {bits}")
+                else:
+                    self._emit(f"  .align 8")
+                    self._emit(f"{name}:")
+                    bits = _struct.unpack('<Q', _struct.pack('<d', val))[0]
+                    self._emit(f"  .quad {bits}")
+
         self._emit(".text")
         i = 0
         while i < len(instructions):
             ins = instructions[i]
-            if ins.op in {"gdecl", "gdef"}:
+            if ins.op in {"gdecl", "gdef", "gdef_blob", "gdef_float"}:
                 i += 1
                 continue
             if ins.op == "func_begin":
