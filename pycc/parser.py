@@ -1354,6 +1354,14 @@ class Parser:
             self.advance()
             operand = self._parse_unary()
             return UnaryOp(operator=tok.value, operand=operand, is_postfix=False, line=tok.line, column=tok.column)
+        if tok and tok.type == TokenType.INCREMENT:
+            self.advance()
+            operand = self._parse_unary()
+            return UnaryOp(operator="++", operand=operand, is_postfix=False, line=tok.line, column=tok.column)
+        if tok and tok.type == TokenType.DECREMENT:
+            self.advance()
+            operand = self._parse_unary()
+            return UnaryOp(operator="--", operand=operand, is_postfix=False, line=tok.line, column=tok.column)
         return self._parse_postfix()
 
     def _parse_postfix(self):
@@ -1382,6 +1390,16 @@ class Parser:
             if self._match(TokenType.ARROW):
                 mem = self._expect(TokenType.IDENTIFIER, "Expected member name after '->'")
                 expr = PointerMemberAccess(pointer=expr, member=mem.value, line=mem.line, column=mem.column)
+                continue
+            if self.current_token and self.current_token.type == TokenType.INCREMENT:
+                tok_inc = self.current_token
+                self.advance()
+                expr = UnaryOp(operator="++", operand=expr, is_postfix=True, line=tok_inc.line, column=tok_inc.column)
+                continue
+            if self.current_token and self.current_token.type == TokenType.DECREMENT:
+                tok_dec = self.current_token
+                self.advance()
+                expr = UnaryOp(operator="--", operand=expr, is_postfix=True, line=tok_dec.line, column=tok_dec.column)
                 continue
             break
         return expr

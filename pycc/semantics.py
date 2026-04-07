@@ -1221,8 +1221,20 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, UnaryOp):
+            # C89: ++/-- require a modifiable lvalue
+            if expr.operator in ("++", "--"):
+                if isinstance(expr.operand, Identifier):
+                    ty = self._lookup_decl_type(expr.operand.name)
+                    if ty is not None and not getattr(ty, "is_pointer", False) and getattr(ty, "is_const", False):
+                        self._err(f"increment/decrement of const-qualified variable '{expr.operand.name}'", expr)
+                elif not isinstance(expr.operand, (ArrayAccess,)):
+                    from pycc.ast_nodes import MemberAccess as _MA, PointerMemberAccess as _PMA
+                    if not isinstance(expr.operand, (_MA, _PMA)):
+                        self._err("increment/decrement requires a modifiable lvalue", expr)
+                self._analyze_expr(expr.operand)
+                return
+
             # C89: unary '&' requires an lvalue (subset).
-            # Allow identifiers, dereference, and member/array accesses.
             if expr.operator == "&":
                 from pycc.ast_nodes import MemberAccess as _MemberAccess, PointerMemberAccess as _PointerMemberAccess
 

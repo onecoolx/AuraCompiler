@@ -2813,6 +2813,24 @@ class IRGenerator:
                 self.instructions.append(IRInstruction(op="load", result=t, operand1=base))
                 return t
 
+            # ++/-- operators
+            if expr.operator in ("++", "--"):
+                delta = "$1"
+                op_name = "+" if expr.operator == "++" else "-"
+                if isinstance(expr.operand, Identifier):
+                    sym = f"@{expr.operand.name}"
+                    old = self._new_temp()
+                    self.instructions.append(IRInstruction(op="mov", result=old, operand1=sym))
+                    new = self._new_temp()
+                    self.instructions.append(IRInstruction(op="binop", result=new, operand1=old, operand2=delta, label=op_name))
+                    self.instructions.append(IRInstruction(op="mov", result=sym, operand1=new))
+                    return old if getattr(expr, "is_postfix", False) else new
+                # Fallback for non-identifier operands (e.g. *p++)
+                v = self._gen_expr(expr.operand)
+                t = self._new_temp()
+                self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$1", label=op_name))
+                return v if getattr(expr, "is_postfix", False) else t
+
             v = self._gen_expr(expr.operand)
             t = self._new_temp()
             if expr.operator == "&":
