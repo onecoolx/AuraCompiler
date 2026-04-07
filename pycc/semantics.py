@@ -435,10 +435,8 @@ class SemanticAnalyzer:
             # For now, accept casts and evaluate the underlying expression.
             return self._eval_const_int(expr.expression)
         if isinstance(expr, SizeOf):
-            # C89: sizeof(type-name) is an integer constant expression.
             if expr.operand is None and expr.type is not None:
-                return int(_type_size(expr.type))
-            # sizeof(expression) is not an ICE in C89.
+                return int(_type_size(expr.type, sema_ctx=self))
             raise SemanticError("enum value must be an integer constant expression")
         raise SemanticError("enum value must be an integer constant expression")
 
@@ -1673,9 +1671,8 @@ class SemanticAnalyzer:
             try:
                 # sizeof(type)
                 if getattr(expr, "operand", None) is None and getattr(expr, "type", None) is not None:
-                    # Let IR/type_size be the source of truth for completeness.
                     try:
-                        _type_size(expr.type)
+                        _type_size(expr.type, sema_ctx=self)
                     except Exception:
                         self._err("invalid application of sizeof", expr)
                     return

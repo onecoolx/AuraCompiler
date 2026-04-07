@@ -137,16 +137,11 @@ def _eval_const_int_expr(expr: Expression) -> int:
     raise IRGenError("not an integer constant expression")
 
 
-def _type_size(ty: Optional[object]) -> int:
-    """Best-effort sizeof for the current project stage.
-
-    Returns byte size for builtin integers/pointers and for the stringly-typed
-    forms used by the rest of the compiler (e.g. "long int").
-    """
+def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
+    """Best-effort sizeof for the current project stage."""
 
     if ty is None:
         return 8
-    # Allow passing stringly-typed types like "int", "char", "unsigned int".
     if isinstance(ty, str):
         b = " ".join(ty.strip().split())
         if "*" in b:
@@ -159,22 +154,29 @@ def _type_size(ty: Optional[object]) -> int:
             return 4
         if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
             return 8
+        if b.startswith("struct ") or b.startswith("union "):
+            if sema_ctx is not None:
+                layouts = getattr(sema_ctx, "layouts", None) or getattr(sema_ctx, "_layouts", {})
+                layout = layouts.get(b)
+                if layout is not None and int(getattr(layout, "size", 0)) > 0:
+                    return int(getattr(layout, "size", 0))
+            raise IRGenError(f"invalid application of sizeof to incomplete type '{b}'")
         return 8
 
-    # Type node
     base = getattr(ty, "base", None)
     if isinstance(base, str):
         if getattr(ty, "is_pointer", False):
             return 8
         b = " ".join(base.strip().split())
-        # C89: function types are not object types and have no size.
-        # Treat non-pointer function types as an error.
         if "(" in b and ")" in b and "*" not in b:
             raise IRGenError("invalid application of sizeof to function type")
-        # Incomplete struct/union types have no size.
         if b.startswith("struct ") or b.startswith("union "):
-            # If this is just a tag name, treat it as incomplete here.
-            raise IRGenError("invalid application of sizeof to incomplete type")
+            if sema_ctx is not None:
+                layouts = getattr(sema_ctx, "layouts", None) or getattr(sema_ctx, "_layouts", {})
+                layout = layouts.get(b)
+                if layout is not None and int(getattr(layout, "size", 0)) > 0:
+                    return int(getattr(layout, "size", 0))
+            raise IRGenError(f"invalid application of sizeof to incomplete type '{b}'")
         if b == "char" or b == "unsigned char" or b == "signed char":
             return 1
         if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
@@ -1995,10 +1997,8 @@ class IRGenerator:
             self._var_types[t] = "char*"
             return t
         if isinstance(expr, SizeOf):
-            # For now, lower sizeof to an immediate constant as best-effort.
-            # Semantics/type-checking will be extended later; this supports core C89 tests.
             if expr.type is not None:
-                return f"${_type_size(expr.type)}"
+                return f"${_type_size(expr.type, self._sema_ctx)}"
             # sizeof(expression): handle a few common expression shapes.
             op = expr.operand
             if op is None:
