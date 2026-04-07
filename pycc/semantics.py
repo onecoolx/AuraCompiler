@@ -580,7 +580,13 @@ class SemanticAnalyzer:
         if kind == "struct" and size % max_align != 0:
             size += (max_align - (size % max_align))
 
-        return StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None)
+        layout = StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None)
+        if bf_members:
+            layout._bf_info = {}
+            for m in members:
+                if m.name in bf_members and hasattr(m, '_bit_offset'):
+                    layout._bf_info[m.name] = (m._bit_offset, m._bit_width)
+        return layout
 
     # -----------------
     # Scopes

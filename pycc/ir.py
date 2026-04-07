@@ -2872,6 +2872,16 @@ class IRGenerator:
                 except Exception:
                     pass
             else:
+                # Float unary minus: emit fsub from zero
+                if expr.operator == "-":
+                    v_ty = self._var_types.get(v, "")
+                    if isinstance(v_ty, str) and v_ty in ("float", "double"):
+                        zero = self._new_temp()
+                        self.instructions.append(IRInstruction(op="fmov", result=zero, operand1="0.0", meta={"fp_type": v_ty}))
+                        self._var_types[zero] = v_ty
+                        self.instructions.append(IRInstruction(op="fsub", result=t, operand1=zero, operand2=v, meta={"fp_type": v_ty}))
+                        self._var_types[t] = v_ty
+                        return t
                 self.instructions.append(IRInstruction(op="unop", result=t, operand1=v, label=expr.operator))
             return t
         if isinstance(expr, BinaryOp):
@@ -3102,6 +3112,12 @@ class IRGenerator:
                 pass
 
             self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
+            # Record return type for float-aware codegen
+            if isinstance(call_ty, str) and ("float" in call_ty or "double" in call_ty):
+                if call_ty.strip().endswith("float"):
+                    self._var_types[t] = "float"
+                elif call_ty.strip().endswith("double"):
+                    self._var_types[t] = "double"
             return t
         if isinstance(expr, TernaryOp):
             t = self._new_temp()

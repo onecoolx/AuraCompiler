@@ -533,38 +533,44 @@ class CodeGenerator:
 
         # Move params from registers into stack slots (treat @param as local)
         arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
-        reg_idx = 0
+        xmm_arg_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"]
+        gp_idx = 0
+        xmm_idx = 0
         for d in decls:
             if d.op != "param" or not d.result:
                 continue
-            if reg_idx < len(arg_regs):
-                off = self._locals.get(d.result)
-                if off is not None:
-                    ty = str(d.operand1 or self._var_types.get(d.result, "")).strip()
-                    # Special-case: pointer-like parameters may have been
-                    # recorded as "char" in our stringly-typed system.
-                    # Detect the common pattern `char*` by looking for
-                    # pointer uses recorded later.
-                    # Treat pointers/unknowns as 64-bit. Only use narrow stores
-                    # for true integer scalar types.
-                    if ty == "char" or ty.startswith("char ") or ty == "unsigned char" or ty.startswith("unsigned char"):
-                        r = arg_regs[reg_idx]
+            ty = str(d.operand1 or "").strip()
+            off = self._locals.get(d.result)
+            if off is None:
+                if ty in ("float", "double"):
+                    xmm_idx += 1
+                else:
+                    gp_idx += 1
+                continue
+            if ty in ("float", "double"):
+                if xmm_idx < len(xmm_arg_regs):
+                    s = "s" if ty == "float" else "d"
+                    self._emit(f"  movs{s} {xmm_arg_regs[xmm_idx]}, -{off}(%rbp)")
+                xmm_idx += 1
+            else:
+                if gp_idx < len(arg_regs):
+                    if ty == "char" or ty == "unsigned char":
+                        r = arg_regs[gp_idx]
                         breg = {"%rdi": "%dil", "%rsi": "%sil", "%rdx": "%dl", "%rcx": "%cl", "%r8": "%r8b", "%r9": "%r9b"}.get(r, "%dil")
                         self._emit(f"  movb {breg}, -{off}(%rbp)")
-                    elif ty == "short" or ty == "short int" or ty.startswith("short") or ty == "unsigned short" or ty.startswith("unsigned short"):
-                        # use 16-bit register name: di/si/dx/cx/r8w/r9w
-                        r = arg_regs[reg_idx]
+                    elif ty in ("short", "short int", "unsigned short"):
+                        r = arg_regs[gp_idx]
                         w = {"%rdi": "%di", "%rsi": "%si", "%rdx": "%dx", "%rcx": "%cx", "%r8": "%r8w", "%r9": "%r9w"}.get(r, "%di")
                         self._emit(f"  movw {w}, -{off}(%rbp)")
-                    elif ty == "int" or ty.startswith("int ") or ty.startswith("enum ") or ty == "unsigned int" or ty.startswith("unsigned int"):
-                        r = arg_regs[reg_idx]
+                    elif ty in ("int", "unsigned int") or ty.startswith("enum "):
+                        r = arg_regs[gp_idx]
                         l = {"%rdi": "%edi", "%rsi": "%esi", "%rdx": "%edx", "%rcx": "%ecx", "%r8": "%r8d", "%r9": "%r9d"}.get(r, "%edi")
                         self._emit(f"  movl {l}, -{off}(%rbp)")
                     else:
-                        self._emit(f"  movq {arg_regs[reg_idx]}, -{off}(%rbp)")
+                        self._emit(f"  movq {arg_regs[gp_idx]}, -{off}(%rbp)")
+                gp_idx += 1
             if d.operand1:
                 self._var_types[d.result] = str(d.operand1)
-            reg_idx += 1
 
         # Varargs support (SysV AMD64): reserve a fixed reg_save_area and tag
         # area in the callee frame so `__builtin_va_start` can produce a glibc
@@ -710,6 +716,7 @@ class CodeGenerator:
                     self._emit(f"  movss %xmm0, -{off}(%rbp)")
                 else:
                     self._emit(f"  movsd %xmm0, -{off}(%rbp)")
+                self._var_types[ins.result] = fp_type
             return
 
         if op in ("fadd", "fsub", "fmul", "fdiv"):
@@ -725,6 +732,7 @@ class CodeGenerator:
             self._emit(f"  {sse_ops[op]} %xmm1, %xmm0")
             off_r = self._ensure_local(ins.result)
             self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)")
+            self._var_types[ins.result] = fp_type
             return
 
         if op == "fcmp":
@@ -756,6 +764,7 @@ class CodeGenerator:
                 self._emit("  cvtsi2sdq %rax, %xmm0")
                 off_r = self._ensure_local(ins.result)
                 self._emit(f"  movsd %xmm0, -{off_r}(%rbp)")
+            self._var_types[ins.result] = fp_type
             return
 
         if op in ("f2i", "d2i"):
@@ -1015,20 +1024,28 @@ class CodeGenerator:
             return
 
         if op == "load_member":
-            # result = operand1.member
             base = ins.operand1 or ""
             member = ins.operand2 or ""
-            # Get base address into %rax then add member offset, then load the value.
             base_ty = self._var_types.get(base, "")
             if isinstance(base, str) and base.startswith("%t") and isinstance(base_ty, str) and (base_ty.strip().endswith("*") or base_ty.strip() == "ptr"):
-                # load_member on a temp that is a pointer to struct/union.
                 self._load_operand(base, "%rax")
             else:
                 self._addr_of_symbol(base, "%rax")
             off = self._resolve_member_offset(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
-            # Load the member value based on its size.
+            # Bit-field read: shift + mask
+            bf = self._resolve_bitfield(base, member)
+            if bf is not None:
+                bit_off, bit_w = bf
+                self._emit("  movl (%rax), %eax")
+                if bit_off > 0:
+                    self._emit(f"  shrl ${bit_off}, %eax")
+                mask = (1 << bit_w) - 1
+                self._emit(f"  andl ${mask}, %eax")
+                self._emit("  movslq %eax, %rax")
+                self._store_result(ins.result, "%rax")
+                return
             _, sz = self._resolve_member(base, member)
             if sz == 1:
                 self._emit("  movb (%rax), %al")
@@ -1038,7 +1055,7 @@ class CodeGenerator:
                 self._emit("  movswq %ax, %rax")
             elif sz == 4:
                 self._emit("  movl (%rax), %eax")
-                self._emit("  movl %eax, %eax")  # zero-extend to 64-bit
+                self._emit("  movl %eax, %eax")
             else:
                 self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
@@ -1457,17 +1474,9 @@ class CodeGenerator:
             # args are operand strings
             arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
 
-            def _looks_like_ptr_arg(a: object) -> bool:
-                # Best-effort: IR temps for string literals are `%t*` and should
-                # be treated as pointers even if type info is missing.
-                if isinstance(a, str) and a.startswith("%t"):
-                    ty = self._var_types.get(a, "")
-                    if isinstance(ty, str) and "*" in ty:
-                        return True
-                    # Heuristic: string literal temps come from `str_const`.
-                    # If we don't have type, still treat as pointer.
-                    return True
-                return False
+            xmm_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"]
+            gp_idx = 0
+            xmm_idx = 0
 
             # SysV AMD64: args beyond r9 go on the stack (right-to-left).
             stack_args = list(ins.args or [])[len(arg_regs):]
@@ -1481,14 +1490,20 @@ class CodeGenerator:
                 self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + stack_pad
 
             for idx, a in enumerate(ins.args or []):
-                if idx >= len(arg_regs):
-                    break
-                self._load_operand(a, "%rax")
-                # If this is a pointer-y value, keep it as 64-bit.
-                if _looks_like_ptr_arg(a):
-                    self._emit(f"  movq %rax, {arg_regs[idx]}")
-                    continue
-                self._emit(f"  movq %rax, {arg_regs[idx]}")
+                a_ty = self._var_types.get(a, "") if isinstance(a, str) else ""
+                if isinstance(a_ty, str) and a_ty in ("float", "double"):
+                    # Float arg -> xmm register
+                    if xmm_idx < len(xmm_regs):
+                        s = "s" if a_ty == "float" else "d"
+                        off = self._ensure_local(a)
+                        self._emit(f"  movs{s} -{off}(%rbp), {xmm_regs[xmm_idx]}")
+                        xmm_idx += 1
+                else:
+                    # Integer/pointer arg -> GP register
+                    if gp_idx < len(arg_regs):
+                        self._load_operand(a, "%rax")
+                        self._emit(f"  movq %rax, {arg_regs[gp_idx]}")
+                        gp_idx += 1
 
             # ABI fix: SysV `va_list` is an array-of-1 tag; when passed as an
             # argument it decays to a pointer to that tag.
@@ -1501,7 +1516,10 @@ class CodeGenerator:
             # vector args yet, so clear %eax.
             # This is required for calls like printf("%d\n", 42).
             if isinstance(ins.operand2, str) and "..." in ins.operand2:
-                self._emit("  xorl %eax, %eax")
+                if xmm_idx > 0:
+                    self._emit(f"  movl ${xmm_idx}, %eax")
+                else:
+                    self._emit("  xorl %eax, %eax")
 
             # IMPORTANT: for glibc v* functions that take a `va_list`, the caller
             # should not clear %al unless the function is variadic. These v*
@@ -1584,7 +1602,17 @@ class CodeGenerator:
             if stack_pad:
                 self._emit(f"  addq ${stack_pad}, %rsp")
                 self._call_stack_adjust = max(0, getattr(self, "_call_stack_adjust", 0) - stack_pad)
-            self._store_result(ins.result, "%rax")
+            # Float return: result in xmm0
+            ret_ty = str(ins.operand2 or "")
+            if "float" in ret_ty and "function" in ret_ty:
+                fp = "float" if ret_ty.endswith("float") else "double"
+                s = "s" if fp == "float" else "d"
+                if ins.result:
+                    off_r = self._ensure_local(ins.result)
+                    self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
+                    self._var_types[ins.result] = fp
+            else:
+                self._store_result(ins.result, "%rax")
             return
 
         if op == "load_index":
@@ -1827,7 +1855,6 @@ class CodeGenerator:
             base = ins.operand1 or ""
             member = ins.operand2 or ""
             val = ins.result
-            # Compute base address.
             base_ty = self._var_types.get(base, "")
             if isinstance(base, str) and base.startswith("%t"):
                 self._load_operand(base, "%rax")
@@ -1838,7 +1865,22 @@ class CodeGenerator:
             off, sz = self._resolve_member(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
-            # Store value with width based on member size
+            # Bit-field write: read-modify-write
+            bf = self._resolve_bitfield(base, member)
+            if bf is not None:
+                bit_off, bit_w = bf
+                mask = (1 << bit_w) - 1
+                self._emit("  movq %rax, %rdx")  # save address
+                self._load_operand(val, "%rcx")
+                self._emit(f"  andl ${mask}, %ecx")  # mask new value
+                if bit_off > 0:
+                    self._emit(f"  shll ${bit_off}, %ecx")  # shift to position
+                clear_mask = ~(mask << bit_off) & 0xFFFFFFFF
+                self._emit("  movl (%rdx), %eax")  # load current word
+                self._emit(f"  andl ${clear_mask}, %eax")  # clear bits
+                self._emit("  orl %ecx, %eax")  # set new bits
+                self._emit("  movl %eax, (%rdx)")  # store back
+                return
             self._load_operand(val, "%rcx")
             if sz == 1:
                 self._emit("  movb %cl, (%rax)")
@@ -1885,13 +1927,27 @@ class CodeGenerator:
             return
 
         if op == "ret":
-            # SysV ABI: integer return values are in %rax.
-            # For narrow integer return types (char/short), the value must be
-            # properly sign/zero-extended as if converted to int.
-            self._load_operand(ins.operand1, "%rax")
-
-            # Prefer cached function return type; fallback to operand type.
+            # Check if returning a float value
+            src = ins.operand1 or ""
+            src_ty = self._var_types.get(src, "") if isinstance(src, str) else ""
             rty = getattr(self, "_fn_ret_ty", "") or ""
+            if isinstance(src_ty, str) and src_ty in ("float", "double"):
+                s = "s" if src_ty == "float" else "d"
+                off = self._ensure_local(src)
+                self._emit(f"  movs{s} -{off}(%rbp), %xmm0")
+                self._emit("  leave")
+                self._emit("  ret")
+                return
+            if isinstance(rty, str) and rty.strip() in ("float", "double"):
+                s = "s" if rty.strip() == "float" else "d"
+                off = self._ensure_local(src)
+                self._emit(f"  movs{s} -{off}(%rbp), %xmm0")
+                self._emit("  leave")
+                self._emit("  ret")
+                return
+
+            self._load_operand(src, "%rax")
+
             if not rty:
                 try:
                     rty = (self._var_types.get(ins.operand1 or "", "") if hasattr(self, "_var_types") else "")
@@ -2391,13 +2447,10 @@ class CodeGenerator:
         return 8
 
     def _resolve_member(self, base_sym: str, member: str) -> Tuple[int, int]:
-        """Return (offset, size_bytes) for `base_sym.member` using semantic layouts when available."""
+        """Return (offset, size_bytes) for `base_sym.member`."""
         decl_ty = self._var_types.get(base_sym)
-        # Temps produced by addr_index/addr_of_member carry pointer types like
-        # "struct S*". Peel one level of pointer.
         if isinstance(decl_ty, str) and decl_ty.strip().endswith("*"):
             decl_ty = decl_ty.strip()[:-1].strip()
-        # For globals, type info often lives only in semantic context.
         if not decl_ty and isinstance(base_sym, str) and base_sym.startswith("@") and self._sema_ctx is not None:
             decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
         if self._sema_ctx is not None and decl_ty and hasattr(self._sema_ctx, "layouts"):
@@ -2408,12 +2461,28 @@ class CodeGenerator:
                 sz = layout.member_sizes.get(member)
                 if off is not None and sz is not None:
                     return int(off), int(sz)
-        # fallback heuristic
         if member == "x":
             return 0, 4
         if member == "y":
             return 4, 4
         return 0, 8
+
+    def _resolve_bitfield(self, base_sym: str, member: str):
+        """Return (bit_offset, bit_width) if member is a bit-field, else None."""
+        decl_ty = self._var_types.get(base_sym)
+        if isinstance(decl_ty, str) and decl_ty.strip().endswith("*"):
+            decl_ty = decl_ty.strip()[:-1].strip()
+        if not decl_ty and isinstance(base_sym, str) and base_sym.startswith("@") and self._sema_ctx is not None:
+            decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
+        if self._sema_ctx is not None and decl_ty:
+            layout = getattr(self._sema_ctx, "layouts", {}).get(decl_ty)
+            if layout and getattr(layout, 'bit_fields', None) and member in layout.bit_fields:
+                # Find bit_offset and bit_width from the Declaration objects
+                # stored during layout computation
+                members = getattr(layout, '_bf_info', None)
+                if members and member in members:
+                    return members[member]
+        return None
 
     # -----------------
     # Strings
