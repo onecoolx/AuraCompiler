@@ -230,7 +230,28 @@ class SemanticAnalyzer:
             elif isinstance(decl, EnumDecl):
                 self._register_enum_decl(decl)
             elif isinstance(decl, TypedefDecl):
-                # register typedef in global typedefs
+                # Handle typedef of anonymous struct/union: register layout under internal tag
+                anon_members = getattr(decl.type, '_anon_members', None)
+                if anon_members is not None:
+                    base = getattr(decl.type, 'base', '')
+                    kind = 'struct' if 'struct' in base else 'union'
+                    internal_tag = f"__anon_{kind}_{decl.name}"
+                    if kind == 'struct':
+                        synth = StructDecl(name=internal_tag, members=anon_members, line=decl.line, column=decl.column)
+                    else:
+                        synth = UnionDecl(name=internal_tag, members=anon_members, line=decl.line, column=decl.column)
+                    self._register_layout_decl(synth)
+                    decl.type.base = f"{kind} {internal_tag}"
+                else:
+                    # Named struct typedef: ensure the struct layout is registered
+                    base = getattr(decl.type, 'base', '')
+                    if isinstance(base, str) and (base.startswith("struct ") or base.startswith("union ")):
+                        tag_key = base
+                        if tag_key not in self._layouts or self._layouts[tag_key].size == 0:
+                            # Look up tag members from parser
+                            from pycc.parser import Parser
+                            # Members may have been stored during parsing
+                            pass  # Layout will be registered when StructDecl is processed
                 self._declare_typedef_global(decl.name, decl.type)
             elif isinstance(decl, (StructDecl, UnionDecl)):
                 self._register_layout_decl(decl)
@@ -554,6 +575,13 @@ class SemanticAnalyzer:
             self.errors.append(f"Duplicate typedef in scope: {name}")
         else:
             self._typedefs[-1][name] = ty
+
+    def _resolve_typedef(self, name: str) -> Optional[Type]:
+        """Resolve a typedef name to its underlying Type, searching all scopes."""
+        for scope in reversed(self._typedefs):
+            if name in scope:
+                return scope[name]
+        return None
 
     def _lookup_typedef(self, name: str) -> Optional[Type]:
         for td in reversed(self._typedefs):
@@ -1817,8 +1845,12 @@ class SemanticAnalyzer:
         return arg
 
     def _validate_member(self, base_ty: Type, member: str, base_name: str) -> None:
-        # base_ty.base may be like "struct Point" or "union U".
         b = base_ty.base
+        # Resolve typedef to underlying type
+        if isinstance(b, str) and not b.startswith("struct ") and not b.startswith("union "):
+            resolved = self._resolve_typedef(b)
+            if resolved is not None:
+                b = getattr(resolved, 'base', b)
         if not (isinstance(b, str) and (b.startswith("struct ") or b.startswith("union "))):
             self.errors.append(f"Member access on non-struct/union: {base_name}")
             return

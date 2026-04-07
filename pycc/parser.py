@@ -219,8 +219,19 @@ class Parser:
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
-            # remember typedef name for subsequent parsing
             self._typedefs.add(td.name)
+            # If the typedef involves a named struct/union with members, also emit a StructDecl
+            b = getattr(base_type, 'base', '')
+            if isinstance(b, str) and (b.startswith("struct ") or b.startswith("union ")):
+                tag_key = b
+                members = self._tag_members.get(tag_key)
+                if members is not None:
+                    kind, tag = b.split(" ", 1)
+                    if kind == "struct":
+                        sd = StructDecl(name=tag, members=members, line=base_type.line, column=base_type.column)
+                    else:
+                        sd = UnionDecl(name=tag, members=members, line=base_type.line, column=base_type.column)
+                    return [sd, td]
             return td
 
         base_type = self._parse_type_specifier()
@@ -752,7 +763,12 @@ class Parser:
 
             # record a textual type name for now: e.g. "struct Point"
             tag_name = tag_tok.value if tag_tok else "<anonymous>"
-            return Type(base=f"{kind} {tag_name}", line=tok.line, column=tok.column)
+            base_ty = Type(base=f"{kind} {tag_name}", line=tok.line, column=tok.column)
+            # Attach members to the Type node for anonymous structs so
+            # typedef processing can register the layout.
+            if members is not None and tag_tok is None:
+                base_ty._anon_members = members
+            return base_ty
 
         # typedef-name as type specifier
         if tok.type == TokenType.IDENTIFIER and tok.value in self._typedefs:
