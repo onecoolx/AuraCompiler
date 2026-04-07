@@ -961,7 +961,7 @@ class Parser:
                 decl.array_size = array_size_val
             else:
                 self._expect(TokenType.RPAREN, "Expected ')' in declarator")
-                decl = self._finish_declarator(ptr_ty, name_tok)
+                decl = self._finish_declarator(ptr_ty, name_tok, paren_declarator=True)
         else:
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
             decl = self._finish_declarator(base_type, name_tok)
@@ -997,7 +997,7 @@ class Parser:
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
         return decls
 
-    def _finish_declarator(self, base_type: Type, name_tok: Token) -> Declaration:
+    def _finish_declarator(self, base_type: Type, name_tok: Token, paren_declarator: bool = False) -> Declaration:
         ty = base_type
         if hasattr(ty, "_normalize_pointer_state"):
             ty._normalize_pointer_state()
@@ -1075,8 +1075,11 @@ class Parser:
 
         # Preserve backwards-compat: `array_size` is the *outermost* dim.
         # For omitted outer dimension (e.g. `int a[][4]`), leave as None.
-        if not getattr(ty, "is_pointer", False) and array_dims:
-            array_size_val = array_dims[0]
+        if array_dims:
+            # For parenthesized declarators like int (*p)[N], the [N] describes
+            # the pointed-to array, not this variable's array dimension.
+            if not paren_declarator:
+                array_size_val = array_dims[0]
 
         # function declarator: name(params)
         # Minimal support for function pointer declarations where the type is a

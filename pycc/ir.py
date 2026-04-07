@@ -295,6 +295,8 @@ class IRGenerator:
         self._break_stack: List[str] = []
         self._continue_stack: List[str] = []
         self._sema_ctx = None
+        self._scope_stack: List[Dict[str, str]] = []  # name -> IR symbol mapping
+        self._shadow_counter = 0
     
     def generate(self, ast: Program) -> List[IRInstruction]:
         """Generate IR from AST"""
@@ -1155,6 +1157,38 @@ class IRGenerator:
         self.label_counter += 1
         return l
 
+    def _push_scope(self):
+        self._scope_stack.append({})
+
+    def _pop_scope(self):
+        if self._scope_stack:
+            self._scope_stack.pop()
+
+    def _declare_scoped(self, name: str) -> str:
+        """Register a local variable in the current scope. Returns the IR symbol.
+        If the name shadows an outer scope, generates a unique alias."""
+        # Check if name already exists in any outer scope
+        for scope in self._scope_stack:
+            if name in scope:
+                # Shadow: create unique alias
+                self._shadow_counter += 1
+                alias = f"@{name}__shadow{self._shadow_counter}"
+                if self._scope_stack:
+                    self._scope_stack[-1][name] = alias
+                return alias
+        # No shadow: use plain @name
+        sym = f"@{name}"
+        if self._scope_stack:
+            self._scope_stack[-1][name] = sym
+        return sym
+
+    def _resolve_name(self, name: str) -> str:
+        """Resolve a variable name to its IR symbol, respecting scope."""
+        for scope in reversed(self._scope_stack):
+            if name in scope:
+                return scope[name]
+        return f"@{name}"
+
     def _is_struct_or_union_type(self, base: object) -> bool:
         if not isinstance(base, str):
             return False
@@ -1406,11 +1440,15 @@ class IRGenerator:
             return base
 
         # params are treated as locals; codegen will map them from ABI regs
+        self._scope_stack = []
+        self._push_scope()  # function-level scope
         for p in fn.parameters:
             ty_s = _ty_str(p.type)
             self._var_types[f"@{p.name}"] = ty_s
+            self._scope_stack[-1][p.name] = f"@{p.name}"
             self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=ty_s))
         self._gen_stmt(fn.body)
+        self._pop_scope()
         # Ensure a return exists
         self.instructions.append(IRInstruction(op="ret", operand1="$0"))
         self.instructions.append(IRInstruction(op="func_end", label=fn.name))
@@ -1435,8 +1473,13 @@ class IRGenerator:
 
     def _gen_stmt(self, stmt: Statement) -> None:
         if isinstance(stmt, CompoundStmt):
+            self._push_scope()
             for item in stmt.statements:
                 if isinstance(item, Declaration):
+                    # Register in scope for variable shadowing
+                    if getattr(item, "storage_class", None) != "static":
+                        self._declare_scoped(item.name)
+
                     # Local static variables: lower to a unique global symbol so state persists.
                     if getattr(item, "storage_class", None) == "static":
                         self._ensure_local_static_aliases()
@@ -1475,7 +1518,10 @@ class IRGenerator:
                     # Also support C89: `char s[] = "..."` (size inferred from string literal).
                     op1 = None
                     if getattr(item, "array_size", None) is not None:
-                        op1 = f"array({item.type.base},${item.array_size})"
+                        elem_ty = item.type.base
+                        if getattr(item.type, "is_pointer", False):
+                            elem_ty = f"{item.type.base}*"
+                        op1 = f"array({elem_ty},${item.array_size})"
                     else:
                         # Infer `char[]` size from string-literal initializer.
                         if item.type.base in {"char", "unsigned char"} and item.initializer is not None:
@@ -1541,9 +1587,9 @@ class IRGenerator:
                     # If this is an array with known/inferred size, record it
                     # as an array type even when element type is struct/union.
                     if op1 is not None:
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=op1))
+                        self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=op1))
                         self._local_arrays.add(item.name)
-                        self._var_types[f"@{item.name}"] = str(op1)
+                        self._var_types[self._resolve_name(item.name)] = str(op1)
                         # Record multi-dimensional array dims for upcoming
                         # pointer-to-row decay/scaling support.
                         try:
@@ -1554,8 +1600,8 @@ class IRGenerator:
                             pass
                     elif self._is_struct_or_union_type(item.type.base):
                         decl_op1 = str(item.type.base)
-                        self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
-                        self._var_types[f"@{item.name}"] = decl_op1
+                        self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
+                        self._var_types[self._resolve_name(item.name)] = decl_op1
                     else:
                         # Infer `T[]` element count from brace initializer.
                         # e.g. `int a[] = {1,2,3};`
@@ -1578,17 +1624,17 @@ class IRGenerator:
                                     decl_op1 = f"{decl_base}*"
                                 else:
                                     decl_op1 = f"{decl_op1}*"
-                            self.instructions.append(IRInstruction(op="decl", result=f"@{item.name}", operand1=decl_op1))
-                            self._var_types[f"@{item.name}"] = str(decl_op1)
+                            self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
+                            self._var_types[self._resolve_name(item.name)] = str(decl_op1)
 
                     # Local struct/union brace init (subset)
                     # If this is a pointer variable, record its declared pointee
                     # type so pointer arithmetic can scale correctly.
                     try:
-                        if getattr(item.type, "is_pointer", False):
+                        if getattr(item.type, "is_pointer", False) and item.name not in self._local_arrays:
                             base = str(getattr(item.type, "base", "")).strip()
                             if base:
-                                self._var_types[f"@{item.name}"] = f"{base}*"
+                                self._var_types[self._resolve_name(item.name)] = f"{base}*"
                     except Exception:
                         pass
                     if self._lower_local_struct_initializer(item):
@@ -1619,7 +1665,7 @@ class IRGenerator:
                                         IRInstruction(
                                             op="store_index",
                                             result=f"${b}",
-                                            operand1=f"@{item.name}",
+                                            operand1=self._resolve_name(item.name),
                                             operand2=f"${idx}",
                                             label="char",
                                         )
@@ -1681,7 +1727,7 @@ class IRGenerator:
                                         IRInstruction(
                                             op="store_index",
                                             result=v,
-                                            operand1=f"@{item.name}",
+                                            operand1=self._resolve_name(item.name),
                                             operand2=f"${idx}",
                                             label="char" if str(item.type.base).strip() in {"char", "unsigned char"} else "int",
                                         )
@@ -1707,7 +1753,7 @@ class IRGenerator:
                                     IRInstruction(
                                         op="store_index",
                                         result=v,
-                                        operand1=f"@{item.name}",
+                                        operand1=self._resolve_name(item.name),
                                         operand2=f"${idx}",
                                         label="int",
                                     )
@@ -1725,7 +1771,7 @@ class IRGenerator:
                                         IRInstruction(
                                             op="store_index",
                                             result=f"${b}",
-                                            operand1=f"@{item.name}",
+                                            operand1=self._resolve_name(item.name),
                                             operand2=f"${idx}",
                                             label="char",
                                         )
@@ -1741,16 +1787,17 @@ class IRGenerator:
 
                         # Scalar init (existing path)
                         v = self._gen_expr(item.initializer)
-                        self.instructions.append(IRInstruction(op="mov", result=f"@{item.name}", operand1=v))
+                        self.instructions.append(IRInstruction(op="mov", result=self._resolve_name(item.name), operand1=v))
                         # Propagate pointer-to-row step metadata from the decay
                         # temp into the local symbol, so later pointer
                         # arithmetic (e.g. p+1) can scale correctly.
                         if isinstance(v, str):
                             src_step = getattr(self, "_ptr_step_bytes", {}).get(v)
                             if src_step is not None:
-                                self._ptr_step_bytes[f"@{item.name}"] = src_step
+                                self._ptr_step_bytes[self._resolve_name(item.name)] = src_step
                 else:
                     self._gen_stmt(item)
+            self._pop_scope()
             return
 
         if isinstance(stmt, ExpressionStmt):
@@ -2308,7 +2355,7 @@ class IRGenerator:
                 if expr.name in m:
                     return f"@{m[expr.name]}"
 
-            sym = f"@{expr.name}"
+            sym = self._resolve_name(expr.name)
             # Array-to-pointer decay in rvalue context: emit explicit addr-of.
             # Our semantic/type system is minimal; detect arrays by the presence of
             # a declared array_size on the declaration node (recorded earlier by decl).
@@ -2590,7 +2637,7 @@ class IRGenerator:
                 if hasattr(self, "_local_static_syms") and expr.target.name in getattr(self, "_local_static_syms", {}):
                     dst = f"@{self._local_static_syms[expr.target.name]}"
                 else:
-                    dst = f"@{expr.target.name}"
+                    dst = self._resolve_name(expr.target.name)
                 if expr.operator == "=":
                     # Preserve pointer type on the destination when assigning
                     # from a pointer-typed value.
@@ -2826,7 +2873,7 @@ class IRGenerator:
                 # Determine step: 1 for integers, sizeof(pointee) for pointers
                 delta = "$1"
                 if isinstance(expr.operand, Identifier):
-                    sym = f"@{expr.operand.name}"
+                    sym = self._resolve_name(expr.operand.name)
                     vty = self._var_types.get(sym, "")
                     if isinstance(vty, str) and "*" in vty:
                         base_ty = vty.split("*", 1)[0].strip()

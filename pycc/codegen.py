@@ -2239,11 +2239,15 @@ class CodeGenerator:
             base = getattr(ptr_ty, "base", None)
             s = base.replace(" ", "") if isinstance(base, str) else ""
 
-        if not s or "*" not in s:
+        if not s or not s.endswith("*"):
             return 8
-        # peel all trailing '*'
-        while s.endswith("*"):
-            s = s[:-1]
+        # peel exactly one '*' to get pointee type
+        s = s[:-1]
+        if not s:
+            return 8
+        # if pointee is itself a pointer, size is 8
+        if s.endswith("*"):
+            return 8
         # handle common pointee bases
         if s.endswith("char") or s.endswith("unsignedchar") or s.endswith("signedchar"):
             return 1
