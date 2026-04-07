@@ -69,6 +69,7 @@ class StructLayout:
     # Best-effort type strings for members (e.g. "int", "struct S").
     # Used by IR/codegen for nested aggregate handling.
     member_types: Dict[str, str] | None = None
+    bit_fields: set | None = None  # set of member names that are bit-fields
 
 
 @dataclass
@@ -504,15 +505,13 @@ class SemanticAnalyzer:
         off = 0
         max_align = 1
         max_size = 0
+        bf_unit_offset = -1
+        bf_bits_used = 0
+        bf_members: set = set()
 
         for m in members:
+            bw = getattr(m, 'bit_width', None)
             sz, al = size_align(m.type)
-            # This compiler doesn't currently model `double`/`long double`, but
-            # on x86-64 we still ensure struct alignment is at least 8 when it
-            # contains a pointer or an 8-byte member.
-            if sz >= 8:
-                al = max(al, 8)
-            # Track member base type spelling for downstream (nested) init.
             try:
                 if getattr(m.type, "is_pointer", False):
                     mtypes[m.name] = f"{m.type.base}*"
@@ -520,9 +519,51 @@ class SemanticAnalyzer:
                     mtypes[m.name] = str(m.type.base)
             except Exception:
                 mtypes[m.name] = str(getattr(m, "type", ""))
+
+            if bw is not None:
+                # Bit-field member
+                unit_size = 4  # storage unit = unsigned int = 4 bytes
+                unit_bits = unit_size * 8
+                if bw == 0:
+                    # Zero-width bit-field: force alignment to next storage unit
+                    if bf_unit_offset >= 0:
+                        bf_unit_offset = -1
+                        bf_bits_used = 0
+                    continue
+                if bf_unit_offset < 0 or bf_bits_used + bw > unit_bits:
+                    # Start new storage unit
+                    if kind == "struct":
+                        if off % unit_size != 0:
+                            off += (unit_size - (off % unit_size))
+                        bf_unit_offset = off
+                        bf_bits_used = 0
+                        off += unit_size
+                    else:
+                        bf_unit_offset = 0
+                        bf_bits_used = 0
+                max_align = max(max_align, unit_size)
+                offsets[m.name] = bf_unit_offset
+                sizes[m.name] = unit_size
+                bf_members.add(m.name)
+                # Store bit offset and width as metadata
+                if not hasattr(m, '_bit_offset'):
+                    m._bit_offset = bf_bits_used
+                    m._bit_width = bw
+                bf_bits_used += bw
+                if kind == "struct":
+                    max_size = max(max_size, off)
+                else:
+                    max_size = max(max_size, unit_size)
+                continue
+
+            # Regular (non-bit-field) member: reset bit-field state
+            bf_unit_offset = -1
+            bf_bits_used = 0
+
+            if sz >= 8:
+                al = max(al, 8)
             max_align = max(max_align, al)
             if kind == "struct":
-                # align current offset
                 if off % al != 0:
                     off += (al - (off % al))
                 offsets[m.name] = off
@@ -530,7 +571,6 @@ class SemanticAnalyzer:
                 off += sz
                 max_size = off
             else:
-                # union members all offset 0
                 offsets[m.name] = 0
                 sizes[m.name] = sz
                 max_size = max(max_size, sz)
@@ -540,7 +580,7 @@ class SemanticAnalyzer:
         if kind == "struct" and size % max_align != 0:
             size += (max_align - (size % max_align))
 
-        return StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes)
+        return StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None)
 
     # -----------------
     # Scopes
@@ -1715,6 +1755,19 @@ class SemanticAnalyzer:
                 # sizeof(expression)
                 op = getattr(expr, "operand", None)
                 if op is not None:
+                    # Reject sizeof on bit-field member access
+                    if isinstance(op, MemberAccess) and isinstance(op.object, Identifier):
+                        obj_ty = self._lookup_decl_type(op.object.name)
+                        if obj_ty is not None:
+                            obj_base = getattr(obj_ty, 'base', '')
+                            if not (isinstance(obj_base, str) and (obj_base.startswith("struct ") or obj_base.startswith("union "))):
+                                resolved = self._resolve_typedef(obj_base)
+                                if resolved is not None:
+                                    obj_base = getattr(resolved, 'base', obj_base)
+                            layout = self._layouts.get(obj_base)
+                            if layout is not None and getattr(layout, 'bit_fields', None) and op.member in layout.bit_fields:
+                                self._err("invalid application of sizeof to bit-field", expr)
+                                return
                     # Reject sizeof on incomplete array objects (e.g. `extern int a[]; sizeof(a)`)
                     # when we can see the declaration. This does not require
                     # expression typing and preserves array-vs-pointer behavior.

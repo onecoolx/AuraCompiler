@@ -751,9 +751,20 @@ class Parser:
                         if depth != 0:
                             raise ParserError("Expected ']' after array declarator", self.current_token)
 
-                    # no bitfields in MVP members yet
+                    # Bit-field: member_name : width
+                    bit_width = None
+                    if self._match(TokenType.COLON):
+                        bw_expr = self._parse_expression()
+                        if isinstance(bw_expr, IntLiteral):
+                            bit_width = int(bw_expr.value)
+                        else:
+                            bit_width = 0
+
                     self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
-                    members.append(Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column))
+                    d = Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column)
+                    if bit_width is not None:
+                        d.bit_width = bit_width
+                    members.append(d)
                 self._expect(TokenType.RBRACE, "Expected '}' after struct/union members")
 
                 # Remember members for named tags so outer declaration `struct T {...};`
