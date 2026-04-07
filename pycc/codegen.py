@@ -749,13 +749,23 @@ class CodeGenerator:
 
         if op in ("f2i", "d2i"):
             fp_type = (ins.meta or {}).get("fp_type", "float" if op == "f2i" else "double")
-            off1 = self._ensure_local(ins.operand1)
-            if fp_type == "float":
-                self._emit(f"  movss -{off1}(%rbp), %xmm0")
-                self._emit("  cvttss2si %xmm0, %eax")
+            src = ins.operand1 or ""
+            if src.startswith("@"):
+                gname = src.lstrip("@")
+                if fp_type == "float":
+                    self._emit(f"  movss {gname}(%rip), %xmm0")
+                    self._emit("  cvttss2si %xmm0, %eax")
+                else:
+                    self._emit(f"  movsd {gname}(%rip), %xmm0")
+                    self._emit("  cvttsd2si %xmm0, %rax")
             else:
-                self._emit(f"  movsd -{off1}(%rbp), %xmm0")
-                self._emit("  cvttsd2si %xmm0, %rax")
+                off1 = self._ensure_local(src)
+                if fp_type == "float":
+                    self._emit(f"  movss -{off1}(%rbp), %xmm0")
+                    self._emit("  cvttss2si %xmm0, %eax")
+                else:
+                    self._emit(f"  movsd -{off1}(%rbp), %xmm0")
+                    self._emit("  cvttsd2si %xmm0, %rax")
             self._emit("  cltq")
             self._store_result(ins.result, "%rax")
             return

@@ -2378,6 +2378,10 @@ class IRGenerator:
                 ty = getattr(self, "_var_types", {}).get(sym)
                 if isinstance(ty, str):
                     self._var_types[sym] = ty
+                elif self._sema_ctx is not None:
+                    gty = getattr(self._sema_ctx, "global_types", {}).get(expr.name)
+                    if isinstance(gty, str) and gty.strip() in ("float", "double"):
+                        self._var_types[sym] = gty.strip()
             except Exception:
                 pass
             return sym
@@ -2829,10 +2833,17 @@ class IRGenerator:
 
             # ++/-- operators
             if expr.operator in ("++", "--"):
-                delta = "$1"
                 op_name = "+" if expr.operator == "++" else "-"
+                # Determine step: 1 for integers, sizeof(pointee) for pointers
+                delta = "$1"
                 if isinstance(expr.operand, Identifier):
                     sym = f"@{expr.operand.name}"
+                    vty = self._var_types.get(sym, "")
+                    if isinstance(vty, str) and "*" in vty:
+                        base_ty = vty.split("*", 1)[0].strip()
+                        step = _type_size(base_ty) if base_ty else 1
+                        if step > 1:
+                            delta = f"${step}"
                     old = self._new_temp()
                     self.instructions.append(IRInstruction(op="mov", result=old, operand1=sym))
                     new = self._new_temp()
