@@ -1516,7 +1516,11 @@ class Parser:
             return FloatLiteral(value=value_float, suffix=suffix, line=tok.line, column=tok.column)
         if tok.type == TokenType.STRING:
             self.advance()
-            return StringLiteral(value=tok.value, line=tok.line, column=tok.column)
+            value = tok.value
+            while self.current_token and self.current_token.type == TokenType.STRING:
+                value += self.current_token.value
+                self.advance()
+            return StringLiteral(value=value, line=tok.line, column=tok.column)
         if tok.type == TokenType.CHAR:
             self.advance()
             return CharLiteral(value=tok.value, line=tok.line, column=tok.column)
