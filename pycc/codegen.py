@@ -82,10 +82,15 @@ class CodeGenerator:
         gfloats = [ins for ins in instructions if ins.op == "gdef_float"]
         gdecls = [ins for ins in instructions if ins.op == "gdecl"]
 
+        # Symbols with definitions should not also get .bss tentative entries
+        defined_syms = {(ins.result or "").lstrip("@") for ins in instructions if ins.op in ("gdef", "gdef_blob", "gdef_float")}
+
         if gdecls:
             self._emit(".bss")
             for gd in gdecls:
                 name = (gd.result or "").lstrip("@")
+                if name in defined_syms:
+                    continue
                 ty = gd.operand1 or "int"
                 # extern declaration: no storage emitted in this TU
                 if gd.label == "extern":

@@ -387,6 +387,7 @@ class IRGenerator:
                                     meta={"fp_type": fp_type},
                                 )
                             )
+                            continue
                         elif imm is None and ptr is None:
                             raise IRGenError(
                                 f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
