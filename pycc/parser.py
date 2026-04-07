@@ -106,7 +106,10 @@ class Parser:
             if self._pending_enum_decls:
                 decls.extend(self._pending_enum_decls)
                 self._pending_enum_decls = []
-            decls.append(d)
+            if isinstance(d, list):
+                decls.extend(d)
+            else:
+                decls.append(d)
 
         # Use first token position for program location, default to 1:1
         if self.tokens:
@@ -518,8 +521,35 @@ class Parser:
         # variable (maybe array) with optional initializer
         decl = self._finish_declarator(base_type, name_tok)
         decl.storage_class = storage_class
+
+        # Multi-declarator support for globals
+        if not self._at(TokenType.COMMA):
+            self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
+            return decl
+
+        decls = [decl]
+        while self._match(TokenType.COMMA):
+            extra_ty = Type(
+                base=base_type.base,
+                is_const=base_type.is_const,
+                is_volatile=base_type.is_volatile,
+                is_unsigned=base_type.is_unsigned,
+                is_signed=base_type.is_signed,
+                line=base_type.line,
+                column=base_type.column,
+            )
+            while self._match(TokenType.STAR):
+                extra_ty.pointer_level = int(getattr(extra_ty, "pointer_level", 0)) + 1
+                if not getattr(extra_ty, "pointer_quals", None):
+                    extra_ty.pointer_quals = []
+                extra_ty.pointer_quals.insert(0, set())
+                extra_ty._normalize_pointer_state()
+            n_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+            d = self._finish_declarator(extra_ty, n_tok)
+            d.storage_class = storage_class
+            decls.append(d)
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
-        return decl
+        return decls
 
     def _parse_type_specifier(self) -> Type:
         tok = self.current_token
@@ -827,8 +857,11 @@ class Parser:
             if self._at(TokenType.EOF):
                 raise ParserError("Unterminated compound statement", self.current_token)
             if self._is_type_specifier():
-                decl = self._parse_local_declaration()
-                items.append(decl)
+                decls = self._parse_local_declaration()
+                if isinstance(decls, list):
+                    items.extend(decls)
+                else:
+                    items.append(decls)
             else:
                 items.append(self._parse_statement())
         self._expect(TokenType.RBRACE, "Expected '}'")
@@ -912,8 +945,36 @@ class Parser:
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
             decl = self._finish_declarator(base_type, name_tok)
         decl.storage_class = storage_class
+
+        # Multi-declarator: check for comma-separated additional declarators
+        if not self._at(TokenType.COMMA):
+            self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
+            return decl
+
+        decls = [decl]
+        while self._match(TokenType.COMMA):
+            # Each additional declarator starts from the raw base type (no pointer)
+            extra_ty = Type(
+                base=base_type.base,
+                is_const=base_type.is_const,
+                is_volatile=base_type.is_volatile,
+                is_unsigned=base_type.is_unsigned,
+                is_signed=base_type.is_signed,
+                line=base_type.line,
+                column=base_type.column,
+            )
+            while self._match(TokenType.STAR):
+                extra_ty.pointer_level = int(getattr(extra_ty, "pointer_level", 0)) + 1
+                if not getattr(extra_ty, "pointer_quals", None):
+                    extra_ty.pointer_quals = []
+                extra_ty.pointer_quals.insert(0, set())
+                extra_ty._normalize_pointer_state()
+            n_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier in multi-declarator")
+            d = self._finish_declarator(extra_ty, n_tok)
+            d.storage_class = storage_class
+            decls.append(d)
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
-        return decl
+        return decls
 
     def _finish_declarator(self, base_type: Type, name_tok: Token) -> Declaration:
         ty = base_type
@@ -1034,11 +1095,10 @@ class Parser:
         initializer = None
 
         if self._match(TokenType.ASSIGN):
-            # Support brace initializer lists for C89 aggregates.
             if self._at(TokenType.LBRACE):
                 initializer = self._parse_initializer()
             else:
-                initializer = self._parse_expression()
+                initializer = self._parse_assignment()
 
         return Declaration(
             name=name_tok.value,
@@ -1138,7 +1198,11 @@ class Parser:
                 self._expect(TokenType.LPAREN, "Expected '(' after for")
                 init = None
                 if self._is_type_specifier():
-                    init = self._parse_local_declaration()
+                    result = self._parse_local_declaration()
+                    if isinstance(result, list):
+                        init = result[0]  # for-init: use first declarator
+                    else:
+                        init = result
                 elif not self._at(TokenType.SEMICOLON):
                     init = self._parse_expression()
                     self._expect(TokenType.SEMICOLON, "Expected ';' after for init")
