@@ -1056,11 +1056,20 @@ class Preprocessor:
             return PreprocessResult(success=True, text=text)
         except RuntimeError as e:
             msg = str(e)
-            # L-scope unified diagnostics (subset): ensure a `file:line:` prefix
-            # for any error that didn't already supply one.
             if not re.match(r"^[^:\n]+:\d+: ", msg):
                 msg = f"{os.path.basename(path)}:1: {msg}"
             return PreprocessResult(success=False, errors=[msg])
+
+    _TRIGRAPHS = {
+        '??=': '#', '??(': '[', '??)': ']', '??<': '{', '??>': '}',
+        '??/': '\\', "??'": '^', '??!': '|', '??-': '~',
+    }
+
+    @classmethod
+    def _replace_trigraphs(cls, text: str) -> str:
+        for tri, repl in cls._TRIGRAPHS.items():
+            text = text.replace(tri, repl)
+        return text
 
     def _preprocess_file(self, path: str, stack: List[str], macros: Dict[str, str]) -> str:
         abspath = os.path.abspath(path)
@@ -1076,9 +1085,13 @@ class Preprocessor:
 
         stack.append(abspath)
         try:
-            raw = open(abspath, "r", encoding="utf-8").read().splitlines(True)
+            raw_text = open(abspath, "r", encoding="utf-8").read()
         except OSError as e:
             raise RuntimeError(f"{os.path.basename(path)}:1: cannot read {path}: {e}")
+
+        # Translation phase 1: trigraph replacement (C89 §3.1.1)
+        raw_text = self._replace_trigraphs(raw_text)
+        raw = raw_text.splitlines(True)
 
         out_lines: List[str] = []
         base_dir = os.path.dirname(abspath)
