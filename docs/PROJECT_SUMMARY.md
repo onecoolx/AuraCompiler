@@ -1,6 +1,6 @@
 # AuraCompiler (pycc): Practical C89 Compiler - Project Summary
 
-Last updated: 2026-03-31
+Last updated: 2026-04-08
 
 ## Executive Summary
 
@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **812 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **947 passed**.
 
 ### Recent changes
 
@@ -88,12 +88,13 @@ pycc/
 - `goto`/labels
 
 **Known gaps (updated):**
-- Preprocessor is implemented (broad subset) but still incomplete. See `docs/PREPROCESSOR_C89_CHECKLIST.md`.
-- No floating point (`float`/`double`) codegen/type rules
-- C89 integer promotions / usual arithmetic conversions not fully modeled
-- Full declarator/type grammar coverage is incomplete (many edge cases)
-- Initializers are still incomplete, but aggregate initializers (including nested local structs) are now covered by tests; remaining gaps are mostly edge-cases (designators, mixed scalar/aggregate corner cases, more global aggregate forms).
-- Translation-unit / multi-file model is still incomplete in general, but a practical multi-TU workflow is implemented and tested.
+- Preprocessor is implemented (broad subset) but standards-accurate macro expansion engine is still regex-based. See `docs/PREPROCESSOR_C89_CHECKLIST.md`.
+- `long double` has no IR or x87 codegen support
+- `struct`/`union` by-value assignment, parameter passing, and return not implemented
+- `va_arg` builtin not implemented (can pass `va_list` to libc but cannot extract args in user code)
+- Designated initializers (`.member = val`, `[index] = val`) not implemented
+- `volatile` qualifier parsed but codegen does not honor it (no memory barriers)
+- Optimizer is a no-op stub
 - Diagnostics and conformance testing vs `gcc -std=c89` not comprehensive yet
 
 ---
@@ -107,26 +108,26 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 ### Frontend: Lexing / Preprocessing
 
 - **DONE**: Tokens for C operators, delimiters, identifiers, integer/char/string literals, comments.
-- **PARTIAL**: Keywords set includes many non-C89 keywords (lexer accepts them).
-- **PARTIAL**: Preprocessor: `#include`, `#define` (object/function-like), `#if/#ifdef/#ifndef/#else/#elif/#endif`, `#line`, `#error`, `#warning`, `#pragma once` (subset). Missing full macro expansion semantics; macro-expanded includes are supported as a subset (see `docs/PREPROCESSOR_C89_CHECKLIST.md`).
+- **DONE**: Keywords set includes C89 keywords plus common extensions.
+- **DONE**: Preprocessor: `#include`, `#define` (object/function-like), `#if/#ifdef/#ifndef/#else/#elif/#endif`, `#line`, `#error`, `#warning`, `#pragma once`, variadic macros, `__COUNTER__`. Standards-accurate macro expansion engine is still a subset (regex-based). See `docs/PREPROCESSOR_C89_CHECKLIST.md`.
 
 ### Declarations / Types
 
-- **DONE**: `int`, `char`, pointers, arrays (common cases), function prototypes + definitions.
-- **DONE**: `typedef`.
-- **DONE**: `struct`/`union` basic layout + member access (`.`/`->`).
-- **DONE**: `enum` definitions + enumerator constants.
-- **PARTIAL**: Storage class (`static`/`extern`) behavior and linkage model.
-- **TODO**: Full declarator grammar (pointer qualifiers, complex nested declarators, old-style K&R function definitions if desired).
-- **TODO**: `const`/`volatile` qualifiers semantics.
-- **TODO**: Signed/unsigned variants, `short`/`long` widths and conversions.
+- **DONE**: `int`, `char`, `short`, `long` (signed/unsigned), `float`, `double`, pointers, arrays, function prototypes + definitions.
+- **DONE**: `typedef`, `enum`, K&R function definitions.
+- **DONE**: `struct`/`union` layout + member access (`.`/`->`), bit-fields.
+- **DONE**: Storage classes (`static`/`extern`/`auto`/`register`) incl. local `static` with constant initializer.
+- **DONE**: `const` qualifier semantics (assignment rejection, pointer compat).
+- **PARTIAL**: `volatile` qualifier (parsed, no special codegen).
+- **TODO**: `long double` (no x87 codegen).
+- **TODO**: `struct`/`union` by-value assignment, parameter passing, and return.
 
 ### Expressions / Semantics
 
-- **DONE**: Integer arithmetic/bitwise/compare, assignment, calls, `?:`, `sizeof`, C-style cast.
+- **DONE**: Integer arithmetic/bitwise/compare, assignment, calls, `?:`, `sizeof`, C-style cast, `++`/`--`.
 - **DONE**: `&&` / `||` short-circuit.
-- **PARTIAL**: Type checking (best-effort), implicit function declarations (C89-style) for external calls.
-- **TODO**: Integer promotions + usual arithmetic conversions.
+- **DONE**: Integer promotions + usual arithmetic conversions (CType-based).
+- **DONE**: Type checking, implicit function declarations (C89-style) for external calls.
 - **PARTIAL**: Pointer conversions and pointer operations (best-effort, tested):
     - **DONE**: Pointer +/- integer scaling by pointee size.
     - **DONE**: Pointer - pointer yields element distance (not bytes).
@@ -818,25 +819,26 @@ print(print_ast(ast))
 
 ## Part 7: Known Limitations
 
-### Phase 1 Limitations
-- Preprocessor is partial; see `docs/PREPROCESSOR_C89_CHECKLIST.md`
-- No floating point (`float`/`double`) type rules or codegen
-- Integer promotions / usual arithmetic conversions are incomplete
-- Full initializer support is incomplete (especially aggregates)
-- Multi-translation-unit model is incomplete (extern across files, objects, archives)
-- Limited standard library coverage (header compatibility depends on preprocessor subset)
+### Current Limitations
+- Preprocessor macro expansion engine is regex-based, not standards-accurate preprocessing-token model
+- `long double` has no x87 codegen
+- `struct`/`union` by-value assignment, parameter passing, and return not implemented
+- `va_arg` builtin not implemented
+- Designated initializers not implemented
+- `volatile` codegen not honored
+- Optimizer is a no-op stub
 - No incremental compilation
 
 ### Future Enhancements
-1. Preprocessor completeness (macro-expanded includes, full macro expansion semantics, #line tracking)
-2. Integer promotions / usual arithmetic conversions and qualifier semantics
-3. Multi-translation-unit compilation model and linking workflow
-4. More optimization passes
-5. Debug symbol generation (-g)
-6. Link-time optimization
-7. Profile-guided optimization
-8. ARM/MIPS backend support
-9. WebAssembly backend
+1. `struct`/`union` by-value operations (assignment, params, return)
+2. `va_arg` builtin for user-defined variadic functions
+3. `long double` x87 codegen
+4. Designated initializers
+5. Standards-accurate preprocessing-token macro expansion engine
+6. Optimization passes (const folding, DCE, CSE)
+7. Debug symbol generation (-g / DWARF)
+8. `-Wall`/`-Werror` warning system
+9. ARM/MIPS/WebAssembly backend support
 
 ---
 
@@ -915,4 +917,4 @@ The project is organized to be completed in 5-6 weeks with clear deliverables at
 
 **Current Version**: 0.1.0 - Core pipeline working end-to-end (C89 subset)
 
-**Next Steps**: Preprocessor completeness, integer promotions/UAC, multi-translation-unit robustness
+**Next Steps**: struct by-value operations, va_arg builtin, designated initializers, preprocessor token-based expansion engine
