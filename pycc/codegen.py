@@ -221,7 +221,8 @@ class CodeGenerator:
                     # If the IR uses a temp as the result of addr_of_member, it is a pointer value.
                     if d.op == "addr_of_member" and d.result:
                         if d.result not in self._var_types:
-                            self._var_types[d.result] = "ptr"
+                            mty = (d.meta or {}).get("member_type")
+                            self._var_types[d.result] = f"{mty}*" if mty else "ptr"
                     # Propagate best-effort result type for temps produced by load_index.
                     # IRGenerator annotates element type via ins.meta["result_ty"].
                     if d.op == "load_index" and d.result:
@@ -465,6 +466,8 @@ class CodeGenerator:
                 ty_str = str(d.operand1) if d.operand1 else ""
                 if ty_str.startswith("struct ") or ty_str.startswith("union "):
                     size_bytes = self._type_size_bytes(ty_str)
+                    # Round up to multiple of 8 so register-chunk stores don't overflow.
+                    size_bytes = ((size_bytes + 7) // 8) * 8
                     size_bytes = max(size_bytes, 8)
                     offset += size_bytes
                     self._locals[sym] = offset
@@ -547,6 +550,14 @@ class CodeGenerator:
                     s = "s" if ty == "float" else "d"
                     self._emit(f"  movs{s} {xmm_arg_regs[xmm_idx]}, -{off}(%rbp)")
                 xmm_idx += 1
+            elif ty.startswith("struct ") or ty.startswith("union "):
+                # Struct/union by-value param: store GP register chunks into local slot.
+                sz = self._type_size_bytes(ty)
+                chunks = (sz + 7) // 8
+                for ci in range(chunks):
+                    if gp_idx < len(arg_regs):
+                        self._emit(f"  movq {arg_regs[gp_idx]}, -{off - ci * 8}(%rbp)")
+                        gp_idx += 1
             else:
                 if gp_idx < len(arg_regs):
                     if ty == "char" or ty == "unsigned char":
@@ -627,12 +638,15 @@ class CodeGenerator:
             base = self._varargs_reg_save_base
             # Save *incoming* regs immediately in the prologue, before we use
             # any of them as scratch.
-            self._emit(f"  movq %rdi, -{base + 0}(%rbp)")
-            self._emit(f"  movq %rsi, -{base + 8}(%rbp)")
-            self._emit(f"  movq %rdx, -{base + 16}(%rbp)")
-            self._emit(f"  movq %rcx, -{base + 24}(%rbp)")
-            self._emit(f"  movq %r8,  -{base + 32}(%rbp)")
-            self._emit(f"  movq %r9,  -{base + 40}(%rbp)")
+            # Layout: reg_save_area[0]=rdi, [8]=rsi, [16]=rdx, [24]=rcx, [32]=r8, [40]=r9
+            # We store them so that reg_save_area points to rdi and higher
+            # offsets correspond to later registers (ascending address order).
+            self._emit(f"  movq %rdi, -{base + 40}(%rbp)")
+            self._emit(f"  movq %rsi, -{base + 32}(%rbp)")
+            self._emit(f"  movq %rdx, -{base + 24}(%rbp)")
+            self._emit(f"  movq %rcx, -{base + 16}(%rbp)")
+            self._emit(f"  movq %r8,  -{base + 8}(%rbp)")
+            self._emit(f"  movq %r9,  -{base + 0}(%rbp)")
 
         
     # Instruction emission
@@ -693,6 +707,17 @@ class CodeGenerator:
                         self._ptr_step_bytes[str(ins.result)] = int(step)
             except Exception:
                 pass
+            return
+
+        if op == "struct_copy":
+            sz = (ins.meta or {}).get("size", 0)
+            if sz > 0:
+                src_off = self._ensure_local(ins.operand1)
+                dst_off = self._ensure_local(ins.result)
+                self._emit(f"  leaq -{src_off}(%rbp), %rsi")
+                self._emit(f"  leaq -{dst_off}(%rbp), %rdi")
+                self._emit(f"  movq ${sz}, %rcx")
+                self._emit(f"  rep movsb")
             return
 
         if op == "fmov":
@@ -1355,6 +1380,42 @@ class CodeGenerator:
                 self._store_result(ins.result, "$0")
                 return
 
+            if target0 == "__builtin_va_arg_int":
+                # SysV AMD64 va_arg for GP (int/long/pointer) types.
+                # Layout of __va_list_tag:
+                #   +0: u32 gp_offset
+                #   +4: u32 fp_offset
+                #   +8: void* overflow_arg_area
+                #  +16: void* reg_save_area
+                ap = (ins.args or [None])[0]
+                # ap is a pointer to the __va_list_tag (or the tag itself).
+                self._addr_of_symbol(ap or "", "%rax")
+                self._emit("  movq (%rax), %r11")  # r11 = &tag
+                seq = getattr(self, "_va_label_seq", 0)
+                self._va_label_seq = seq + 1
+                lbl_stack = f".Lva_stack_{seq}"
+                lbl_done = f".Lva_done_{seq}"
+                # Check gp_offset < 48
+                self._emit("  movl (%r11), %ecx")       # ecx = gp_offset
+                self._emit("  cmpl $48, %ecx")
+                self._emit(f"  jge {lbl_stack}")
+                # Fetch from reg_save_area + gp_offset
+                self._emit("  movq 16(%r11), %r10")      # r10 = reg_save_area
+                self._emit("  movslq %ecx, %rcx")
+                self._emit("  movq (%r10,%rcx), %rax")   # result
+                # Advance gp_offset += 8
+                self._emit("  addl $8, (%r11)")
+                self._emit(f"  jmp {lbl_done}")
+                # Fetch from overflow_arg_area
+                self._emit(f"{lbl_stack}:")
+                self._emit("  movq 8(%r11), %r10")       # r10 = overflow_arg_area
+                self._emit("  movq (%r10), %rax")         # result
+                self._emit("  addq $8, %r10")
+                self._emit("  movq %r10, 8(%r11)")        # advance overflow_arg_area
+                self._emit(f"{lbl_done}:")
+                self._store_result(ins.result, "%rax")
+                return
+
             if target0 == "__builtin_va_start":
                 # SysV AMD64 minimal: initialize the 24-byte __va_list_tag so
                 # passing it to libc (vsnprintf) works for GP args.
@@ -1422,25 +1483,16 @@ class CodeGenerator:
                 # clobbered them before va_start runs.
                 base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
                 if base:
-                    # `base` is the offset such that:
-                    #   reg_save_area_addr = rbp - base
-                    # The GP slots are at:
-                    #   +0 rdi, +8 rsi, +16 rdx, +24 rcx, +32 r8, +40 r9
-                    # So the vararg-relevant slots are at:
-                    #   rcx: rbp-(base-24), r8: rbp-(base-32), r9: rbp-(base-40)
-                    self._emit(f"  movq %rcx, -{base - 24}(%rbp)")
-                    self._emit(f"  movq %r8,  -{base - 32}(%rbp)")
-                    self._emit(f"  movq %r9,  -{base - 40}(%rbp)")
+                    # With ascending layout: rdi at -(base+40), rsi at -(base+32), ...
+                    # rcx at -(base+16), r8 at -(base+8), r9 at -(base+0)
+                    self._emit(f"  movq %rcx, -{base + 16}(%rbp)")
+                    self._emit(f"  movq %r8,  -{base + 8}(%rbp)")
+                    self._emit(f"  movq %r9,  -{base + 0}(%rbp)")
 
-                # reg_save_area: points to a contiguous save area:
-                #  - 6*8 bytes for rdi..r9 (48 bytes)
-                #  - 8*16 bytes for xmm0..xmm7 (128 bytes)
-                # We only populate the GP part for now.
-                # reg_save_area must match the prologue-saved area.
+                # reg_save_area: points to rdi slot (lowest address).
                 base = int(getattr(self, "_varargs_reg_save_base", 0) or 0)
                 if base:
-                    # reg_save_area_addr = rbp - base
-                    self._emit(f"  leaq -{base}(%rbp), %r11")
+                    self._emit(f"  leaq -{base + 40}(%rbp), %r11")
                 else:
                     # Fallback (should not happen for a true variadic function)
                     base2 = int(getattr(self, "_locals_base", 0))
@@ -1491,6 +1543,15 @@ class CodeGenerator:
                         off = self._ensure_local(a)
                         self._emit(f"  movs{s} -{off}(%rbp), {xmm_regs[xmm_idx]}")
                         xmm_idx += 1
+                elif isinstance(a_ty, str) and (a_ty.strip().startswith("struct ") or a_ty.strip().startswith("union ")):
+                    # Struct/union by-value: load 8-byte chunks into consecutive GP regs.
+                    sz = self._type_size_bytes(a_ty.strip())
+                    off = self._ensure_local(a)
+                    chunks = (sz + 7) // 8
+                    for ci in range(chunks):
+                        if gp_idx < len(arg_regs):
+                            self._emit(f"  movq -{off - ci * 8}(%rbp), {arg_regs[gp_idx]}")
+                            gp_idx += 1
                 else:
                     # Integer/pointer arg -> GP register
                     if gp_idx < len(arg_regs):
@@ -1605,7 +1666,21 @@ class CodeGenerator:
                     self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
                     self._var_types[ins.result] = fp
             else:
-                self._store_result(ins.result, "%rax")
+                # Struct/union return: rax holds first 8 bytes, rdx holds next 8.
+                ret_ty_s = ret_ty.replace("function ", "").strip() if ret_ty.startswith("function ") else ""
+                if ret_ty_s.startswith("struct ") or ret_ty_s.startswith("union "):
+                    sz = self._type_size_bytes(ret_ty_s)
+                    if ins.result:
+                        # Allocate enough space for the struct in the temp slot.
+                        alloc_sz = ((sz + 7) // 8) * 8
+                        alloc_sz = max(alloc_sz, 8)
+                        off_r = self._ensure_local(ins.result, size=alloc_sz)
+                        self._emit(f"  movq %rax, -{off_r}(%rbp)")
+                        if sz > 8:
+                            self._emit(f"  movq %rdx, -{off_r - 8}(%rbp)")
+                        self._var_types[ins.result] = ret_ty_s
+                else:
+                    self._store_result(ins.result, "%rax")
             return
 
         if op == "load_index":
@@ -1935,6 +2010,17 @@ class CodeGenerator:
                 s = "s" if rty.strip() == "float" else "d"
                 off = self._ensure_local(src)
                 self._emit(f"  movs{s} -{off}(%rbp), %xmm0")
+                self._emit("  leave")
+                self._emit("  ret")
+                return
+
+            # Struct/union by-value return: load chunks into rax (+ rdx if >8 bytes).
+            if isinstance(src_ty, str) and (src_ty.strip().startswith("struct ") or src_ty.strip().startswith("union ")):
+                sz = self._type_size_bytes(src_ty.strip())
+                off = self._ensure_local(src)
+                self._emit(f"  movq -{off}(%rbp), %rax")
+                if sz > 8:
+                    self._emit(f"  movq -{off - 8}(%rbp), %rdx")
                 self._emit("  leave")
                 self._emit("  ret")
                 return
@@ -2332,7 +2418,7 @@ class CodeGenerator:
                 self._emit(f"  movl %eax, {sym}(%rip)")
             return
 
-    def _ensure_local(self, sym: str) -> int:
+    def _ensure_local(self, sym: str, size: int = 8) -> int:
         if sym in self._locals:
             return self._locals[sym]
 
@@ -2356,7 +2442,8 @@ class CodeGenerator:
             # If we exhaust the reserved spill area, make a conservative
             # fallback by extending the function's frame in 16-byte chunks.
             # This still avoids emitting per-temp `subq $8, %rsp`.
-            if self._spill_used + 8 > self._spill_capacity:
+            alloc = max(size, 8)
+            if self._spill_used + alloc > self._spill_capacity:
                 grow = 256
                 if grow % 16 != 0:
                     grow += 16 - (grow % 16)
@@ -2368,7 +2455,7 @@ class CodeGenerator:
                     if line.strip().startswith("subq $") and line.strip().endswith(", %rsp"):
                         self.assembly_lines[idx] = f"  subq ${self._stack_size}, %rsp"
                         break
-            self._spill_used += 8
+            self._spill_used += alloc
             # Spill slots live below all declared locals.
             # Place them at (locals_base + spill_used).
             base = int(getattr(self, "_locals_base", 0))

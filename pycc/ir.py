@@ -2443,7 +2443,7 @@ class IRGenerator:
                             mty = mtypes.get(expr.member)
                             if isinstance(mty, str) and self._is_struct_or_union_type(mty):
                                 taddr = self._new_temp()
-                                self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base, operand2=expr.member))
+                                self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base, operand2=expr.member, meta={"member_type": mty}))
                                 self._var_types[taddr] = f"{mty}*"
                                 return taddr
             except Exception:
@@ -2678,6 +2678,14 @@ class IRGenerator:
                                 self._var_types[dst] = str(ty)
                     except Exception:
                         pass
+                    # Struct/union by-value assignment: emit struct_copy with size.
+                    dst_ty = self._var_types.get(dst, "")
+                    if isinstance(dst_ty, str) and (dst_ty.strip().startswith("struct ") or dst_ty.strip().startswith("union ")):
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(dst_ty.strip()) if self._sema_ctx else None
+                        sz = int(getattr(layout, "size", 0) or 0) if layout else 0
+                        if sz > 0:
+                            self.instructions.append(IRInstruction(op="struct_copy", result=dst, operand1=rhs, meta={"size": sz}))
+                            return dst
                     self.instructions.append(IRInstruction(op="mov", result=dst, operand1=rhs))
                     return dst
                 # compound assigns: a += b => a = a + b
