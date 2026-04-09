@@ -55,6 +55,8 @@ from pycc.ast_nodes import (
         PointerMemberAccess,
     Cast,
         SizeOf,
+    Initializer,
+    Designator,
 )
 
 
@@ -148,6 +150,8 @@ class SemanticAnalyzer:
         func_sigs: Dict[str, tuple[str, Optional[int]]] = {}
         self._function_sigs = {}
         self._function_param_types = {}
+        # Full function signature info: name -> (param_types: List[Type], return_type: Type)
+        self._function_full_sig = {}
 
         for decl in ast.declarations:
             if isinstance(decl, FunctionDecl):
@@ -212,6 +216,22 @@ class SemanticAnalyzer:
                         getattr(p, "name", None) == "..." for p in params
                     )
                     self._function_sigs[decl.name] = (str(ret_base_s), param_count, is_variadic)
+                    # Store full parameter types and return type for function pointer
+                    # type compatibility checks.
+                    try:
+                        _param_types = []
+                        for p in params:
+                            if getattr(p, "name", None) == "...":
+                                continue
+                            pt = getattr(p, "type", None)
+                            if pt is not None:
+                                _param_types.append(pt)
+                        # For single (void) param, store empty list
+                        if param_count == 0:
+                            _param_types = []
+                        self._function_full_sig[decl.name] = (_param_types, ret_base)
+                    except Exception:
+                        pass
                 except Exception:
                     self._function_sigs[decl.name] = ("int", None, False)
 
@@ -344,7 +364,7 @@ class SemanticAnalyzer:
                         self.errors.append(
                             f"invalid conversion: initializer for '{decl.name}' drops const qualifiers in pointer chain"
                         )
-                    self._analyze_expr(decl.initializer)
+                    self._analyze_decl_initializer(decl.initializer, decl)
 
         if self.errors:
             raise SemanticError("\n".join(self.errors))
@@ -684,11 +704,152 @@ class SemanticAnalyzer:
 
         return False
 
+    @staticmethod
+    def _normalize_type_base(base: str, is_unsigned: bool = False, is_signed: bool = False) -> str:
+        """Normalize a type base string to a canonical form for compatibility comparison.
+
+        C89 rules: 'int' and 'signed int' are the same type; 'unsigned' and
+        'unsigned int' are the same type; etc.
+        """
+        b = " ".join(base.split()).strip()
+        # Map common synonyms to canonical forms
+        _synonyms = {
+            "signed": "int",
+            "signed int": "int",
+            "unsigned": "unsigned int",
+            "short": "short",
+            "short int": "short",
+            "signed short": "short",
+            "signed short int": "short",
+            "unsigned short": "unsigned short",
+            "unsigned short int": "unsigned short",
+            "long": "long",
+            "long int": "long",
+            "signed long": "long",
+            "signed long int": "long",
+            "unsigned long": "unsigned long",
+            "unsigned long int": "unsigned long",
+        }
+        # Apply explicit is_unsigned / is_signed flags
+        if is_unsigned and not b.startswith("unsigned"):
+            b = "unsigned " + b
+        elif is_signed and b in ("int", "char", "short", "long"):
+            b = "signed " + b
+        canon = _synonyms.get(b)
+        if canon is not None:
+            return canon
+        return b
+
+    @staticmethod
+    def _types_compatible_for_fnptr(t1: Optional[Type], t2: Optional[Type]) -> bool:
+        """Check if two types are compatible for function pointer comparison.
+
+        Simplified C89 rules:
+        - Same canonical base type is compatible
+        - int and signed int are compatible
+        - Pointer types: compatible if pointee types are compatible
+        - void* is compatible with any pointer type
+        """
+        if t1 is None or t2 is None:
+            return True  # Unknown types are assumed compatible
+
+        t1_base = str(getattr(t1, "base", "")).strip()
+        t2_base = str(getattr(t2, "base", "")).strip()
+        if not t1_base or not t2_base:
+            return True  # Unknown base types are assumed compatible
+
+        t1_is_ptr = bool(getattr(t1, "is_pointer", False))
+        t2_is_ptr = bool(getattr(t2, "is_pointer", False))
+
+        # Both are pointers
+        if t1_is_ptr and t2_is_ptr:
+            # void* is compatible with any pointer type
+            if t1_base == "void" or t2_base == "void":
+                return True
+            # Compare pointee types by canonical base
+            t1_canon = SemanticAnalyzer._normalize_type_base(
+                t1_base,
+                bool(getattr(t1, "is_unsigned", False)),
+                bool(getattr(t1, "is_signed", False)),
+            )
+            t2_canon = SemanticAnalyzer._normalize_type_base(
+                t2_base,
+                bool(getattr(t2, "is_unsigned", False)),
+                bool(getattr(t2, "is_signed", False)),
+            )
+            return t1_canon == t2_canon
+
+        # One is pointer, the other is not
+        if t1_is_ptr != t2_is_ptr:
+            return False
+
+        # Both are non-pointer: compare canonical base types
+        t1_canon = SemanticAnalyzer._normalize_type_base(
+            t1_base,
+            bool(getattr(t1, "is_unsigned", False)),
+            bool(getattr(t1, "is_signed", False)),
+        )
+        t2_canon = SemanticAnalyzer._normalize_type_base(
+            t2_base,
+            bool(getattr(t2, "is_unsigned", False)),
+            bool(getattr(t2, "is_signed", False)),
+        )
+        return t1_canon == t2_canon
+
+    def _check_fnptr_type_compat(self, dst: Optional[Type], src: Optional[Type], name: str) -> None:
+        """Check full function pointer type compatibility (arity, param types, return type).
+
+        Reports specific error messages for:
+        - Parameter count mismatch
+        - Individual parameter type mismatch (with position)
+        - Return type mismatch
+
+        Type compatibility follows simplified C89 rules:
+        - Same base type is compatible
+        - int and signed int are compatible
+        - Pointer types: compatible if pointee types are compatible
+        - void* is compatible with any pointer type
+        """
+        if dst is None or src is None:
+            return
+
+        dst_pc = getattr(dst, "fn_param_count", None)
+        src_pc = getattr(src, "fn_param_count", None)
+
+        # Check arity first
+        if dst_pc is not None and src_pc is not None and dst_pc != src_pc:
+            self.errors.append(
+                f"incompatible function pointer assignment: '{name}' expects {dst_pc} params but source has {src_pc}"
+            )
+            return  # No point checking individual params if counts differ
+
+        # Check return type compatibility
+        dst_ret = getattr(dst, "fn_return_type", None)
+        src_ret = getattr(src, "fn_return_type", None)
+        if dst_ret is not None and src_ret is not None:
+            if not self._types_compatible_for_fnptr(dst_ret, src_ret):
+                self.errors.append(
+                    f"incompatible function pointer: return type mismatch"
+                )
+
+        # Check each parameter type compatibility
+        dst_pt = getattr(dst, "fn_param_types", None)
+        src_pt = getattr(src, "fn_param_types", None)
+        if dst_pt is not None and src_pt is not None:
+            count = min(len(dst_pt), len(src_pt))
+            for i in range(count):
+                dp = dst_pt[i]
+                sp = src_pt[i]
+                if not self._types_compatible_for_fnptr(dp, sp):
+                    self.errors.append(
+                        f"incompatible function pointer: parameter {i + 1} type mismatch"
+                    )
+
     def _check_pointer_base_compat(self, dst: Optional[Type], src: Optional[Type], name: str) -> None:
         """Reject assignment between pointers with incompatible base types.
 
         Allows void* <-> T* conversions. Rejects int* = char*, etc.
-        Also checks function pointer arity compatibility.
+        Also checks function pointer arity and full type compatibility.
         """
         if dst is None or src is None:
             return
@@ -700,17 +861,17 @@ class SemanticAnalyzer:
             return
         db = str(getattr(dst, "base", "")).strip()
         sb = str(getattr(src, "base", "")).strip()
-        # void* is compatible with any object pointer
-        if db == "void" or sb == "void":
+        # void* is compatible with any object pointer -- but NOT if the type
+        # is actually a function pointer whose return type happens to be void.
+        # Function pointers are identified by having fn_param_count set or
+        # having "(*)" in the base string.
+        db_is_fnptr = ("(*)" in db) or (getattr(dst, "fn_param_count", None) is not None)
+        sb_is_fnptr = ("(*)" in sb) or (getattr(src, "fn_param_count", None) is not None)
+        if (db == "void" or sb == "void") and not db_is_fnptr and not sb_is_fnptr:
             return
-        # Function pointer: if dst is a function pointer type, check arity only
-        if "(*)" in db or "(*)" in sb:
-            dst_pc = getattr(dst, "fn_param_count", None)
-            src_pc = getattr(src, "fn_param_count", None)
-            if dst_pc is not None and src_pc is not None and dst_pc != src_pc:
-                self.errors.append(
-                    f"incompatible function pointer assignment: '{name}' expects {dst_pc} params but source has {src_pc}"
-                )
+        # Function pointer: check full type compatibility
+        if db_is_fnptr or sb_is_fnptr:
+            self._check_fnptr_type_compat(dst, src, name)
             return
         # Normalize base type strings for comparison
         def _norm(b: str) -> str:
@@ -807,6 +968,11 @@ class SemanticAnalyzer:
                                                   line=item.initializer.line, column=item.initializer.column)
                                     src_ty._normalize_pointer_state()
                                     src_ty.fn_param_count = _pc
+                                    # Propagate full function signature for type compatibility checks
+                                    _full = getattr(self, "_function_full_sig", {}).get(item.initializer.name)
+                                    if _full is not None:
+                                        src_ty.fn_param_types = _full[0]
+                                        src_ty.fn_return_type = _full[1]
                                 except Exception:
                                     pass
                         elif (
@@ -820,7 +986,7 @@ class SemanticAnalyzer:
                                 f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
                             )
                         self._check_pointer_base_compat(item.type, src_ty, item.name)
-                        self._analyze_expr(item.initializer)
+                        self._analyze_decl_initializer(item.initializer, item)
                         # Extra: detect illegal pointer-chain qualifier conversions for
                         # common initializer forms where expression typing isn't implemented.
                         # Handles: `const int **cpp = pp;` and `const int **ppc = &pi;`.
@@ -880,6 +1046,11 @@ class SemanticAnalyzer:
                                                   line=item.initializer.line, column=item.initializer.column)
                                     src_ty._normalize_pointer_state()
                                     src_ty.fn_param_count = _pc
+                                    # Propagate full function signature for type compatibility checks
+                                    _full = getattr(self, "_function_full_sig", {}).get(item.initializer.name)
+                                    if _full is not None:
+                                        src_ty.fn_param_types = _full[0]
+                                        src_ty.fn_return_type = _full[1]
                                 except Exception:
                                     pass
                         elif (
@@ -893,7 +1064,7 @@ class SemanticAnalyzer:
                                 f"invalid conversion: initializer for '{item.name}' drops const qualifiers in pointer chain"
                             )
                         self._check_pointer_base_compat(item.type, src_ty, item.name)
-                        self._analyze_expr(item.initializer)
+                        self._analyze_decl_initializer(item.initializer, item)
                 else:
                     self._analyze_stmt(item)
             self._pop_scope()
@@ -961,7 +1132,7 @@ class SemanticAnalyzer:
                             f"invalid conversion: initializer for '{stmt.init.name}' drops const qualifiers in pointer chain"
                         )
                     self._check_pointer_base_compat(stmt.init.type, src_ty, stmt.init.name)
-                    self._analyze_expr(stmt.init.initializer)
+                    self._analyze_decl_initializer(stmt.init.initializer, stmt.init)
             elif stmt.init is not None:
                 self._analyze_expr(stmt.init)
             if stmt.condition is not None:
@@ -1528,6 +1699,11 @@ class SemanticAnalyzer:
                             src_ty = Type(base=f"{_ret} (*)()", is_pointer=True, pointer_level=1, line=expr.value.line, column=expr.value.column)
                             src_ty._normalize_pointer_state()
                             src_ty.fn_param_count = _pc
+                            # Propagate full function signature for type compatibility checks
+                            _full = getattr(self, "_function_full_sig", {}).get(expr.value.name)
+                            if _full is not None:
+                                src_ty.fn_param_types = _full[0]
+                                src_ty.fn_return_type = _full[1]
                         except Exception:
                             src_ty = None
                 elif isinstance(expr.value, UnaryOp) and expr.value.operator == "&" and isinstance(expr.value.operand, Identifier):
@@ -1572,9 +1748,9 @@ class SemanticAnalyzer:
                     ):
                         dst_base = str(getattr(dst_ty, "base", ""))
                         src_base = str(getattr(src_ty, "base", ""))
-                        # Function pointer compatibility (subset): when both sides are
+                        # Function pointer compatibility: when both sides are
                         # pointers to functions (parser encodes base like `int (*)()`),
-                        # enforce arity if available.
+                        # enforce arity and full type compatibility if available.
                         if "(*)" in dst_base and "(*)" in src_base:
                             d_arity = getattr(dst_ty, "fn_param_count", None)
                             s_arity = getattr(src_ty, "fn_param_count", None)
@@ -1582,6 +1758,9 @@ class SemanticAnalyzer:
                                 self.errors.append(
                                     f"incompatible function pointer types in assignment: arity {d_arity} from arity {s_arity}"
                                 )
+                            else:
+                                # Arity matches (or unknown); check full type compatibility
+                                self._check_fnptr_type_compat(dst_ty, src_ty, getattr(expr.target, "name", "?"))
                             # Do not apply object-pointer base checks to function pointers.
                             raise StopIteration()
                         # void* <-> T* allowed (object pointers subset)
@@ -1865,7 +2044,38 @@ class SemanticAnalyzer:
             self._analyze_expr(expr.right)
             return
 
+        if isinstance(expr, Initializer):
+            # Analyze all value expressions in the initializer list.
+            # Designator validation requires the target type context and is
+            # handled by _validate_designated_initializer when called from
+            # declaration analysis.  Here we just recurse into values.
+            for _desig, val in (expr.elements or []):
+                self._analyze_expr(val)
+            return
+
         # Unknown expressions ignored
+
+    def _analyze_decl_initializer(self, init: Expression, decl: Declaration) -> None:
+        """Analyze a declaration's initializer, including designated initializer validation.
+
+        When the initializer is a brace-enclosed Initializer node and the
+        declaration has a struct/union or array type, validate designators
+        against the target type's layout/size.
+        """
+        if isinstance(init, Initializer) and self._has_any_designator(init):
+            array_size = getattr(decl, "array_size", None)
+            self._validate_designated_initializer(
+                init, decl.type, array_size=array_size, node=init
+            )
+        else:
+            self._analyze_expr(init)
+
+    def _has_any_designator(self, init: Initializer) -> bool:
+        """Return True if any element in the initializer has a Designator."""
+        for desig, val in (init.elements or []):
+            if desig is not None:
+                return True
+        return False
 
     def _is_non_prototype_call(self, call: FunctionCall) -> bool:
         if not isinstance(call.function, Identifier):
@@ -1915,3 +2125,125 @@ class SemanticAnalyzer:
             return
         if member not in layout.member_offsets:
             self.errors.append(f"No such member '{member}' in {b}")
+
+    # ── Designated initializer validation ──────────────────────────────
+
+    def _resolve_base_type(self, ty: Type) -> str:
+        """Resolve a Type's base through typedefs to the underlying base string."""
+        b = getattr(ty, "base", "")
+        if isinstance(b, str) and not b.startswith("struct ") and not b.startswith("union "):
+            resolved = self._resolve_typedef(b)
+            if resolved is not None:
+                b = getattr(resolved, "base", b)
+        return b if isinstance(b, str) else ""
+
+    def _validate_designated_initializer(self, init: Initializer, decl_type: Type,
+                                          array_size: Optional[int] = None,
+                                          node: object = None) -> None:
+        """Validate designators in an Initializer against the target type.
+
+        For struct/union types: verify member names exist in the StructLayout.
+        For arrays: verify indices are non-negative and within bounds.
+        Also recurse into value expressions for further analysis.
+        """
+        base = self._resolve_base_type(decl_type)
+        is_struct_or_union = isinstance(base, str) and (
+            base.startswith("struct ") or base.startswith("union ")
+        )
+        layout: Optional[StructLayout] = None
+        if is_struct_or_union:
+            layout = self._layouts.get(base)
+
+        for desig, val in (init.elements or []):
+            if desig is not None:
+                self._validate_designator(desig, base, layout, array_size, node)
+            # Recurse into nested Initializer values
+            if isinstance(val, Initializer):
+                # Determine the sub-type for nested initializers
+                sub_type = self._designator_target_type(desig, base, layout, decl_type)
+                if sub_type is not None:
+                    self._validate_designated_initializer(val, sub_type, node=node)
+                else:
+                    # Can't determine sub-type; still analyze expressions
+                    for _d, v in (val.elements or []):
+                        self._analyze_expr(v)
+            else:
+                self._analyze_expr(val)
+
+    def _validate_designator(self, desig: Designator, base: str,
+                              layout: Optional[StructLayout],
+                              array_size: Optional[int],
+                              node: object = None) -> None:
+        """Validate a single designator (possibly chained via .next)."""
+        if desig.member is not None:
+            # Member designator: verify member exists in struct/union layout
+            if layout is None:
+                if isinstance(base, str) and (base.startswith("struct ") or base.startswith("union ")):
+                    self._err(f"unknown {base} for designated initializer", node)
+                else:
+                    self._err(
+                        f"member designator '.{desig.member}' used on non-struct/union type",
+                        node,
+                    )
+                return
+            if desig.member not in layout.member_offsets:
+                tag = f"{layout.kind} {layout.name}" if layout else base
+                self._err(
+                    f"struct '{layout.name}' has no member named '{desig.member}'",
+                    node,
+                )
+                return
+            # If there's a chained designator, validate it against the member's type
+            if desig.next is not None:
+                mtypes = getattr(layout, "member_types", {}) or {}
+                member_type_str = mtypes.get(desig.member, "")
+                sub_layout = self._layouts.get(member_type_str)
+                self._validate_designator(
+                    desig.next, member_type_str, sub_layout, None, node
+                )
+
+        elif desig.index is not None:
+            # Array designator: verify index is non-negative and within bounds
+            try:
+                idx = self._eval_const_int(desig.index)
+            except Exception:
+                # Non-constant index expression; can't validate at compile time
+                # but still analyze the expression
+                self._analyze_expr(desig.index)
+                return
+            if idx < 0:
+                self._err(
+                    f"array designator index {idx} is negative",
+                    node,
+                )
+            elif array_size is not None and idx >= array_size:
+                self._err(
+                    f"array index {idx} exceeds array size {array_size}",
+                    node,
+                )
+            # If there's a chained designator after an array index, validate it
+            if desig.next is not None:
+                # The element type for the array
+                elem_base = base
+                elem_layout = self._layouts.get(elem_base) if isinstance(elem_base, str) else None
+                self._validate_designator(
+                    desig.next, elem_base, elem_layout, None, node
+                )
+
+    def _designator_target_type(self, desig: Optional[Designator], base: str,
+                                 layout: Optional[StructLayout],
+                                 decl_type: Type) -> Optional[Type]:
+        """Determine the target Type for a nested initializer value.
+
+        Returns a Type node for the member/element that the designator points to,
+        or None if we can't determine it.
+        """
+        if desig is None:
+            return None
+        if desig.member is not None and layout is not None:
+            mtypes = getattr(layout, "member_types", {}) or {}
+            member_type_str = mtypes.get(desig.member, "")
+            if member_type_str:
+                return Type(base=member_type_str, line=getattr(decl_type, "line", 0),
+                            column=getattr(decl_type, "column", 0))
+        return None

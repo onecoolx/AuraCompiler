@@ -53,6 +53,7 @@ from pycc.ast_nodes import (
     SizeOf,
     Cast,
     Initializer,
+    Designator,
     CharLiteral,
     Statement,
     Expression,
@@ -523,6 +524,10 @@ class IRGenerator:
                 n = len(inits0)
             else:
                 n = int(n0)
+
+            # Check for designated array initializers at global scope.
+            if isinstance(init, Initializer) and any(d is not None for d, _v in (init.elements or [])):
+                return self._const_designated_array_blob(decl, init, n)
             if isinstance(decl.type, ArrayType):
                 elem_ty = getattr(decl.type, "element_type", None)
                 elem_base = str(getattr(elem_ty, "base", base)).strip()
@@ -649,6 +654,9 @@ class IRGenerator:
         if self._is_struct_or_union_type(base):
             # Support nested initializer lists for structs/unions using
             # member-order mapping with brace elision and zero-fill.
+            # Check for designated initializers first.
+            if isinstance(init, Initializer) and any(d is not None for d, _v in (init.elements or [])):
+                return self._const_designated_struct_blob(str(base), init, decl)
             inits0 = self._const_initializer_list(init)
             if inits0 is None:
                 return None
@@ -899,6 +907,123 @@ class IRGenerator:
         fake = _FakeDecl("__pycc_const_init__", str(ty_name), init_any)
         return self._const_initializer_blob(fake)  # type: ignore[arg-type]
 
+    def _const_designated_struct_blob(self, base: str, init: Initializer, decl: Declaration) -> Optional[str]:
+        """Build a constant blob for a struct/union with designated initializers."""
+        if self._sema_ctx is None:
+            return None
+        layout = getattr(self._sema_ctx, "layouts", {}).get(str(base))
+        if layout is None:
+            return None
+
+        size = int(getattr(layout, "size", 0))
+        blob = bytearray([0] * size)
+
+        members = list(layout.member_offsets.keys())
+        offsets = layout.member_offsets
+        sizes = layout.member_sizes
+        mtypes = getattr(layout, "member_types", {}) or {}
+
+        # Build member -> value mapping from designated initializer.
+        member_values: dict[str, Any] = {}
+        cur_idx = 0
+
+        for desig, val in (init.elements or []):
+            if desig is not None and isinstance(desig, Designator):
+                if desig.member is not None and desig.member in offsets:
+                    member_values[desig.member] = val
+                    try:
+                        cur_idx = members.index(desig.member) + 1
+                    except ValueError:
+                        cur_idx = len(members)
+            else:
+                if cur_idx < len(members):
+                    member_values[members[cur_idx]] = val
+                    cur_idx += 1
+
+        # Write values into blob at correct offsets.
+        for m in members:
+            val = member_values.get(m)
+            if val is None:
+                continue  # already zero-filled
+            off = int(offsets.get(m, 0))
+            sz = int(sizes.get(m, 4))
+            mty = mtypes.get(m, "")
+
+            if isinstance(val, Initializer) and isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                sub_blob = self._const_initializer_blob_for_type(str(mty), val)
+                if sub_blob is None:
+                    return None
+                sub_bytes = bytes.fromhex(sub_blob.split(":", 1)[1])
+                end = min(len(blob), off + len(sub_bytes))
+                blob[off:end] = sub_bytes[:max(0, end - off)]
+            else:
+                imm = self._const_expr_to_int(val)
+                if imm is None:
+                    return None
+                v = int(imm)
+                for i in range(min(sz, 8)):
+                    if 0 <= off + i < len(blob):
+                        blob[off + i] = (v >> (8 * i)) & 0xFF
+
+        return "blob:" + blob.hex()
+
+    def _const_designated_array_blob(self, decl: Declaration, init: Initializer, n: int) -> Optional[str]:
+        """Build a constant blob for an array with designated initializers."""
+        base = getattr(decl.type, "base", None)
+        if isinstance(decl.type, ArrayType):
+            elem_ty = getattr(decl.type, "element_type", None)
+            elem_base = str(getattr(elem_ty, "base", base)).strip()
+        else:
+            elem_base = str(base).strip() if base is not None else ""
+
+        # Determine element size.
+        if elem_base in {"char", "unsigned char"}:
+            elem_sz = 1
+        elif elem_base in {"int", "unsigned int"}:
+            elem_sz = 4
+        elif elem_base in {"long", "unsigned long", "long int", "unsigned long int"}:
+            elem_sz = 8
+        else:
+            return None  # unsupported element type for designated array blob
+
+        blob = bytearray([0] * (n * elem_sz))
+
+        # Build index -> value mapping.
+        index_values: dict[int, Any] = {}
+        cur_idx = 0
+
+        for desig, val in (init.elements or []):
+            if desig is not None and isinstance(desig, Designator):
+                if desig.index is not None:
+                    try:
+                        idx = _eval_const_int_expr(desig.index)
+                    except Exception:
+                        return None
+                    index_values[idx] = val
+                    cur_idx = idx + 1
+            else:
+                index_values[cur_idx] = val
+                cur_idx += 1
+
+        # Write values into blob.
+        for idx in range(n):
+            val = index_values.get(idx)
+            if val is None:
+                continue  # already zero-filled
+            imm = self._const_expr_to_int(val)
+            if imm is None:
+                return None
+            off = idx * elem_sz
+            v = int(imm)
+            if elem_sz == 1:
+                blob[off] = v & 0xFF
+            else:
+                for i in range(min(elem_sz, 8)):
+                    if 0 <= off + i < len(blob):
+                        blob[off + i] = (v >> (8 * i)) & 0xFF
+
+        return "blob:" + blob.hex()
+
     def _const_expr_to_int(self, expr: Any) -> Optional[int]:
         """Best-effort const int evaluator (subset)."""
         if expr is None:
@@ -913,6 +1038,47 @@ class IRGenerator:
                 return None
             return v if expr.operator == "+" else -v
         return None
+
+    def _is_volatile_sym(self, sym: str) -> bool:
+        """Check if an IR symbol refers to a volatile-qualified variable.
+
+        Checks the per-function _var_volatile set (populated from Declaration
+        AST nodes) and falls back to the semantic context's global_decl_types
+        for global variables.
+        """
+        if not isinstance(sym, str):
+            return False
+        # Check per-function volatile set (locals + params).
+        if sym in getattr(self, "_var_volatile", set()):
+            return True
+        # Check global variables via semantic context.
+        if sym.startswith("@") and self._sema_ctx is not None:
+            name = sym[1:]
+            gdt = getattr(self._sema_ctx, "global_decl_types", {})
+            ty = gdt.get(name)
+            if ty is not None and getattr(ty, "is_volatile", False):
+                return True
+        return False
+
+    def _is_volatile_deref(self, ptr_expr: Expression) -> bool:
+        """Check if dereferencing ptr_expr accesses volatile-qualified memory.
+
+        For `*p` where `p` is `volatile int *`, the pointee is volatile.
+        We check the declared type of the pointer variable for is_volatile
+        (which qualifies the pointed-to object).
+        """
+        if isinstance(ptr_expr, Identifier):
+            # Check local declaration types via semantic context.
+            if self._sema_ctx is not None:
+                # Try local decl types first (stored during semantic analysis).
+                ty = getattr(self._sema_ctx, "global_decl_types", {}).get(ptr_expr.name)
+                if ty is not None and getattr(ty, "is_volatile", False):
+                    return True
+            # Also check if the pointer variable itself is in our volatile set.
+            sym = self._resolve_name(ptr_expr.name)
+            if self._is_volatile_sym(sym):
+                return True
+        return False
 
     def _is_unsigned_operand(self, op: str) -> bool:
         """Best-effort check whether an operand is unsigned.
@@ -1385,9 +1551,330 @@ class IRGenerator:
 
             return True
 
-        # Parse initializer list elements in order (designators unsupported here).
-        if not _lower_struct_init(f"@{decl.name}", False, str(decl.type.base), decl.initializer):
+        # Check if the initializer contains any designators.
+        if isinstance(decl.initializer, Initializer) and self._has_any_designator(decl.initializer):
+            return self._lower_designated_struct_init(
+                self._resolve_name(decl.name), False, str(decl.type.base), decl.initializer, decl
+            )
+
+        # Parse initializer list elements in order (non-designated path).
+        if not _lower_struct_init(self._resolve_name(decl.name), False, str(decl.type.base), decl.initializer):
             return False
+        return True
+
+    # ── Designated initializer helpers ─────────────────────────────────
+
+    def _has_any_designator(self, init: Initializer) -> bool:
+        """Return True if any element in the initializer has a Designator."""
+        for desig, _val in (init.elements or []):
+            if desig is not None:
+                return True
+        return False
+
+    def _resolve_designator_member(self, desig: Designator) -> str | None:
+        """Return the top-level member name from a member designator."""
+        if desig.member is not None:
+            return desig.member
+        return None
+
+    def _resolve_designator_index(self, desig: Designator) -> int | None:
+        """Return the integer index from an array designator, or None."""
+        if desig.index is not None:
+            try:
+                return _eval_const_int_expr(desig.index)
+            except Exception:
+                return None
+        return None
+
+    def _lower_designated_struct_init(
+        self,
+        base_sym: str,
+        base_is_ptr: bool,
+        ty_name: str,
+        init: Initializer,
+        decl: Declaration,
+    ) -> bool:
+        """Lower a struct/union initializer that contains designators.
+
+        Handles mixed designated and non-designated elements.
+        Unspecified members are zero-filled.
+        """
+        ty_s = str(ty_name).strip()
+        layout = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
+        if layout is None:
+            return False
+
+        members = list(layout.member_offsets.keys())
+        mtypes = getattr(layout, "member_types", {}) or {}
+
+        # Build a mapping: member_name -> value expression.
+        # For non-designated elements, assign sequentially starting from the
+        # current position (which advances after each designated element).
+        member_values: dict[str, Any] = {}
+        cur_idx = 0  # current sequential member index
+
+        for desig, val in (init.elements or []):
+            if desig is not None:
+                mname = self._resolve_designator_member(desig)
+                if mname is not None and mname in layout.member_offsets:
+                    # Handle chained designators (e.g. .inner.field)
+                    if desig.next is not None:
+                        # Accumulate multiple chained designators for the same
+                        # outer member (e.g. .inner.a = 10, .inner.b = 20).
+                        existing = member_values.get(mname)
+                        if isinstance(existing, list):
+                            existing.append((desig.next, val))
+                        elif isinstance(existing, tuple) and len(existing) == 2 and isinstance(existing[0], Designator):
+                            member_values[mname] = [existing, (desig.next, val)]
+                        else:
+                            member_values[mname] = (desig.next, val)
+                    else:
+                        member_values[mname] = val
+                    # Advance cur_idx past this member for subsequent non-designated elements
+                    try:
+                        cur_idx = members.index(mname) + 1
+                    except ValueError:
+                        cur_idx = len(members)
+                else:
+                    # Array designator on a struct - skip (semantics should have caught this)
+                    pass
+            else:
+                # Non-designated: assign to current sequential member
+                if cur_idx < len(members):
+                    member_values[members[cur_idx]] = val
+                    cur_idx += 1
+
+        # Now emit stores for all members: designated values or zero-fill.
+        for m in members:
+            val = member_values.get(m)
+            mty = mtypes.get(m, "")
+
+            if val is None:
+                # Zero-fill unspecified member
+                zero_expr = IntLiteral(
+                    value=0, is_hex=False, is_octal=False,
+                    line=decl.line, column=decl.column,
+                )
+                if isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                    # Zero-fill nested struct: emit zero for each sub-member
+                    self._zero_fill_struct_member(base_sym, base_is_ptr, m, mty, decl)
+                else:
+                    v = self._gen_expr(zero_expr)
+                    if base_is_ptr:
+                        self.instructions.append(
+                            IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m)
+                        )
+                    else:
+                        self.instructions.append(
+                            IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m)
+                        )
+            elif isinstance(val, list):
+                # Multiple chained designators for the same outer member
+                # (e.g. .inner.a = 10, .inner.b = 20).
+                # Build a synthetic Initializer with designated elements and recurse.
+                taddr = self._new_temp()
+                if base_is_ptr:
+                    self.instructions.append(
+                        IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m,
+                                      meta={"member_type": mty})
+                    )
+                else:
+                    self.instructions.append(
+                        IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m,
+                                      meta={"member_type": mty})
+                    )
+                self._var_types[taddr] = f"{mty}*"
+                synth_elements = [(sub_desig, sub_val) for sub_desig, sub_val in val]
+                synth_init = Initializer(
+                    elements=synth_elements,
+                    line=getattr(decl, "line", 0),
+                    column=getattr(decl, "column", 0),
+                )
+                self._lower_designated_struct_init(taddr, True, mty, synth_init, decl)
+            elif isinstance(val, tuple):
+                # Chained designator: (next_designator, value_expr)
+                next_desig, inner_val = val
+                taddr = self._new_temp()
+                if base_is_ptr:
+                    self.instructions.append(
+                        IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m,
+                                      meta={"member_type": mty})
+                    )
+                else:
+                    self.instructions.append(
+                        IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m,
+                                      meta={"member_type": mty})
+                    )
+                self._var_types[taddr] = f"{mty}*"
+                # Recurse into the nested struct with the chained designator
+                if isinstance(inner_val, Initializer):
+                    self._lower_designated_struct_init(taddr, True, mty, inner_val, decl)
+                else:
+                    # Single value for a nested member via chained designator
+                    sub_member = self._resolve_designator_member(next_desig)
+                    if sub_member is not None:
+                        v = self._gen_expr(inner_val)
+                        self.instructions.append(
+                            IRInstruction(op="store_member_ptr", result=v, operand1=taddr, operand2=sub_member)
+                        )
+                        # Zero-fill other sub-members
+                        sub_layout = getattr(self._sema_ctx, "layouts", {}).get(mty)
+                        if sub_layout is not None:
+                            for sm in sub_layout.member_offsets:
+                                if sm != sub_member:
+                                    zv = self._gen_expr(IntLiteral(
+                                        value=0, is_hex=False, is_octal=False,
+                                        line=decl.line, column=decl.column,
+                                    ))
+                                    self.instructions.append(
+                                        IRInstruction(op="store_member_ptr", result=zv, operand1=taddr, operand2=sm)
+                                    )
+            elif isinstance(val, Initializer) and isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                # Nested brace-enclosed initializer for an aggregate member
+                taddr = self._new_temp()
+                if base_is_ptr:
+                    self.instructions.append(
+                        IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m,
+                                      meta={"member_type": mty})
+                    )
+                else:
+                    self.instructions.append(
+                        IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m,
+                                      meta={"member_type": mty})
+                    )
+                self._var_types[taddr] = f"{mty}*"
+                if self._has_any_designator(val):
+                    self._lower_designated_struct_init(taddr, True, mty, val, decl)
+                else:
+                    # Non-designated nested init - use sequential path
+                    sub_elems = self._const_initializer_list(val)
+                    if sub_elems is not None:
+                        sub_init = Initializer(
+                            elements=[(None, e) for e in sub_elems],
+                            line=getattr(decl, "line", 0),
+                            column=getattr(decl, "column", 0),
+                        )
+                        # Reuse the existing sequential struct init logic
+                        sub_layout = getattr(self._sema_ctx, "layouts", {}).get(mty)
+                        if sub_layout is not None:
+                            sub_members = list(sub_layout.member_offsets.keys())
+                            sub_mtypes = getattr(sub_layout, "member_types", {}) or {}
+                            for si, sm in enumerate(sub_members):
+                                if si < len(sub_elems):
+                                    sv = self._gen_expr(sub_elems[si])
+                                else:
+                                    sv = self._gen_expr(IntLiteral(
+                                        value=0, is_hex=False, is_octal=False,
+                                        line=decl.line, column=decl.column,
+                                    ))
+                                self.instructions.append(
+                                    IRInstruction(op="store_member_ptr", result=sv, operand1=taddr, operand2=sm)
+                                )
+            else:
+                # Scalar value for this member
+                v = self._gen_expr(val)
+                if base_is_ptr:
+                    self.instructions.append(
+                        IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m)
+                    )
+                else:
+                    self.instructions.append(
+                        IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m)
+                    )
+
+        return True
+
+    def _zero_fill_struct_member(
+        self, base_sym: str, base_is_ptr: bool, member: str, mty: str, decl: Declaration
+    ) -> None:
+        """Zero-fill a nested struct/union member."""
+        taddr = self._new_temp()
+        if base_is_ptr:
+            self.instructions.append(
+                IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=member,
+                              meta={"member_type": mty})
+            )
+        else:
+            self.instructions.append(
+                IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=member,
+                              meta={"member_type": mty})
+            )
+        self._var_types[taddr] = f"{mty}*"
+        sub_layout = getattr(self._sema_ctx, "layouts", {}).get(mty)
+        if sub_layout is not None:
+            for sm in sub_layout.member_offsets:
+                zv = self._gen_expr(IntLiteral(
+                    value=0, is_hex=False, is_octal=False,
+                    line=decl.line, column=decl.column,
+                ))
+                self.instructions.append(
+                    IRInstruction(op="store_member_ptr", result=zv, operand1=taddr, operand2=sm)
+                )
+
+    def _lower_local_array_designated_init(self, item: Declaration) -> bool:
+        """Lower a local array initializer that contains designators.
+
+        Handles `int a[N] = { [2] = 10, [0] = 5 }` style initialization.
+        Unspecified elements are zero-filled.
+        Returns True if handled.
+        """
+        if item.initializer is None:
+            return False
+        if not isinstance(item.initializer, Initializer):
+            return False
+        if not self._has_any_designator(item.initializer):
+            return False
+        if getattr(item, "array_size", None) is None:
+            return False
+        if getattr(item.type, "is_pointer", False):
+            return False
+
+        n = int(item.array_size)
+        elem_base = str(item.type.base).strip()
+
+        # Determine element label for store_index
+        if elem_base in {"char", "unsigned char"}:
+            label = "char"
+        else:
+            label = "int"
+
+        # Build a mapping: index -> value expression.
+        # Non-designated elements advance sequentially.
+        index_values: dict[int, Any] = {}
+        cur_idx = 0
+
+        for desig, val in (item.initializer.elements or []):
+            if desig is not None:
+                idx = self._resolve_designator_index(desig)
+                if idx is not None:
+                    index_values[idx] = val
+                    cur_idx = idx + 1
+            else:
+                index_values[cur_idx] = val
+                cur_idx += 1
+
+        # Emit stores for all elements: designated values or zero-fill.
+        sym = self._resolve_name(item.name)
+        for idx in range(n):
+            val = index_values.get(idx)
+            if val is None:
+                val_ast = IntLiteral(
+                    value=0, is_hex=False, is_octal=False,
+                    line=item.line, column=item.column,
+                )
+            else:
+                val_ast = val
+            v = self._gen_expr(val_ast)
+            self.instructions.append(
+                IRInstruction(
+                    op="store_index",
+                    result=v,
+                    operand1=sym,
+                    operand2=f"${idx}",
+                    label=label,
+                )
+            )
+
         return True
 
     # Functions
@@ -1421,6 +1908,8 @@ class IRGenerator:
         self._local_arrays = set()
         # Track declared types of locals/params for signedness decisions.
         self._var_types: dict[str, str] = {}
+        # Track volatile-qualified variables (IR symbols like @x).
+        self._var_volatile: set[str] = set()
         # Function-local static storage (lowered to global symbols).
         # Maps source name -> global symbol name (without leading '@').
         self._local_static_syms: dict[str, str] = {}
@@ -1447,6 +1936,9 @@ class IRGenerator:
             self._var_types[f"@{p.name}"] = ty_s
             self._scope_stack[-1][p.name] = f"@{p.name}"
             self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=ty_s))
+            # Track volatile-qualified parameters.
+            if getattr(p.type, "is_volatile", False):
+                self._var_volatile.add(f"@{p.name}")
         self._gen_stmt(fn.body)
         self._pop_scope()
         # Ensure a return exists
@@ -1480,6 +1972,13 @@ class IRGenerator:
                     if getattr(item, "storage_class", None) != "static":
                         self._declare_scoped(item.name)
 
+                    # Track volatile-qualified local variables.
+                    try:
+                        if getattr(item.type, "is_volatile", False):
+                            self._var_volatile.add(self._resolve_name(item.name))
+                    except Exception:
+                        pass
+
                     # Local static variables: lower to a unique global symbol so state persists.
                     if getattr(item, "storage_class", None) == "static":
                         self._ensure_local_static_aliases()
@@ -1509,6 +2008,9 @@ class IRGenerator:
 
                         # Record type for the lowered global symbol.
                         self._var_types[f"@{gname}"] = str(item.type.base)
+                        # Track volatile for local statics.
+                        if getattr(item.type, "is_volatile", False):
+                            self._var_volatile.add(f"@{gname}")
 
                         # If initializer exists, we already applied it at global init time.
                         # Skip normal local decl/init lowering.
@@ -1638,6 +2140,9 @@ class IRGenerator:
                     except Exception:
                         pass
                     if self._lower_local_struct_initializer(item):
+                        continue
+                    # Designated array initializer: `int a[N] = { [2] = 10, [0] = 5 }`
+                    if self._lower_local_array_designated_init(item):
                         continue
                     if item.initializer is not None:
                         # Fixed-size char array string initializer: `char s[N] = "hi";`
@@ -1787,7 +2292,23 @@ class IRGenerator:
 
                         # Scalar init (existing path)
                         v = self._gen_expr(item.initializer)
-                        self.instructions.append(IRInstruction(op="mov", result=self._resolve_name(item.name), operand1=v))
+                        # struct/union by-value initialization: `struct S b = a;`
+                        # Must use struct_copy instead of mov to copy all bytes.
+                        dst_sym = self._resolve_name(item.name)
+                        dst_ty = self._var_types.get(dst_sym, "")
+                        if isinstance(dst_ty, str) and (dst_ty.strip().startswith("struct ") or dst_ty.strip().startswith("union ")):
+                            layout = getattr(self._sema_ctx, "layouts", {}).get(dst_ty.strip()) if self._sema_ctx else None
+                            sz = int(getattr(layout, "size", 0) or 0) if layout else 0
+                            if sz > 0:
+                                self.instructions.append(IRInstruction(op="struct_copy", result=dst_sym, operand1=v, meta={"size": sz}))
+                            else:
+                                _init_vol = self._is_volatile_sym(dst_sym)
+                                self.instructions.append(IRInstruction(op="mov", result=dst_sym, operand1=v,
+                                                                       meta={"volatile": True} if _init_vol else None))
+                        else:
+                            _init_vol = self._is_volatile_sym(dst_sym)
+                            self.instructions.append(IRInstruction(op="mov", result=dst_sym, operand1=v,
+                                                                   meta={"volatile": True} if _init_vol else None))
                         # Propagate pointer-to-row step metadata from the decay
                         # temp into the local symbol, so later pointer
                         # arithmetic (e.g. p+1) can scale correctly.
@@ -2686,7 +3207,10 @@ class IRGenerator:
                         if sz > 0:
                             self.instructions.append(IRInstruction(op="struct_copy", result=dst, operand1=rhs, meta={"size": sz}))
                             return dst
-                    self.instructions.append(IRInstruction(op="mov", result=dst, operand1=rhs))
+                    mov_meta: dict = {}
+                    if self._is_volatile_sym(dst):
+                        mov_meta["volatile"] = True
+                    self.instructions.append(IRInstruction(op="mov", result=dst, operand1=rhs, meta=mov_meta if mov_meta else None))
                     return dst
                 # compound assigns: a += b => a = a + b
                 cur = self._gen_expr(expr.target)
@@ -2731,7 +3255,10 @@ class IRGenerator:
                         t = t2
                     # Ensure the destination keeps its narrow type.
                     self._var_types[dst] = cty_n
-                self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t))
+                comp_mov_meta: dict = {}
+                if self._is_volatile_sym(dst):
+                    comp_mov_meta["volatile"] = True
+                self.instructions.append(IRInstruction(op="mov", result=dst, operand1=t, meta=comp_mov_meta if comp_mov_meta else None))
                 return dst
 
 
@@ -2755,7 +3282,10 @@ class IRGenerator:
 
                 # Load current value at *addr, do operation, then store back.
                 cur = self._new_temp()
-                self.instructions.append(IRInstruction(op="load", result=cur, operand1=addr))
+                # Check if the pointer dereference accesses volatile memory.
+                _deref_vol = self._is_volatile_deref(expr.target.operand)
+                self.instructions.append(IRInstruction(op="load", result=cur, operand1=addr,
+                                                       meta={"volatile": True} if _deref_vol else None))
 
                 # Best-effort: propagate pointee scalar type onto the loaded temp.
                 # This is needed so later ops like `>>` can choose signed vs unsigned.
@@ -2802,7 +3332,8 @@ class IRGenerator:
                             t = t3
                         else:
                             t = t2
-                self.instructions.append(IRInstruction(op="store", result=t, operand1=addr))
+                self.instructions.append(IRInstruction(op="store", result=t, operand1=addr,
+                                                       meta={"volatile": True} if _deref_vol else None))
                 return t
 
             # handle pointer deref store: *p = rhs
@@ -2817,7 +3348,9 @@ class IRGenerator:
                         self._var_types[addr] = op_ty
                 except Exception:
                     pass
-                self.instructions.append(IRInstruction(op="store", result=rhs, operand1=addr))
+                _deref_vol2 = self._is_volatile_deref(expr.target.operand)
+                self.instructions.append(IRInstruction(op="store", result=rhs, operand1=addr,
+                                                       meta={"volatile": True} if _deref_vol2 else None))
                 return rhs
             # handle array element store: target is ArrayAccess
             if isinstance(expr.target, ArrayAccess):
@@ -2872,7 +3405,9 @@ class IRGenerator:
                 except Exception:
                     pass
                 t = self._new_temp()
-                self.instructions.append(IRInstruction(op="load", result=t, operand1=base))
+                _deref_vol3 = self._is_volatile_deref(expr.operand)
+                self.instructions.append(IRInstruction(op="load", result=t, operand1=base,
+                                                       meta={"volatile": True} if _deref_vol3 else None))
                 return t
 
             # ++/-- operators
@@ -2888,11 +3423,14 @@ class IRGenerator:
                         step = _type_size(base_ty) if base_ty else 1
                         if step > 1:
                             delta = f"${step}"
+                    _inc_vol = self._is_volatile_sym(sym)
                     old = self._new_temp()
-                    self.instructions.append(IRInstruction(op="mov", result=old, operand1=sym))
+                    self.instructions.append(IRInstruction(op="mov", result=old, operand1=sym,
+                                                           meta={"volatile": True} if _inc_vol else None))
                     new = self._new_temp()
                     self.instructions.append(IRInstruction(op="binop", result=new, operand1=old, operand2=delta, label=op_name))
-                    self.instructions.append(IRInstruction(op="mov", result=sym, operand1=new))
+                    self.instructions.append(IRInstruction(op="mov", result=sym, operand1=new,
+                                                           meta={"volatile": True} if _inc_vol else None))
                     return old if getattr(expr, "is_postfix", False) else new
                 # Fallback for non-identifier operands (e.g. *p++)
                 v = self._gen_expr(expr.operand)

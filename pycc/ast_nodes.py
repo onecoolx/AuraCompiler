@@ -56,6 +56,12 @@ class Type(ASTNode):
     # - None: unknown / unspecified
     # - 0+: known arity
     fn_param_count: Optional[int] = None
+
+    # Full function pointer signature (for complete type compatibility checks).
+    # fn_param_types: list of Type nodes for each parameter (None if unknown)
+    # fn_return_type: the return Type of the function pointer (None if unknown)
+    fn_param_types: Optional[List['Type']] = None
+    fn_return_type: Optional['Type'] = None
     
     def __str__(self) -> str:
         result = ""
@@ -477,6 +483,7 @@ class Designator(ASTNode):
     """Designator for designated initializers"""
     index: Optional[Expression] = None  # For array [index]
     member: Optional[str] = None  # For struct .member
+    next: Optional['Designator'] = None  # For nested designators (.inner.member)
 
 
 @dataclass

@@ -63,6 +63,7 @@ from pycc.ast_nodes import (
     Cast,
     EnumDecl,
     Initializer,
+    Designator,
 )
 
 
@@ -374,6 +375,8 @@ class Parser:
                 # Best-effort: preserve arity for function-pointer return types.
                 try:
                     ptr_ty.fn_param_count = len(params)
+                    # Store parameter types from the function's own parameter list.
+                    ptr_ty.fn_param_types = [p.type for p in params if getattr(p, "name", None) != "..."]
                 except Exception:
                     pass
 
@@ -839,6 +842,12 @@ class Parser:
                     ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
                     try:
                         ptr_ty.fn_param_count = fp_arity
+                        # Store full function pointer signature for type compatibility checks.
+                        ptr_ty.fn_return_type = Type(base=base_type.base,
+                                                     is_unsigned=getattr(base_type, 'is_unsigned', False),
+                                                     is_signed=getattr(base_type, 'is_signed', False),
+                                                     line=base_type.line, column=base_type.column)
+                        ptr_ty.fn_param_types = [p.type for p in fp_params if getattr(p, "name", None) != "..."]
                     except Exception:
                         pass
                 params.append(Declaration(name=name_tok.value, type=ptr_ty, line=name_tok.line, column=name_tok.column))
@@ -1113,6 +1122,13 @@ class Parser:
             ty._normalize_pointer_state()
             try:
                 ty.fn_param_count = fn_arity
+                # Store full function pointer signature for type compatibility checks.
+                ty.fn_return_type = Type(base=base_type.base,
+                                         is_unsigned=getattr(base_type, 'is_unsigned', False),
+                                         is_signed=getattr(base_type, 'is_signed', False),
+                                         line=base_type.line, column=base_type.column)
+                if params is not None:
+                    ty.fn_param_types = [p.type for p in params if getattr(p, "name", None) != "..."]
             except Exception:
                 pass
 
@@ -1137,11 +1153,12 @@ class Parser:
     def _parse_initializer(self) -> Expression:
         """Parse an initializer.
 
-        Supported now:
+        Supported:
         - assignment-expression
         - initializer-list: '{' [initializer (',' initializer)*] [','] '}'
-
-        Designated initializers are intentionally deferred.
+        - designated initializers: '.member = val', '[index] = val'
+        - nested designators: '.inner.member = val'
+        - mixed designated and non-designated elements
         """
 
         # initializer-list
@@ -1150,9 +1167,9 @@ class Parser:
             # empty initializer list => zero-init
             if not self._at(TokenType.RBRACE):
                 while True:
-                    # No designators in this milestone.
+                    designator = self._try_parse_designator()
                     val = self._parse_initializer()
-                    elements.append((None, val))
+                    elements.append((designator, val))
                     if not self._match(TokenType.COMMA):
                         break
                     if self._at(TokenType.RBRACE):
@@ -1162,6 +1179,112 @@ class Parser:
 
         # assignment-expression
         return self._parse_assignment()
+
+    def _try_parse_designator(self) -> Optional[Designator]:
+        """Try to parse a designator prefix before an initializer element.
+
+        Recognizes:
+        - .member = val  (member designator)
+        - [index] = val  (array designator)
+        - .inner.member = val  (nested designators)
+        - [i].member = val  (mixed nested designators)
+
+        Returns None if no designator prefix is found.
+        """
+        if not self._at(TokenType.DOT) and not self._at(TokenType.LBRACKET):
+            return None
+
+        # For '.', check that the next token is an identifier followed by
+        # either '=' or another designator start ('.' or '[').
+        if self._at(TokenType.DOT):
+            p1 = self.peek(1)
+            p2 = self.peek(2)
+            if not (p1 and p1.type == TokenType.IDENTIFIER and p2 and
+                    (p2.type == TokenType.ASSIGN or p2.type == TokenType.DOT or
+                     p2.type == TokenType.LBRACKET)):
+                return None
+
+        # For '[', we need to speculatively parse and check for ']' followed
+        # by '=' or another designator.  Save position for backtracking.
+        if self._at(TokenType.LBRACKET):
+            saved_pos = self.position
+            saved_tok = self.current_token
+            # Try to parse [expr] and check what follows
+            self.advance()  # consume '['
+            # Skip tokens until we find matching ']' (handle nesting)
+            depth = 1
+            while depth > 0 and not self._at(TokenType.EOF):
+                if self._at(TokenType.LBRACKET):
+                    depth += 1
+                elif self._at(TokenType.RBRACKET):
+                    depth -= 1
+                    if depth == 0:
+                        break
+                self.advance()
+            if depth != 0:
+                # Unmatched bracket, restore and return None
+                self.position = saved_pos
+                self.current_token = saved_tok
+                return None
+            # We're at ']', peek past it
+            after_bracket = self.peek(1)
+            # Restore position regardless - we'll re-parse properly below
+            self.position = saved_pos
+            self.current_token = saved_tok
+            if not (after_bracket and
+                    (after_bracket.type == TokenType.ASSIGN or
+                     after_bracket.type == TokenType.DOT or
+                     after_bracket.type == TokenType.LBRACKET)):
+                return None
+
+        head = self._parse_designator_chain()
+        if head is not None:
+            self._expect(TokenType.ASSIGN, "Expected '=' after designator")
+        return head
+
+    def _parse_designator_chain(self) -> Optional[Designator]:
+        """Parse a chain of designators (.a.b[i].c etc.)."""
+        first = self._parse_single_designator()
+        if first is None:
+            return None
+
+        # Parse additional chained designators
+        tail = first
+        while self._at(TokenType.DOT) or self._at(TokenType.LBRACKET):
+            nxt = self._parse_single_designator()
+            if nxt is None:
+                break
+            tail.next = nxt
+            tail = nxt
+
+        return first
+
+    def _parse_single_designator(self) -> Optional[Designator]:
+        """Parse a single designator: .member or [index]."""
+        tok = self.current_token
+        if tok is None:
+            return None
+
+        if self._at(TokenType.DOT):
+            # .member designator
+            # Peek to confirm next is IDENTIFIER (not ELLIPSIS etc.)
+            p = self.peek(1)
+            if not (p and p.type == TokenType.IDENTIFIER):
+                return None
+            dot_tok = tok
+            self.advance()  # consume '.'
+            member_tok = self._expect(TokenType.IDENTIFIER, "Expected member name after '.'")
+            return Designator(member=member_tok.value, line=dot_tok.line, column=dot_tok.column)
+
+        if self._at(TokenType.LBRACKET):
+            # [index] designator
+            bracket_tok = tok
+            self.advance()  # consume '['
+            index_expr = self._parse_conditional()
+            self._expect(TokenType.RBRACKET, "Expected ']' after array designator index")
+            return Designator(index=index_expr, line=bracket_tok.line, column=bracket_tok.column)
+
+        return None
 
     def _parse_statement(self):
         tok = self.current_token

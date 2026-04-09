@@ -25,6 +25,129 @@ from typing import Dict, List, Optional, Tuple, Any
 from pycc.ir import IRInstruction
 
 
+# ---------------------------------------------------------------------------
+# SysV AMD64 ABI struct classification (eightbyte algorithm)
+# ---------------------------------------------------------------------------
+
+class EightbyteClass:
+    """SysV ABI eightbyte classification constants."""
+    NO_CLASS = 0
+    INTEGER = 1
+    SSE = 2
+    MEMORY = 3
+
+
+def _classify_field(type_str: str) -> int:
+    """Classify a single scalar field type into an EightbyteClass value.
+
+    Integer types (char, short, int, long, pointer, enum) → INTEGER
+    Float types (float, double) → SSE
+    long double → MEMORY (causes entire struct to degrade)
+    """
+    t = type_str.strip()
+
+    # Pointer types (contain '*')
+    if "*" in t:
+        return EightbyteClass.INTEGER
+
+    # long double → MEMORY (80-bit x87, 16-byte aligned on x86-64)
+    if t == "long double":
+        return EightbyteClass.MEMORY
+
+    # SSE types
+    if t in ("float", "double"):
+        return EightbyteClass.SSE
+
+    # Integer / enum types → INTEGER
+    # This covers: char, signed char, unsigned char, short, int, long,
+    # long long, unsigned variants, and enum types.
+    return EightbyteClass.INTEGER
+
+
+def _merge_classes(a: int, b: int) -> int:
+    """Merge two eightbyte classifications.  Priority: MEMORY > INTEGER > SSE > NO_CLASS."""
+    if a == EightbyteClass.MEMORY or b == EightbyteClass.MEMORY:
+        return EightbyteClass.MEMORY
+    if a == EightbyteClass.INTEGER or b == EightbyteClass.INTEGER:
+        return EightbyteClass.INTEGER
+    if a == EightbyteClass.SSE or b == EightbyteClass.SSE:
+        return EightbyteClass.SSE
+    return EightbyteClass.NO_CLASS
+
+
+def classify_struct(struct_type: str, layout: "StructLayout") -> list:
+    """Classify a struct/union type according to the SysV AMD64 ABI.
+
+    Returns a list of EightbyteClass values (at most 2 elements).
+    If the struct is > 16 bytes or contains a ``long double`` member the
+    entire struct is classified as MEMORY (``[EightbyteClass.MEMORY]``).
+
+    *layout* is a ``pycc.semantics.StructLayout`` instance that provides
+    ``size``, ``member_offsets``, ``member_sizes``, and ``member_types``.
+    """
+    size = int(getattr(layout, "size", 0) or 0)
+
+    # Rule 1: structs larger than 16 bytes → MEMORY
+    if size > 16:
+        return [EightbyteClass.MEMORY]
+
+    # Empty struct edge-case (size 0) – treat as NO_CLASS
+    if size == 0:
+        return [EightbyteClass.NO_CLASS]
+
+    member_offsets = getattr(layout, "member_offsets", {}) or {}
+    member_sizes = getattr(layout, "member_sizes", {}) or {}
+    member_types = getattr(layout, "member_types", {}) or {}
+
+    # Determine number of eightbytes (1 or 2)
+    num_eightbytes = 1 if size <= 8 else 2
+    classes = [EightbyteClass.NO_CLASS] * num_eightbytes
+
+    for name, offset in member_offsets.items():
+        mtype = member_types.get(name, "int")
+        field_class = _classify_field(mtype)
+
+        # If any field is MEMORY (e.g. long double), entire struct → MEMORY
+        if field_class == EightbyteClass.MEMORY:
+            return [EightbyteClass.MEMORY]
+
+        # Determine which eightbyte this field falls into (0 or 1)
+        eb_index = 0 if offset < 8 else 1
+        # Clamp to valid range (should not happen for size ≤ 16, but be safe)
+        if eb_index >= num_eightbytes:
+            eb_index = num_eightbytes - 1
+
+        classes[eb_index] = _merge_classes(classes[eb_index], field_class)
+
+    # Replace any remaining NO_CLASS with INTEGER (conservative default for
+    # padding-only eightbytes – the ABI treats them as INTEGER).
+    for i in range(len(classes)):
+        if classes[i] == EightbyteClass.NO_CLASS:
+            classes[i] = EightbyteClass.INTEGER
+
+    return classes
+
+
+def get_struct_pass_mode(classification: list) -> str:
+    """Determine the parameter/return passing mode from a classification list.
+
+    Returns one of:
+      - ``'registers'``   – fits in GP/SSE registers
+      - ``'stack'``       – passed on the stack (fallback when regs exhausted;
+                            caller is responsible for checking register availability)
+      - ``'hidden_ptr'``  – MEMORY class; caller allocates space and passes a
+                            hidden pointer (used for large structs / long double)
+    """
+    if not classification:
+        return "stack"
+
+    if any(c == EightbyteClass.MEMORY for c in classification):
+        return "hidden_ptr"
+
+    # All eightbytes are INTEGER or SSE → eligible for register passing.
+    return "registers"
+
+
 class CodeGenerator:
     """Generates x86-64 assembly code"""
     
@@ -529,11 +652,30 @@ class CodeGenerator:
         # must be paired so that %rsp is again 0 mod 16 right before a `call`.
         self._call_stack_adjust = 0
 
+        # SysV ABI: if this function returns a MEMORY-class struct, the caller
+        # passes a hidden pointer via %rdi as the implicit first argument.
+        # Save it now before processing explicit parameters.
+        self._hidden_ret_ptr_off = 0
+        ret_ty = getattr(self, "_fn_ret_ty", "") or ""
+        if isinstance(ret_ty, str) and (ret_ty.strip().startswith("struct ") or ret_ty.strip().startswith("union ")):
+            rty_s = ret_ty.strip()
+            layout = getattr(self._sema_ctx, "layouts", {}).get(rty_s) if self._sema_ctx else None
+            classification = classify_struct(rty_s, layout) if layout else [EightbyteClass.INTEGER]
+            pm = get_struct_pass_mode(classification)
+            if pm == "hidden_ptr":
+                # Save the hidden pointer (%rdi) into a spill slot.
+                tmp = self._new_spill_name()
+                self._hidden_ret_ptr_off = self._ensure_local(tmp)
+                self._emit(f"  movq %rdi, -{self._hidden_ret_ptr_off}(%rbp)")
+
         # Move params from registers into stack slots (treat @param as local)
         arg_regs = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"]
         xmm_arg_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"]
         gp_idx = 0
         xmm_idx = 0
+        # If we consumed %rdi for the hidden return pointer, skip it.
+        if self._hidden_ret_ptr_off:
+            gp_idx = 1
         for d in decls:
             if d.op != "param" or not d.result:
                 continue
@@ -551,13 +693,64 @@ class CodeGenerator:
                     self._emit(f"  movs{s} {xmm_arg_regs[xmm_idx]}, -{off}(%rbp)")
                 xmm_idx += 1
             elif ty.startswith("struct ") or ty.startswith("union "):
-                # Struct/union by-value param: store GP register chunks into local slot.
+                # Struct/union by-value param: use StructClassifier to decide
+                # GP vs XMM registers per eightbyte (SysV ABI).
+                layout = getattr(self._sema_ctx, "layouts", {}).get(ty) if self._sema_ctx else None
+                classification = classify_struct(ty, layout) if layout else [EightbyteClass.INTEGER]
+                pass_mode = get_struct_pass_mode(classification)
                 sz = self._type_size_bytes(ty)
-                chunks = (sz + 7) // 8
-                for ci in range(chunks):
+
+                if pass_mode == "hidden_ptr":
+                    # Large struct (>16 bytes): passed via hidden pointer in
+                    # next GP register.  Copy the pointed-to data into the
+                    # local stack slot.
                     if gp_idx < len(arg_regs):
-                        self._emit(f"  movq {arg_regs[gp_idx]}, -{off - ci * 8}(%rbp)")
+                        src_reg = arg_regs[gp_idx]
                         gp_idx += 1
+                        # Copy sz bytes from src_reg into local slot at -off(%rbp).
+                        # Use rep movsb for simplicity.
+                        self._emit(f"  movq {src_reg}, %rsi")
+                        self._emit(f"  leaq -{off}(%rbp), %rdi")
+                        self._emit(f"  movq ${sz}, %rcx")
+                        self._emit("  rep movsb")
+                elif pass_mode == "registers":
+                    # Check if we have enough registers for all eightbytes.
+                    gp_needed = sum(1 for c in classification if c == EightbyteClass.INTEGER)
+                    sse_needed = sum(1 for c in classification if c == EightbyteClass.SSE)
+                    if gp_idx + gp_needed <= len(arg_regs) and xmm_idx + sse_needed <= len(xmm_arg_regs):
+                        # Enough registers: store each eightbyte from the
+                        # appropriate register type.
+                        for ci, cls in enumerate(classification):
+                            if cls == EightbyteClass.SSE:
+                                self._emit(f"  movq {xmm_arg_regs[xmm_idx]}, -{off - ci * 8}(%rbp)")
+                                xmm_idx += 1
+                            else:
+                                # INTEGER (or NO_CLASS treated as INTEGER)
+                                self._emit(f"  movq {arg_regs[gp_idx]}, -{off - ci * 8}(%rbp)")
+                                gp_idx += 1
+                    else:
+                        # Not enough registers: entire struct was passed on
+                        # the stack by the caller.  The struct data lives at
+                        # a positive offset from %rbp (above the return
+                        # address).  We reconstruct it into the local slot.
+                        # NOTE: for the callee prologue, stack-passed struct
+                        # params are handled by the existing stack arg
+                        # mechanism; we just consume the GP/XMM slots that
+                        # *would* have been used so subsequent params get
+                        # correct register indices.
+                        chunks = (sz + 7) // 8
+                        for ci in range(chunks):
+                            if gp_idx < len(arg_regs):
+                                self._emit(f"  movq {arg_regs[gp_idx]}, -{off - ci * 8}(%rbp)")
+                                gp_idx += 1
+                else:
+                    # Fallback: stack-passed struct.  Same as register
+                    # exhaustion case above.
+                    chunks = (sz + 7) // 8
+                    for ci in range(chunks):
+                        if gp_idx < len(arg_regs):
+                            self._emit(f"  movq {arg_regs[gp_idx]}, -{off - ci * 8}(%rbp)")
+                            gp_idx += 1
             else:
                 if gp_idx < len(arg_regs):
                     if ty == "char" or ty == "unsigned char":
@@ -686,18 +879,29 @@ class CodeGenerator:
             return
 
         if op == "mov":
+            # Volatile annotation: mark memory accesses for volatile-qualified
+            # variables so they are never optimised away.
+            _is_volatile_mov = bool(ins.meta and ins.meta.get("volatile"))
             # Float-aware move: if source is a float-typed temp, use SSE move
             src_ty = self._var_types.get(ins.operand1, "")
             if isinstance(src_ty, str) and src_ty in ("float", "double"):
                 s = "s" if src_ty == "float" else "d"
                 mov = f"movs{s}"
                 off1 = self._ensure_local(ins.operand1)
-                self._emit(f"  {mov} -{off1}(%rbp), %xmm0")
+                if _is_volatile_mov:
+                    self._emit(f"  {mov} -{off1}(%rbp), %xmm0  # volatile load")
+                else:
+                    self._emit(f"  {mov} -{off1}(%rbp), %xmm0")
                 off_r = self._ensure_local(ins.result)
-                self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)")
+                if _is_volatile_mov:
+                    self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)  # volatile store")
+                else:
+                    self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)")
                 # Propagate float type
                 self._var_types[ins.result] = src_ty
                 return
+            if _is_volatile_mov:
+                self._emit("  # volatile")
             self._load_operand(ins.operand1, "%rax")
             self._store_result(ins.result, "%rax")
             try:
@@ -834,6 +1038,9 @@ class CodeGenerator:
 
         if op == "load":
             # result = *(operand1)
+            _is_volatile_load = bool(ins.meta and ins.meta.get("volatile"))
+            if _is_volatile_load:
+                self._emit("  # volatile load")
             # Best-effort: choose width based on pointer pointee type.
             addr = ins.operand1 or ""
             elem_sz = 4
@@ -891,6 +1098,9 @@ class CodeGenerator:
 
         if op == "store":
             # *(operand1) = result
+            _is_volatile_store = bool(ins.meta and ins.meta.get("volatile"))
+            if _is_volatile_store:
+                self._emit("  # volatile store")
             # Best-effort: choose width based on pointer pointee type.
             addr = ins.operand1 or ""
             val = ins.result
@@ -1534,26 +1744,144 @@ class CodeGenerator:
                     stack_pad += 8
                 self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + stack_pad
 
+            # --- Two-pass argument setup for struct-aware ABI ---
+            # Pass 1: Pre-allocate stack copies for large (MEMORY class) structs
+            #         and record the stack pointer for each.  This must happen
+            #         before we start loading argument registers because the
+            #         copy may clobber scratch registers.
+            # Pass 2: Load all arguments into their target registers.
+
+            # SysV ABI: if the callee returns a MEMORY-class struct, the caller
+            # must allocate space and pass a hidden pointer via %rdi as the
+            # implicit first argument.
+            _ret_hidden_ptr_slot = 0  # spill offset for the hidden return pointer
+            ret_ty = str(ins.operand2 or "")
+            _call_ret_ty_s = ret_ty.replace("function ", "").strip() if ret_ty.startswith("function ") else ""
+            _call_ret_is_memory = False
+            if _call_ret_ty_s.startswith("struct ") or _call_ret_ty_s.startswith("union "):
+                _call_ret_sz = self._type_size_bytes(_call_ret_ty_s)
+                _call_ret_layout = getattr(self._sema_ctx, "layouts", {}).get(_call_ret_ty_s) if self._sema_ctx else None
+                _call_ret_cls = classify_struct(_call_ret_ty_s, _call_ret_layout) if _call_ret_layout else [EightbyteClass.INTEGER]
+                _call_ret_pm = get_struct_pass_mode(_call_ret_cls)
+                if _call_ret_pm == "hidden_ptr":
+                    _call_ret_is_memory = True
+                    # Allocate space on the stack for the return value.
+                    alloc_sz = ((_call_ret_sz + 15) // 16) * 16  # 16-byte aligned
+                    alloc_sz = max(alloc_sz, 16)
+                    self._emit(f"  subq ${alloc_sz}, %rsp")
+                    stack_pad += alloc_sz
+                    self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + alloc_sz
+                    # Save the pointer in a temp slot for later use.
+                    tmp = self._new_spill_name()
+                    _ret_hidden_ptr_slot = self._ensure_local(tmp)
+                    self._emit(f"  movq %rsp, %rax")
+                    self._emit(f"  movq %rax, -{_ret_hidden_ptr_slot}(%rbp)")
+                    # Hidden return pointer consumes %rdi (first GP register).
+                    gp_idx = 1
+
+            # Build an argument descriptor list.
+            _arg_descs = []  # list of (arg, a_ty, kind, extra)
+            #   kind: 'float', 'struct_reg', 'struct_hidden', 'struct_stack', 'gp'
+            #   extra: for struct_hidden -> temp slot offset holding the pointer
+            _pre_gp = gp_idx
+            _pre_xmm = 0
             for idx, a in enumerate(ins.args or []):
                 a_ty = self._var_types.get(a, "") if isinstance(a, str) else ""
                 if isinstance(a_ty, str) and a_ty in ("float", "double"):
-                    # Float arg -> xmm register
+                    _arg_descs.append((a, a_ty, "float", None))
+                    _pre_xmm += 1
+                elif isinstance(a_ty, str) and (a_ty.strip().startswith("struct ") or a_ty.strip().startswith("union ")):
+                    sty = a_ty.strip()
+                    sz = self._type_size_bytes(sty)
+                    layout = getattr(self._sema_ctx, "layouts", {}).get(sty) if self._sema_ctx else None
+                    classification = classify_struct(sty, layout) if layout else [EightbyteClass.INTEGER]
+                    pass_mode = get_struct_pass_mode(classification)
+                    if pass_mode == "hidden_ptr":
+                        _arg_descs.append((a, a_ty, "struct_hidden", {"sz": sz, "classification": classification}))
+                        _pre_gp += 1  # hidden pointer consumes one GP reg
+                    elif pass_mode == "registers":
+                        gp_needed = sum(1 for c in classification if c == EightbyteClass.INTEGER)
+                        sse_needed = sum(1 for c in classification if c == EightbyteClass.SSE)
+                        if _pre_gp + gp_needed <= len(arg_regs) and _pre_xmm + sse_needed <= len(xmm_regs):
+                            _arg_descs.append((a, a_ty, "struct_reg", {"sz": sz, "classification": classification}))
+                            _pre_gp += gp_needed
+                            _pre_xmm += sse_needed
+                        else:
+                            _arg_descs.append((a, a_ty, "struct_stack", {"sz": sz, "classification": classification}))
+                    else:
+                        _arg_descs.append((a, a_ty, "struct_stack", {"sz": sz, "classification": classification}))
+                else:
+                    _arg_descs.append((a, a_ty, "gp", None))
+                    _pre_gp += 1
+
+            # Pass 1: allocate stack copies for hidden_ptr structs.
+            # We store the resulting pointer in a temp spill slot so that
+            # Pass 2 can load it into the correct GP register without
+            # clobbering other argument registers.
+            _hidden_ptr_slots = {}  # arg index -> spill offset
+            for desc_idx, (a, a_ty, kind, extra) in enumerate(_arg_descs):
+                if kind == "struct_hidden":
+                    sz = extra["sz"]
+                    off = self._ensure_local(a)
+                    alloc_sz = ((sz + 7) // 8) * 8
+                    self._emit(f"  subq ${alloc_sz}, %rsp")
+                    stack_pad += alloc_sz
+                    self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + alloc_sz
+                    # Copy struct data to the stack copy using movq loop
+                    # (avoids clobbering rdi/rsi/rcx which are arg registers).
+                    chunks = (sz + 7) // 8
+                    for ci in range(chunks):
+                        self._emit(f"  movq -{off - ci * 8}(%rbp), %rax")
+                        self._emit(f"  movq %rax, {ci * 8}(%rsp)")
+                    # Save the pointer to the copy in a temp slot.
+                    tmp = self._new_spill_name()
+                    tmp_off = self._ensure_local(tmp)
+                    self._emit(f"  movq %rsp, %rax")
+                    self._emit(f"  movq %rax, -{tmp_off}(%rbp)")
+                    _hidden_ptr_slots[desc_idx] = tmp_off
+
+            # Also push struct_stack args (register-exhausted structs) right-to-left.
+            for desc_idx in reversed(range(len(_arg_descs))):
+                a, a_ty, kind, extra = _arg_descs[desc_idx]
+                if kind == "struct_stack":
+                    sz = extra["sz"]
+                    off = self._ensure_local(a)
+                    chunks = (sz + 7) // 8
+                    for ci in reversed(range(chunks)):
+                        self._emit(f"  pushq -{off - ci * 8}(%rbp)")
+                        stack_pad += 8
+                    self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + chunks * 8
+
+            # Pass 2: load arguments into registers.
+            # If there's a hidden return pointer, load it into %rdi first.
+            if _call_ret_is_memory and _ret_hidden_ptr_slot:
+                self._emit(f"  movq -{_ret_hidden_ptr_slot}(%rbp), %rdi")
+            for desc_idx, (a, a_ty, kind, extra) in enumerate(_arg_descs):
+                if kind == "float":
                     if xmm_idx < len(xmm_regs):
                         s = "s" if a_ty == "float" else "d"
                         off = self._ensure_local(a)
                         self._emit(f"  movs{s} -{off}(%rbp), {xmm_regs[xmm_idx]}")
                         xmm_idx += 1
-                elif isinstance(a_ty, str) and (a_ty.strip().startswith("struct ") or a_ty.strip().startswith("union ")):
-                    # Struct/union by-value: load 8-byte chunks into consecutive GP regs.
-                    sz = self._type_size_bytes(a_ty.strip())
+                elif kind == "struct_reg":
+                    classification = extra["classification"]
                     off = self._ensure_local(a)
-                    chunks = (sz + 7) // 8
-                    for ci in range(chunks):
-                        if gp_idx < len(arg_regs):
+                    for ci, cls in enumerate(classification):
+                        if cls == EightbyteClass.SSE:
+                            self._emit(f"  movq -{off - ci * 8}(%rbp), {xmm_regs[xmm_idx]}")
+                            xmm_idx += 1
+                        else:
                             self._emit(f"  movq -{off - ci * 8}(%rbp), {arg_regs[gp_idx]}")
                             gp_idx += 1
-                else:
-                    # Integer/pointer arg -> GP register
+                elif kind == "struct_hidden":
+                    # Load the saved pointer from the temp slot.
+                    tmp_off = _hidden_ptr_slots[desc_idx]
+                    if gp_idx < len(arg_regs):
+                        self._emit(f"  movq -{tmp_off}(%rbp), {arg_regs[gp_idx]}")
+                        gp_idx += 1
+                elif kind == "struct_stack":
+                    pass  # already pushed in pass 1
+                elif kind == "gp":
                     if gp_idx < len(arg_regs):
                         self._load_operand(a, "%rax")
                         self._emit(f"  movq %rax, {arg_regs[gp_idx]}")
@@ -1666,18 +1994,47 @@ class CodeGenerator:
                     self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
                     self._var_types[ins.result] = fp
             else:
-                # Struct/union return: rax holds first 8 bytes, rdx holds next 8.
+                # Struct/union return: use StructClassifier to determine registers.
                 ret_ty_s = ret_ty.replace("function ", "").strip() if ret_ty.startswith("function ") else ""
                 if ret_ty_s.startswith("struct ") or ret_ty_s.startswith("union "):
                     sz = self._type_size_bytes(ret_ty_s)
-                    if ins.result:
-                        # Allocate enough space for the struct in the temp slot.
-                        alloc_sz = ((sz + 7) // 8) * 8
-                        alloc_sz = max(alloc_sz, 8)
-                        off_r = self._ensure_local(ins.result, size=alloc_sz)
-                        self._emit(f"  movq %rax, -{off_r}(%rbp)")
-                        if sz > 8:
-                            self._emit(f"  movq %rdx, -{off_r - 8}(%rbp)")
+                    layout = getattr(self._sema_ctx, "layouts", {}).get(ret_ty_s) if self._sema_ctx else None
+                    ret_classification = classify_struct(ret_ty_s, layout) if layout else [EightbyteClass.INTEGER]
+                    ret_pass_mode = get_struct_pass_mode(ret_classification)
+
+                    if ret_pass_mode == "hidden_ptr":
+                        # MEMORY class: the hidden pointer was passed via rdi
+                        # before the call.  The callee returns the pointer in
+                        # rax.  Copy the data from the pointed-to area into
+                        # the local result slot.
+                        if ins.result:
+                            alloc_sz = ((sz + 7) // 8) * 8
+                            alloc_sz = max(alloc_sz, 8)
+                            off_r = self._ensure_local(ins.result, size=alloc_sz)
+                            # rax holds the pointer to the returned struct data.
+                            self._emit(f"  movq %rax, %rsi")
+                            self._emit(f"  leaq -{off_r}(%rbp), %rdi")
+                            self._emit(f"  movq ${sz}, %rcx")
+                            self._emit("  rep movsb")
+                            self._var_types[ins.result] = ret_ty_s
+                    else:
+                        # Register return: extract from rax/rdx and/or xmm0/xmm1.
+                        if ins.result:
+                            alloc_sz = ((sz + 7) // 8) * 8
+                            alloc_sz = max(alloc_sz, 8)
+                            off_r = self._ensure_local(ins.result, size=alloc_sz)
+                            ret_gp_regs = ["%rax", "%rdx"]
+                            ret_xmm_regs = ["%xmm0", "%xmm1"]
+                            gp_ri = 0
+                            xmm_ri = 0
+                            for ci, cls in enumerate(ret_classification):
+                                if cls == EightbyteClass.SSE:
+                                    self._emit(f"  movq {ret_xmm_regs[xmm_ri]}, -{off_r - ci * 8}(%rbp)")
+                                    xmm_ri += 1
+                                else:
+                                    self._emit(f"  movq {ret_gp_regs[gp_ri]}, -{off_r - ci * 8}(%rbp)")
+                                    gp_ri += 1
+                            self._var_types[ins.result] = ret_ty_s
                         self._var_types[ins.result] = ret_ty_s
                 else:
                     self._store_result(ins.result, "%rax")
@@ -2014,13 +2371,43 @@ class CodeGenerator:
                 self._emit("  ret")
                 return
 
-            # Struct/union by-value return: load chunks into rax (+ rdx if >8 bytes).
+            # Struct/union by-value return: use StructClassifier to decide registers.
             if isinstance(src_ty, str) and (src_ty.strip().startswith("struct ") or src_ty.strip().startswith("union ")):
-                sz = self._type_size_bytes(src_ty.strip())
+                sty = src_ty.strip()
+                sz = self._type_size_bytes(sty)
                 off = self._ensure_local(src)
-                self._emit(f"  movq -{off}(%rbp), %rax")
-                if sz > 8:
-                    self._emit(f"  movq -{off - 8}(%rbp), %rdx")
+                layout = getattr(self._sema_ctx, "layouts", {}).get(sty) if self._sema_ctx else None
+                classification = classify_struct(sty, layout) if layout else [EightbyteClass.INTEGER]
+                pass_mode = get_struct_pass_mode(classification)
+
+                if pass_mode == "hidden_ptr":
+                    # MEMORY class: copy struct data to the hidden pointer
+                    # location (saved in prologue at _hidden_ret_ptr_off).
+                    hidden_off = getattr(self, "_hidden_ret_ptr_off", 0)
+                    if hidden_off:
+                        # Load hidden pointer into rdi, source into rsi, copy.
+                        self._emit(f"  movq -{hidden_off}(%rbp), %rdi")
+                        self._emit(f"  leaq -{off}(%rbp), %rsi")
+                        self._emit(f"  movq ${sz}, %rcx")
+                        self._emit("  rep movsb")
+                        # Return the hidden pointer in rax.
+                        self._emit(f"  movq -{hidden_off}(%rbp), %rax")
+                    self._emit("  leave")
+                    self._emit("  ret")
+                    return
+
+                # Register return: use classification to pick rax/rdx vs xmm0/xmm1.
+                ret_gp_regs = ["%rax", "%rdx"]
+                ret_xmm_regs = ["%xmm0", "%xmm1"]
+                gp_i = 0
+                xmm_i = 0
+                for ci, cls in enumerate(classification):
+                    if cls == EightbyteClass.SSE:
+                        self._emit(f"  movq -{off - ci * 8}(%rbp), {ret_xmm_regs[xmm_i]}")
+                        xmm_i += 1
+                    else:
+                        self._emit(f"  movq -{off - ci * 8}(%rbp), {ret_gp_regs[gp_i]}")
+                        gp_i += 1
                 self._emit("  leave")
                 self._emit("  ret")
                 return
@@ -2417,6 +2804,12 @@ class CodeGenerator:
                 # store 32-bit int
                 self._emit(f"  movl %eax, {sym}(%rip)")
             return
+
+    def _new_spill_name(self) -> str:
+        """Generate a unique temp name for internal spill slots."""
+        seq = getattr(self, "_spill_name_seq", 0)
+        self._spill_name_seq = seq + 1
+        return f"%t_spill_{seq}"
 
     def _ensure_local(self, sym: str, size: int = 8) -> int:
         if sym in self._locals:

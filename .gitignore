@@ -3,6 +3,7 @@
 .kiro
 
 .pytest_cache/
+.hypothesis/
 
 # Local build / scratch artifacts
 a.out
