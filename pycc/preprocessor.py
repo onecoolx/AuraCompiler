@@ -1653,28 +1653,62 @@ class Preprocessor:
         return "".join(out), in_block
 
     def _expand_line(self, line: str, macros: Dict[str, str], *, filename: str, line_no: int) -> str:
-        # Expand function-like invocations first (best-effort), then object-like macros.
+        # Multi-round rescan loop (C89 §6.8.3): alternate between function-like
+        # and object-like expansion until the result stabilises.  This handles
+        # cases where an object-like macro expands to a function-like call
+        # (e.g. #define CALL F(5)) or where function-like expansion produces
+        # tokens that are themselves object-like macros.
         expanded = line
-        expanded = self._expand_function_like_macros(expanded, macros, filename=filename, base_line_no=line_no)
-        if (
-            "__LINE__" in expanded
-            or "__FILE__" in expanded
-            or "__STDC__" in expanded
-            or "__DATE__" in expanded
-            or "__TIME__" in expanded
-            or "__COUNTER__" in expanded
-        ):
-            expanded = self._expand_builtin_macros(expanded, filename=filename, line_no=line_no)
-        # Avoid runaway growth for self-referential object-like macros like
-        #   #define A A + 1
-        # when they appear as a full line expansion boundary (e.g. WRAP(A) -> A + 1).
-        stripped = expanded.strip()
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*\+\s*1$", stripped) and stripped.split("+")[0].strip() in macros:
-            macro_name = stripped.split("+")[0].strip()
-            expanded = self._expand_object_like_macros_single_pass(expanded, macros, disabled={macro_name})
-        else:
-            expanded = self._expand_object_like_macros(expanded, macros)
+        for _round in range(30):
+            prev = expanded
+            # 1. Expand function-like macro invocations.
+            after_fn = self._expand_function_like_macros(expanded, macros, filename=filename, base_line_no=line_no)
+            fn_changed = (after_fn != expanded)
+            # 2. Expand built-in macros (__LINE__, __FILE__, etc.).
+            if (
+                "__LINE__" in after_fn
+                or "__FILE__" in after_fn
+                or "__STDC__" in after_fn
+                or "__DATE__" in after_fn
+                or "__TIME__" in after_fn
+                or "__COUNTER__" in after_fn
+            ):
+                after_fn = self._expand_builtin_macros(after_fn, filename=filename, line_no=line_no)
+            # 3. Expand object-like macros.
+            # Avoid runaway growth for self-referential object-like macros like
+            #   #define A A + 1
+            # when they appear as a full line expansion boundary (e.g. WRAP(A) -> A + 1).
+            stripped = after_fn.strip()
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*\+\s*1$", stripped) and stripped.split("+")[0].strip() in macros:
+                macro_name = stripped.split("+")[0].strip()
+                expanded = self._expand_object_like_macros_single_pass(after_fn, macros, disabled={macro_name})
+            else:
+                expanded = self._expand_object_like_macros(after_fn, macros)
+            # If nothing changed this round, expansion is complete.
+            if expanded == prev:
+                break
+            # Continue the rescan loop only when object-like expansion introduced
+            # new function-like macro call sites that were not present before.
+            # This avoids re-running function-like expansion on self-referential
+            # remnants (e.g. F(0) left by #define F(x) F(x)+1) and prevents
+            # runaway growth of self-referential object-like macros.
+            if not self._obj_expansion_introduced_fn_call(prev, expanded):
+                break
         return expanded
+
+    def _obj_expansion_introduced_fn_call(self, before: str, after: str) -> bool:
+        """Return True if *after* contains a function-like macro call site
+        that was NOT already present in *before*."""
+        for name in self._fn_macros:
+            if name not in after:
+                continue
+            # Count call sites in before and after.
+            pat = rf"\b{re.escape(name)}\s*\("
+            before_count = len(re.findall(pat, before))
+            after_count = len(re.findall(pat, after))
+            if after_count > before_count:
+                return True
+        return False
 
     def _expand_builtin_macros(self, line: str, *, filename: str, line_no: int) -> str:
         # Subset: expand __LINE__ and __FILE__ outside of string/char literals.
@@ -1815,8 +1849,17 @@ class Preprocessor:
 
         stripped = line.strip()
         if stripped in macros and re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", stripped):
-            first = self._expand_object_like_macros_single_pass(line, macros)
-            return self._expand_object_like_macros_single_pass(first, macros, disabled={stripped})
+            # Expand the single macro name, then rescan with the original name
+            # disabled (hide-set behavior).  Continue rescanning to handle
+            # chained definitions like A -> B -> C -> 42.
+            cur = self._expand_object_like_macros_single_pass(line, macros)
+            disabled = {stripped}
+            for _ in range(19):
+                nxt = self._expand_object_like_macros_single_pass(cur, macros, disabled=disabled)
+                if nxt == cur:
+                    return cur
+                cur = nxt
+            return cur
 
         # Subset hide-set behavior for self-referential object-like macros.
         # If a macro's replacement mentions itself (e.g. `A -> A + 1`), disable
@@ -2009,12 +2052,17 @@ class Preprocessor:
                     repl = self._substitute_fn_params(repl, params=params, args=args)
 
                     # Subset hide-set behavior for self-referential function-like
-                    # macros: if the replacement mentions its own invocation,
-                    # prevent it from expanding again during rescans.
+                    # macros: if the macro's *body template* (before parameter
+                    # substitution) mentions its own invocation, prevent it from
+                    # expanding again during rescans.
                     # This targets common patterns like:
                     #   #define F(x) F(x) + 1
                     # so `F(0)` becomes `F(0) + 1`.
-                    if re.search(rf"\b{re.escape(name)}\s*\(", repl):
+                    # IMPORTANT: only check the original body, not the substituted
+                    # result, to avoid disabling legitimate nested calls that come
+                    # from arguments (e.g. ADD(ADD(1,2), ADD(3,4))).
+                    body_is_self_ref = bool(re.search(rf"\b{re.escape(name)}\s*\(", body))
+                    if body_is_self_ref and re.search(rf"\b{re.escape(name)}\s*\(", repl):
                         # Replace only as a call: NAME( -> NAME_DISABLED(
                         repl = re.sub(
                             rf"\b{re.escape(name)}\s*\(",
