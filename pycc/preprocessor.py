@@ -262,9 +262,8 @@ class MacroExpander:
 
         C89 §6.8.3.2: Each occurrence of whitespace between the argument's
         preprocessing tokens becomes a single space character.  Backslash
-        and double-quote characters within string/char literals are escaped.
-        Tab and newline characters in the token text are preserved as their
-        escape representations (\\t, \\n).
+        and double-quote characters are escaped.  Tab and newline characters
+        in the token text are preserved as their escape representations.
         """
         parts: List[str] = []
         for t in tokens:
@@ -273,10 +272,14 @@ class MacroExpander:
                     parts.append(' ')
             else:
                 text = t.text
+                # Escape backslash and double-quote in string/char literal tokens
                 if t.kind in ('string', 'char'):
                     text = text.replace('\\', '\\\\').replace('"', '\\"')
                 # Escape tab and newline characters in any token text
                 text = text.replace('\t', '\\t').replace('\n', '\\n')
+                # Escape unescaped double-quotes in non-string/char tokens
+                if t.kind not in ('string', 'char'):
+                    text = text.replace('\\', '\\\\').replace('"', '\\"')
                 parts.append(text)
         inner = ''.join(parts).strip()
         return f'"{inner}"'
