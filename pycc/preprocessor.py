@@ -231,7 +231,17 @@ class MacroExpander:
         return result
 
     def _process_paste(self, tokens: List[PPToken]) -> List[PPToken]:
-        """Process ## token-paste operators."""
+        """Process ## token-paste operators.
+
+        C89 §6.8.3.3: Each ## preprocessing token in the replacement list
+        is deleted and the preceding preprocessing token is concatenated
+        with the following preprocessing token.  If the result is not a
+        valid preprocessing token, the behavior is undefined; we emit a
+        diagnostic warning and keep the pasted text as-is.
+
+        The pasted result is later rescanned during the normal expansion
+        loop (step 4 in _expand_function_like).
+        """
         result: List[PPToken] = []
         i = 0
         while i < len(tokens):
@@ -240,13 +250,30 @@ class MacroExpander:
                 lhs = result.pop()
                 rhs = tokens[i + 1]
                 pasted_text = lhs.text + rhs.text
-                # Determine kind of pasted token
-                if pasted_text.isidentifier():
+                # Determine kind of pasted token and validate
+                if pasted_text.isidentifier() or (pasted_text.startswith('_') and pasted_text.replace('_', '').isalnum()):
                     kind = 'ident'
-                elif pasted_text and (pasted_text[0].isdigit() or pasted_text[0] == '.'):
+                elif pasted_text and (pasted_text[0].isdigit() or (pasted_text[0] == '.' and len(pasted_text) > 1 and pasted_text[1].isdigit())):
                     kind = 'number'
+                elif pasted_text in ('(', ')', '[', ']', '{', '}', ',', ';', ':', '.',
+                                     '+', '-', '*', '/', '%', '&', '|', '^', '~', '!',
+                                     '<', '>', '=', '?', '#',
+                                     '++', '--', '<<', '>>', '<=', '>=', '==', '!=',
+                                     '&&', '||', '+=', '-=', '*=', '/=', '%=',
+                                     '&=', '|=', '^=', '<<=', '>>=', '->', '##',
+                                     '...'):
+                    kind = 'punct'
+                elif pasted_text.startswith('"') or pasted_text.startswith("'"):
+                    kind = 'string' if pasted_text.startswith('"') else 'char'
+                elif pasted_text == '':
+                    # Empty paste: skip
+                    i += 2
+                    continue
                 else:
+                    # Not a valid preprocessing token — emit diagnostic
                     kind = 'other'
+                    import sys
+                    print(f"warning: pasting \"{lhs.text}\" and \"{rhs.text}\" does not give a valid preprocessing token", file=sys.stderr)
                 result.append(PPToken(kind, pasted_text,
                                        lhs.hide_set & rhs.hide_set,
                                        lhs.line, lhs.column))
