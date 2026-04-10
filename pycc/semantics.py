@@ -2247,3 +2247,153 @@ class SemanticAnalyzer:
                 return Type(base=member_type_str, line=getattr(decl_type, "line", 0),
                             column=getattr(decl_type, "column", 0))
         return None
+
+
+# ── C89 §6.1.2.6 Type Compatibility ──────────────────────────────────
+
+
+def types_compatible(t1, t2) -> bool:
+    """Check if two types are compatible per C89 §6.1.2.6.
+
+    Rules implemented:
+    - Basic types: same canonical type is compatible
+    - Pointer types: pointers to compatible types are compatible
+    - Array types: element types compatible AND (sizes equal OR at least one
+      size is unspecified)
+    - Function types: return types compatible AND all parameter types compatible
+
+    Parameters *t1* and *t2* can be:
+    - ``Type`` AST nodes (the primary representation in pycc)
+    - ``None`` — treated as unknown/compatible (returns True)
+    - Plain strings — interpreted as base type names for convenience
+
+    Returns True when the two types are compatible, False otherwise.
+    """
+    # Unknown types are assumed compatible (conservative).
+    if t1 is None or t2 is None:
+        return True
+
+    # Allow plain strings as a convenience shorthand.
+    if isinstance(t1, str):
+        t1 = Type(base=t1, line=0, column=0)
+    if isinstance(t2, str):
+        t2 = Type(base=t2, line=0, column=0)
+
+    # ── Extract attributes safely ──
+    t1_base = str(getattr(t1, "base", "")).strip()
+    t2_base = str(getattr(t2, "base", "")).strip()
+
+    # If either base is empty/unknown, assume compatible.
+    if not t1_base or not t2_base:
+        return True
+
+    t1_is_ptr = bool(getattr(t1, "is_pointer", False))
+    t2_is_ptr = bool(getattr(t2, "is_pointer", False))
+
+    t1_ptr_level = int(getattr(t1, "pointer_level", 1 if t1_is_ptr else 0))
+    t2_ptr_level = int(getattr(t2, "pointer_level", 1 if t2_is_ptr else 0))
+
+    # ── Pointer types ──
+    # One is pointer, the other is not → incompatible
+    if t1_is_ptr != t2_is_ptr:
+        return False
+
+    if t1_is_ptr and t2_is_ptr:
+        # Different pointer depths → incompatible
+        if t1_ptr_level != t2_ptr_level:
+            return False
+        # void* is compatible with any pointer type (C89 §6.3.2.3)
+        if t1_base == "void" or t2_base == "void":
+            return True
+        # Recursively check pointee types (construct pointee Type nodes).
+        pointee1 = Type(
+            base=t1_base,
+            is_pointer=(t1_ptr_level > 1),
+            pointer_level=max(t1_ptr_level - 1, 0),
+            is_unsigned=bool(getattr(t1, "is_unsigned", False)),
+            is_signed=bool(getattr(t1, "is_signed", False)),
+            fn_param_count=getattr(t1, "fn_param_count", None),
+            fn_param_types=getattr(t1, "fn_param_types", None),
+            fn_return_type=getattr(t1, "fn_return_type", None),
+            line=0, column=0,
+        )
+        pointee2 = Type(
+            base=t2_base,
+            is_pointer=(t2_ptr_level > 1),
+            pointer_level=max(t2_ptr_level - 1, 0),
+            is_unsigned=bool(getattr(t2, "is_unsigned", False)),
+            is_signed=bool(getattr(t2, "is_signed", False)),
+            fn_param_count=getattr(t2, "fn_param_count", None),
+            fn_param_types=getattr(t2, "fn_param_types", None),
+            fn_return_type=getattr(t2, "fn_return_type", None),
+            line=0, column=0,
+        )
+        return types_compatible(pointee1, pointee2)
+
+    # ── Function types (pointer-to-function stored via fn_param_types) ──
+    t1_fn_params = getattr(t1, "fn_param_types", None)
+    t2_fn_params = getattr(t2, "fn_param_types", None)
+    t1_fn_ret = getattr(t1, "fn_return_type", None)
+    t2_fn_ret = getattr(t2, "fn_return_type", None)
+
+    # If both have function type information, compare as function types.
+    t1_is_func = t1_fn_params is not None or t1_fn_ret is not None
+    t2_is_func = t2_fn_params is not None or t2_fn_ret is not None
+
+    if t1_is_func and t2_is_func:
+        # Return types must be compatible.
+        if not types_compatible(t1_fn_ret, t2_fn_ret):
+            return False
+        # If both have parameter lists, compare them.
+        if t1_fn_params is not None and t2_fn_params is not None:
+            if len(t1_fn_params) != len(t2_fn_params):
+                return False
+            for p1, p2 in zip(t1_fn_params, t2_fn_params):
+                if not types_compatible(p1, p2):
+                    return False
+        # If only one side has parameter info, they are still compatible
+        # (C89: old-style declaration without prototype is compatible with
+        # a prototyped declaration).
+        return True
+
+    # One has function type info, the other doesn't → incompatible if bases
+    # don't match (handled below by canonical comparison).
+
+    # ── Array types ──
+    # Arrays are encoded on Declaration nodes (array_size / array_dims), not
+    # on Type nodes directly.  However, types_compatible may be called with
+    # Type nodes that carry array metadata via extra attributes.  We support
+    # an optional ``array_size`` attribute on Type for this purpose.
+    t1_arr = getattr(t1, "array_size", None)
+    t2_arr = getattr(t2, "array_size", None)
+    if t1_arr is not None or t2_arr is not None:
+        # Element types must be compatible (the base types).
+        t1_canon = SemanticAnalyzer._normalize_type_base(
+            t1_base,
+            bool(getattr(t1, "is_unsigned", False)),
+            bool(getattr(t1, "is_signed", False)),
+        )
+        t2_canon = SemanticAnalyzer._normalize_type_base(
+            t2_base,
+            bool(getattr(t2, "is_unsigned", False)),
+            bool(getattr(t2, "is_signed", False)),
+        )
+        if t1_canon != t2_canon:
+            return False
+        # Sizes: compatible if equal or at least one is unspecified (None).
+        if t1_arr is not None and t2_arr is not None:
+            return int(t1_arr) == int(t2_arr)
+        return True
+
+    # ── Basic (scalar / aggregate) types ──
+    t1_canon = SemanticAnalyzer._normalize_type_base(
+        t1_base,
+        bool(getattr(t1, "is_unsigned", False)),
+        bool(getattr(t1, "is_signed", False)),
+    )
+    t2_canon = SemanticAnalyzer._normalize_type_base(
+        t2_base,
+        bool(getattr(t2, "is_unsigned", False)),
+        bool(getattr(t2, "is_signed", False)),
+    )
+    return t1_canon == t2_canon
