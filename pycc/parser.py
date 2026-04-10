@@ -620,6 +620,8 @@ class Parser:
             # Encode short/long in base string for now (type system is stringly-typed elsewhere)
             if base_tok.value == "int" and size_kw in {"short", "long"}:
                 t.base = f"{size_kw} int"
+            if base_tok.value == "double" and size_kw == "long":
+                t.base = "long double"
             # Normalize unsigned/signed base strings for downstream string checks.
             if t.base == "int":
                 if is_unsigned:

@@ -152,6 +152,8 @@ def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
             return 4
         if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
             return 8
+        if b == "long double":
+            return 16
         if b.startswith("struct ") or b.startswith("union "):
             if sema_ctx is not None:
                 layouts = getattr(sema_ctx, "layouts", None) or getattr(sema_ctx, "_layouts", {})
@@ -183,6 +185,8 @@ def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
             return 4
         if b in {"long int", "long", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
             return 8
+        if b == "long double":
+            return 16
         # treat enums as int
         if b.startswith("enum "):
             return 4
@@ -211,6 +215,8 @@ def _type_align(ty: Optional[object]) -> int:
             return 4
         if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
             return 8
+        if b == "long double":
+            return 16
         # default
         return 8
 
@@ -227,6 +233,8 @@ def _type_align(ty: Optional[object]) -> int:
             return 4
         if b in {"long int", "long", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
             return 8
+        if b == "long double":
+            return 16
     return 8
 
 
@@ -249,6 +257,8 @@ def _type_size_bytes(sema_ctx: object, ty: Optional[object]) -> int:
             return 4
         if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
             return 8
+        if b == "long double":
+            return 16
         if "long long" in b:
             return 8
         return 0
@@ -377,7 +387,12 @@ class IRGenerator:
                         # Float global initializer
                         if isinstance(init, FloatLiteral):
                             suffix = getattr(init, 'suffix', '')
-                            fp_type = "float" if suffix in ('f', 'F') else "double"
+                            if suffix in ('l', 'L'):
+                                fp_type = "long double"
+                            elif suffix in ('f', 'F'):
+                                fp_type = "float"
+                            else:
+                                fp_type = "double"
                             self.instructions.append(
                                 IRInstruction(
                                     op="gdef_float",
@@ -2549,7 +2564,12 @@ class IRGenerator:
         if isinstance(expr, FloatLiteral):
             t = self._new_temp()
             suffix = getattr(expr, 'suffix', '')
-            fp_type = "float" if suffix in ('f', 'F') else "double"
+            if suffix in ('l', 'L'):
+                fp_type = "long double"
+            elif suffix in ('f', 'F'):
+                fp_type = "float"
+            else:
+                fp_type = "double"
             self.instructions.append(IRInstruction(
                 op="fmov", result=t, operand1=str(expr.value),
                 meta={"fp_type": fp_type}
@@ -2749,29 +2769,48 @@ class IRGenerator:
 
         if isinstance(expr, Cast):
             v = self._gen_expr(expr.expression)
-            # Float casts: int↔float/double, float↔double
+            # Float casts: int↔float/double/long double, float↔double↔long double
+            _FP_TYPES = {"float", "double", "long double"}
             try:
                 dst_ty = getattr(expr, "type", None)
                 dst_base = str(getattr(dst_ty, "base", "")).strip() if dst_ty else ""
                 src_fp = self._var_types.get(v, "") if isinstance(v, str) else ""
-                if dst_base in ("float", "double") and src_fp not in ("float", "double"):
+                if dst_base in _FP_TYPES and src_fp not in _FP_TYPES:
                     t = self._new_temp()
+                    if dst_base == "float":
+                        conv_op = "i2f"
+                    elif dst_base == "long double":
+                        conv_op = "i2ld"
+                    else:
+                        conv_op = "i2d"
                     self.instructions.append(IRInstruction(
-                        op="i2f" if dst_base == "float" else "i2d",
+                        op=conv_op,
                         result=t, operand1=v, meta={"fp_type": dst_base}))
                     self._var_types[t] = dst_base
                     return t
-                if dst_base in ("float", "double") and src_fp in ("float", "double") and dst_base != src_fp:
+                if dst_base in _FP_TYPES and src_fp in _FP_TYPES and dst_base != src_fp:
                     t = self._new_temp()
+                    if src_fp == "long double" or dst_base == "long double":
+                        conv_op = "ld2f" if dst_base == "float" else ("ld2d" if dst_base == "double" else ("f2ld" if src_fp == "float" else "d2ld"))
+                    elif dst_base == "double":
+                        conv_op = "f2d"
+                    else:
+                        conv_op = "d2f"
                     self.instructions.append(IRInstruction(
-                        op="f2d" if dst_base == "double" else "d2f",
+                        op=conv_op,
                         result=t, operand1=v, meta={"fp_type": dst_base}))
                     self._var_types[t] = dst_base
                     return t
-                if dst_base not in ("float", "double") and src_fp in ("float", "double"):
+                if dst_base not in _FP_TYPES and src_fp in _FP_TYPES:
                     t = self._new_temp()
+                    if src_fp == "long double":
+                        conv_op = "ld2i"
+                    elif src_fp == "float":
+                        conv_op = "f2i"
+                    else:
+                        conv_op = "d2i"
                     self.instructions.append(IRInstruction(
-                        op="f2i" if src_fp == "float" else "d2i",
+                        op=conv_op,
                         result=t, operand1=v, meta={"fp_type": src_fp}))
                     self._var_types[t] = "int"
                     return t
@@ -2937,7 +2976,7 @@ class IRGenerator:
                     self._var_types[sym] = ty
                 elif self._sema_ctx is not None:
                     gty = getattr(self._sema_ctx, "global_types", {}).get(expr.name)
-                    if isinstance(gty, str) and gty.strip() in ("float", "double"):
+                    if isinstance(gty, str) and gty.strip() in ("float", "double", "long double"):
                         self._var_types[sym] = gty.strip()
             except Exception:
                 pass
@@ -3457,7 +3496,7 @@ class IRGenerator:
                 # Float unary minus: emit fsub from zero
                 if expr.operator == "-":
                     v_ty = self._var_types.get(v, "")
-                    if isinstance(v_ty, str) and v_ty in ("float", "double"):
+                    if isinstance(v_ty, str) and v_ty in ("float", "double", "long double"):
                         zero = self._new_temp()
                         self.instructions.append(IRInstruction(op="fmov", result=zero, operand1="0.0", meta={"fp_type": v_ty}))
                         self._var_types[zero] = v_ty
@@ -3504,35 +3543,70 @@ class IRGenerator:
             l = self._gen_expr(expr.left)
             r = self._gen_expr(expr.right)
 
-            # Float binary operations: emit float IR when either operand is float/double
+            # Float binary operations: emit float IR when either operand is float/double/long double
             lty_fp = self._var_types.get(l, "") if isinstance(l, str) else ""
             rty_fp = self._var_types.get(r, "") if isinstance(r, str) else ""
-            if lty_fp in ("float", "double") or rty_fp in ("float", "double"):
-                fp_type = "double" if "double" in (lty_fp, rty_fp) else "float"
+            _FP_TYPES_BIN = {"float", "double", "long double"}
+            if lty_fp in _FP_TYPES_BIN or rty_fp in _FP_TYPES_BIN:
+                # Determine common fp type: long double > double > float
+                if "long double" in (lty_fp, rty_fp):
+                    fp_type = "long double"
+                elif "double" in (lty_fp, rty_fp):
+                    fp_type = "double"
+                else:
+                    fp_type = "float"
                 # Promote operands to common fp type
-                if lty_fp not in ("float", "double"):
+                if lty_fp not in _FP_TYPES_BIN:
                     conv = self._new_temp()
+                    if fp_type == "float":
+                        conv_op = "i2f"
+                    elif fp_type == "long double":
+                        conv_op = "i2ld"
+                    else:
+                        conv_op = "i2d"
                     self.instructions.append(IRInstruction(
-                        op="i2f" if fp_type == "float" else "i2d",
+                        op=conv_op,
                         result=conv, operand1=l, meta={"fp_type": fp_type}))
                     self._var_types[conv] = fp_type
                     l = conv
-                elif lty_fp == "float" and fp_type == "double":
+                elif lty_fp != fp_type:
                     conv = self._new_temp()
-                    self.instructions.append(IRInstruction(op="f2d", result=conv, operand1=l, meta={"fp_type": "double"}))
-                    self._var_types[conv] = "double"
+                    if lty_fp == "float" and fp_type == "double":
+                        conv_op = "f2d"
+                    elif lty_fp == "float" and fp_type == "long double":
+                        conv_op = "f2ld"
+                    elif lty_fp == "double" and fp_type == "long double":
+                        conv_op = "d2ld"
+                    else:
+                        conv_op = "f2d"
+                    self.instructions.append(IRInstruction(op=conv_op, result=conv, operand1=l, meta={"fp_type": fp_type}))
+                    self._var_types[conv] = fp_type
                     l = conv
-                if rty_fp not in ("float", "double"):
+                if rty_fp not in _FP_TYPES_BIN:
                     conv = self._new_temp()
+                    if fp_type == "float":
+                        conv_op = "i2f"
+                    elif fp_type == "long double":
+                        conv_op = "i2ld"
+                    else:
+                        conv_op = "i2d"
                     self.instructions.append(IRInstruction(
-                        op="i2f" if fp_type == "float" else "i2d",
+                        op=conv_op,
                         result=conv, operand1=r, meta={"fp_type": fp_type}))
                     self._var_types[conv] = fp_type
                     r = conv
-                elif rty_fp == "float" and fp_type == "double":
+                elif rty_fp != fp_type:
                     conv = self._new_temp()
-                    self.instructions.append(IRInstruction(op="f2d", result=conv, operand1=r, meta={"fp_type": "double"}))
-                    self._var_types[conv] = "double"
+                    if rty_fp == "float" and fp_type == "double":
+                        conv_op = "f2d"
+                    elif rty_fp == "float" and fp_type == "long double":
+                        conv_op = "f2ld"
+                    elif rty_fp == "double" and fp_type == "long double":
+                        conv_op = "d2ld"
+                    else:
+                        conv_op = "f2d"
+                    self.instructions.append(IRInstruction(op=conv_op, result=conv, operand1=r, meta={"fp_type": fp_type}))
+                    self._var_types[conv] = fp_type
                     r = conv
                 t = self._new_temp()
                 meta = {"fp_type": fp_type}
@@ -3696,9 +3770,12 @@ class IRGenerator:
             self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
             # Record return type for float-aware codegen
             if isinstance(call_ty, str) and ("float" in call_ty or "double" in call_ty):
-                if call_ty.strip().endswith("float"):
+                ct = call_ty.strip()
+                if ct.endswith("long double") or ct == "long double":
+                    self._var_types[t] = "long double"
+                elif ct.endswith("float"):
                     self._var_types[t] = "float"
-                elif call_ty.strip().endswith("double"):
+                elif ct.endswith("double"):
                     self._var_types[t] = "double"
             return t
         if isinstance(expr, TernaryOp):
