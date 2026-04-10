@@ -2397,3 +2397,172 @@ def types_compatible(t1, t2) -> bool:
         bool(getattr(t2, "is_signed", False)),
     )
     return t1_canon == t2_canon
+
+
+def composite_type(t1, t2):
+    """Construct a composite type from two compatible types per C89 §6.1.2.6.
+
+    Merges information from both types.  For example:
+    - ``int[10]`` + ``int[]`` → ``int[10]`` (takes the known size)
+    - A function type with parameter info + one without → keeps the param info
+
+    The two types **must** be compatible (as determined by
+    ``types_compatible``).  Behaviour is undefined when called with
+    incompatible types.
+
+    Accepts the same parameter forms as ``types_compatible``: ``Type`` AST
+    nodes, plain strings, or ``None``.
+    """
+    # If either side is unknown, the other side wins.
+    if t1 is None:
+        return t2
+    if t2 is None:
+        return t1
+
+    # Normalise plain strings into Type nodes.
+    if isinstance(t1, str):
+        t1 = Type(base=t1, line=0, column=0)
+    if isinstance(t2, str):
+        t2 = Type(base=t2, line=0, column=0)
+
+    # ── Helper: pick the "more informative" value ──
+    def _pick(a, b):
+        """Return *a* if it carries information, else *b*."""
+        if a is not None:
+            return a
+        return b
+
+    # ── Extract attributes safely ──
+    t1_base = str(getattr(t1, "base", "")).strip()
+    t2_base = str(getattr(t2, "base", "")).strip()
+
+    t1_is_ptr = bool(getattr(t1, "is_pointer", False))
+    t2_is_ptr = bool(getattr(t2, "is_pointer", False))
+
+    t1_ptr_level = int(getattr(t1, "pointer_level", 1 if t1_is_ptr else 0))
+    t2_ptr_level = int(getattr(t2, "pointer_level", 1 if t2_is_ptr else 0))
+
+    # ── Pointer types ──
+    if t1_is_ptr and t2_is_ptr:
+        # Recursively build composite pointee, then wrap in pointer.
+        pointee1 = Type(
+            base=t1_base,
+            is_pointer=(t1_ptr_level > 1),
+            pointer_level=max(t1_ptr_level - 1, 0),
+            is_unsigned=bool(getattr(t1, "is_unsigned", False)),
+            is_signed=bool(getattr(t1, "is_signed", False)),
+            fn_param_count=getattr(t1, "fn_param_count", None),
+            fn_param_types=getattr(t1, "fn_param_types", None),
+            fn_return_type=getattr(t1, "fn_return_type", None),
+            line=0, column=0,
+        )
+        pointee2 = Type(
+            base=t2_base,
+            is_pointer=(t2_ptr_level > 1),
+            pointer_level=max(t2_ptr_level - 1, 0),
+            is_unsigned=bool(getattr(t2, "is_unsigned", False)),
+            is_signed=bool(getattr(t2, "is_signed", False)),
+            fn_param_count=getattr(t2, "fn_param_count", None),
+            fn_param_types=getattr(t2, "fn_param_types", None),
+            fn_return_type=getattr(t2, "fn_return_type", None),
+            line=0, column=0,
+        )
+        comp_pointee = composite_type(pointee1, pointee2)
+        # Build the composite pointer type from the composite pointee.
+        result = Type(
+            base=getattr(comp_pointee, "base", t1_base),
+            is_pointer=True,
+            pointer_level=t1_ptr_level,
+            is_unsigned=bool(getattr(comp_pointee, "is_unsigned", False)),
+            is_signed=bool(getattr(comp_pointee, "is_signed", False)),
+            is_const=bool(getattr(t1, "is_const", False)) or bool(getattr(t2, "is_const", False)),
+            is_volatile=bool(getattr(t1, "is_volatile", False)) or bool(getattr(t2, "is_volatile", False)),
+            fn_param_count=getattr(comp_pointee, "fn_param_count", None),
+            fn_param_types=getattr(comp_pointee, "fn_param_types", None),
+            fn_return_type=getattr(comp_pointee, "fn_return_type", None),
+            line=0, column=0,
+        )
+        return result
+
+    # ── Function types ──
+    t1_fn_params = getattr(t1, "fn_param_types", None)
+    t2_fn_params = getattr(t2, "fn_param_types", None)
+    t1_fn_ret = getattr(t1, "fn_return_type", None)
+    t2_fn_ret = getattr(t2, "fn_return_type", None)
+
+    t1_is_func = t1_fn_params is not None or t1_fn_ret is not None
+    t2_is_func = t2_fn_params is not None or t2_fn_ret is not None
+
+    if t1_is_func or t2_is_func:
+        # Composite return type.
+        comp_ret = composite_type(t1_fn_ret, t2_fn_ret)
+        # Composite parameter list: prefer the side that has info; if both
+        # have info, build element-wise composite.
+        comp_params = None
+        if t1_fn_params is not None and t2_fn_params is not None:
+            comp_params = [
+                composite_type(p1, p2)
+                for p1, p2 in zip(t1_fn_params, t2_fn_params)
+            ]
+        elif t1_fn_params is not None:
+            comp_params = list(t1_fn_params)
+        elif t2_fn_params is not None:
+            comp_params = list(t2_fn_params)
+
+        comp_param_count = len(comp_params) if comp_params is not None else _pick(
+            getattr(t1, "fn_param_count", None),
+            getattr(t2, "fn_param_count", None),
+        )
+
+        # Use the canonical base from the composite return type if available.
+        base = getattr(comp_ret, "base", t1_base) if comp_ret else (t1_base or t2_base)
+        result = Type(
+            base=base,
+            is_pointer=t1_is_ptr,
+            pointer_level=t1_ptr_level,
+            is_unsigned=bool(getattr(t1, "is_unsigned", False)),
+            is_signed=bool(getattr(t1, "is_signed", False)),
+            fn_return_type=comp_ret,
+            fn_param_types=comp_params,
+            fn_param_count=comp_param_count,
+            line=0, column=0,
+        )
+        return result
+
+    # ── Array types ──
+    t1_has_arr = hasattr(t1, "array_size")
+    t2_has_arr = hasattr(t2, "array_size")
+    t1_arr = getattr(t1, "array_size", None)
+    t2_arr = getattr(t2, "array_size", None)
+    if t1_has_arr or t2_has_arr:
+        # Pick the known size (if one is None, take the other).
+        comp_size = _pick(t1_arr, t2_arr)
+        result = Type(
+            base=t1_base or t2_base,
+            is_unsigned=bool(getattr(t1, "is_unsigned", False)),
+            is_signed=bool(getattr(t1, "is_signed", False)),
+            is_const=bool(getattr(t1, "is_const", False)) or bool(getattr(t2, "is_const", False)),
+            is_volatile=bool(getattr(t1, "is_volatile", False)) or bool(getattr(t2, "is_volatile", False)),
+            line=0, column=0,
+        )
+        result.array_size = comp_size
+        return result
+
+    # ── Basic (scalar / aggregate) types ──
+    # Return a fresh Type with the canonical base.
+    canon = SemanticAnalyzer._normalize_type_base(
+        t1_base,
+        bool(getattr(t1, "is_unsigned", False)),
+        bool(getattr(t1, "is_signed", False)),
+    )
+    result = Type(
+        base=canon,
+        is_pointer=False,
+        pointer_level=0,
+        is_unsigned=bool(getattr(t1, "is_unsigned", False)),
+        is_signed=bool(getattr(t1, "is_signed", False)),
+        is_const=bool(getattr(t1, "is_const", False)) or bool(getattr(t2, "is_const", False)),
+        is_volatile=bool(getattr(t1, "is_volatile", False)) or bool(getattr(t2, "is_volatile", False)),
+        line=0, column=0,
+    )
+    return result

@@ -5,7 +5,7 @@ Covers basic types, pointer types, array types, and function types.
 
 import pytest
 from pycc.ast_nodes import Type
-from pycc.semantics import types_compatible
+from pycc.semantics import types_compatible, composite_type
 
 
 # ── Basic type compatibility ──────────────────────────────────────────
@@ -242,3 +242,161 @@ class TestFunctionTypeCompatibility:
                   fn_return_type=Type(base="int", line=0, column=0),
                   fn_param_types=None, fn_param_count=None)
         assert types_compatible(t1, t2) is True
+
+
+# ── composite_type() tests ────────────────────────────────────────────
+
+
+class TestCompositeTypeBasic:
+    """Composite of two compatible basic types returns canonical form."""
+
+    def test_same_int(self):
+        t1 = Type(base="int", line=0, column=0)
+        t2 = Type(base="int", line=0, column=0)
+        ct = composite_type(t1, t2)
+        assert ct.base == "int"
+
+    def test_int_and_signed_int(self):
+        """Composite of 'int' and 'signed int' is canonical 'int'."""
+        t1 = Type(base="int", line=0, column=0)
+        t2 = Type(base="int", is_signed=True, line=0, column=0)
+        ct = composite_type(t1, t2)
+        assert ct.base == "int"
+
+    def test_long_synonyms(self):
+        t1 = Type(base="long", line=0, column=0)
+        t2 = Type(base="long int", line=0, column=0)
+        ct = composite_type(t1, t2)
+        assert ct.base == "long"
+
+    def test_none_returns_other(self):
+        t = Type(base="int", line=0, column=0)
+        assert composite_type(None, t) is t
+        assert composite_type(t, None) is t
+
+    def test_both_none(self):
+        assert composite_type(None, None) is None
+
+    def test_string_shorthand(self):
+        ct = composite_type("int", "int")
+        assert ct.base == "int"
+
+
+class TestCompositeTypeArray:
+    """Composite of array types merges size information."""
+
+    def _arr_type(self, base, size=None, **kw):
+        t = Type(base=base, line=0, column=0, **kw)
+        t.array_size = size
+        return t
+
+    def test_sized_and_unsized(self):
+        """int[10] + int[] → int[10]."""
+        t1 = self._arr_type("int", 10)
+        t2 = self._arr_type("int", None)
+        ct = composite_type(t1, t2)
+        assert ct.array_size == 10
+
+    def test_unsized_and_sized(self):
+        """int[] + int[10] → int[10]."""
+        t1 = self._arr_type("int", None)
+        t2 = self._arr_type("int", 10)
+        ct = composite_type(t1, t2)
+        assert ct.array_size == 10
+
+    def test_both_sized_same(self):
+        t1 = self._arr_type("int", 5)
+        t2 = self._arr_type("int", 5)
+        ct = composite_type(t1, t2)
+        assert ct.array_size == 5
+
+    def test_both_unsized(self):
+        t1 = self._arr_type("int", None)
+        t2 = self._arr_type("int", None)
+        ct = composite_type(t1, t2)
+        assert ct.array_size is None
+
+    def test_preserves_base_type(self):
+        t1 = self._arr_type("char", 20)
+        t2 = self._arr_type("char", None)
+        ct = composite_type(t1, t2)
+        assert ct.base == "char"
+        assert ct.array_size == 20
+
+
+class TestCompositeTypeFunction:
+    """Composite of function types merges parameter info."""
+
+    def _fn_type(self, ret_base, param_bases=None):
+        ret = Type(base=ret_base, line=0, column=0)
+        params = [Type(base=b, line=0, column=0) for b in param_bases] if param_bases is not None else None
+        t = Type(base=ret_base, line=0, column=0,
+                 fn_return_type=ret,
+                 fn_param_types=params,
+                 fn_param_count=len(params) if params is not None else None)
+        return t
+
+    def test_both_have_params(self):
+        t1 = self._fn_type("int", ["int", "char"])
+        t2 = self._fn_type("int", ["int", "char"])
+        ct = composite_type(t1, t2)
+        assert ct.fn_param_count == 2
+        assert ct.fn_param_types is not None
+        assert len(ct.fn_param_types) == 2
+
+    def test_one_has_params_other_doesnt(self):
+        """Prototyped + old-style → composite has the parameter info."""
+        t1 = self._fn_type("int", ["int", "char"])
+        t2 = self._fn_type("int", None)  # old-style, no param info
+        ct = composite_type(t1, t2)
+        assert ct.fn_param_types is not None
+        assert len(ct.fn_param_types) == 2
+
+    def test_reverse_one_has_params(self):
+        """old-style + prototyped → composite has the parameter info."""
+        t1 = self._fn_type("int", None)
+        t2 = self._fn_type("int", ["double"])
+        ct = composite_type(t1, t2)
+        assert ct.fn_param_types is not None
+        assert len(ct.fn_param_types) == 1
+
+    def test_composite_return_type(self):
+        t1 = self._fn_type("int", ["int"])
+        t2 = self._fn_type("int", ["int"])
+        ct = composite_type(t1, t2)
+        assert ct.fn_return_type is not None
+        assert ct.fn_return_type.base == "int"
+
+    def test_no_params_both_sides(self):
+        t1 = self._fn_type("void", [])
+        t2 = self._fn_type("void", [])
+        ct = composite_type(t1, t2)
+        assert ct.fn_param_types == []
+        assert ct.fn_param_count == 0
+
+
+class TestCompositeTypePointer:
+    """Composite of pointer types."""
+
+    def test_same_pointer(self):
+        t1 = Type(base="int", is_pointer=True, pointer_level=1, line=0, column=0)
+        t2 = Type(base="int", is_pointer=True, pointer_level=1, line=0, column=0)
+        ct = composite_type(t1, t2)
+        assert ct.is_pointer is True
+        assert ct.pointer_level == 1
+        assert ct.base == "int"
+
+    def test_pointer_to_function_merges_params(self):
+        """Pointer to function with params + pointer to function without → keeps params."""
+        t1 = Type(base="int", is_pointer=True, pointer_level=1,
+                  fn_return_type=Type(base="int", line=0, column=0),
+                  fn_param_types=[Type(base="int", line=0, column=0)],
+                  fn_param_count=1, line=0, column=0)
+        t2 = Type(base="int", is_pointer=True, pointer_level=1,
+                  fn_return_type=Type(base="int", line=0, column=0),
+                  fn_param_types=None, fn_param_count=None,
+                  line=0, column=0)
+        ct = composite_type(t1, t2)
+        assert ct.is_pointer is True
+        assert ct.fn_param_types is not None
+        assert len(ct.fn_param_types) == 1
