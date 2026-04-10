@@ -6,7 +6,7 @@ import subprocess
 import shutil
 from datetime import datetime
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, List, Optional, Tuple, Union
+from typing import Dict, FrozenSet, List, Optional, Set, Tuple, Union
 
 
 # ---------------------------------------------------------------------------
@@ -1864,10 +1864,64 @@ class Preprocessor:
         # Subset hide-set behavior for self-referential object-like macros.
         # If a macro's replacement mentions itself (e.g. `A -> A + 1`), disable
         # it during rescans of the containing line to prevent runaway growth.
+        # Also detect indirect recursion cycles (A -> B + 1, B -> A + 2) by
+        # building a reference graph and finding all macros involved in cycles.
         self_refs: Set[str] = set()
+        # Build reference graph: which macros does each macro's replacement mention?
+        macro_refs: Dict[str, Set[str]] = {}
         for k, v in macros.items():
-            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k) and re.search(rf"\b{re.escape(k)}\b", v):
+            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
+                continue
+            refs: Set[str] = set()
+            for m_name in macros:
+                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", m_name) and re.search(rf"\b{re.escape(m_name)}\b", v):
+                    refs.add(m_name)
+            macro_refs[k] = refs
+            # Direct self-reference
+            if k in refs:
                 self_refs.add(k)
+        # Detect indirect recursion cycles via DFS
+        for k in macro_refs:
+            if k in self_refs:
+                continue
+            # Check if k can reach itself through the reference graph
+            visited: Set[str] = set()
+            stack = list(macro_refs.get(k, set()))
+            while stack:
+                node = stack.pop()
+                if node == k:
+                    self_refs.add(k)
+                    break
+                if node in visited:
+                    continue
+                visited.add(node)
+                stack.extend(macro_refs.get(node, set()))
+        # Also add all macros that are part of any cycle to self_refs
+        # so that mutual recursion like A->B, B->A both get disabled
+        for k in list(self_refs):
+            # Add all macros reachable from k that can reach back to k
+            visited_fwd: Set[str] = set()
+            stack_fwd = list(macro_refs.get(k, set()))
+            while stack_fwd:
+                node = stack_fwd.pop()
+                if node in visited_fwd:
+                    continue
+                visited_fwd.add(node)
+                stack_fwd.extend(macro_refs.get(node, set()))
+            for m in visited_fwd:
+                if m in macro_refs:
+                    # Check if m can reach k
+                    vis2: Set[str] = set()
+                    stk2 = list(macro_refs.get(m, set()))
+                    while stk2:
+                        nd = stk2.pop()
+                        if nd == k:
+                            self_refs.add(m)
+                            break
+                        if nd in vis2:
+                            continue
+                        vis2.add(nd)
+                        stk2.extend(macro_refs.get(nd, set()))
 
         cur = line
         # First pass: allow normal expansions.
@@ -2069,6 +2123,20 @@ class Preprocessor:
                             f"{name}__PP_DISABLED__(",
                             repl,
                         )
+                    # Also handle indirect recursion: if the body calls another
+                    # function-like macro that eventually calls back to this one,
+                    # disable the current macro in the replacement to prevent
+                    # unbounded growth.  E.g. F(x)->G(x), G(x)->F(x).
+                    if not body_is_self_ref:
+                        cycle_macros = self._find_fn_macro_cycle(name)
+                        if cycle_macros:
+                            for cm in cycle_macros:
+                                if re.search(rf"\b{re.escape(cm)}\s*\(", repl):
+                                    repl = re.sub(
+                                        rf"\b{re.escape(cm)}\s*\(",
+                                        f"{cm}__PP_DISABLED__(",
+                                        repl,
+                                    )
                     
                     # Best-effort: only expand *empty* object-like macros inside the
                     # replacement list *before* token pasting, so common patterns like
@@ -2098,6 +2166,56 @@ class Preprocessor:
 
         out = re.sub(r"\b([A-Za-z_][A-Za-z0-9_]*)__PP_DISABLED__\(", r"\1(", out)
         return out
+
+    def _find_fn_macro_cycle(self, name: str) -> Set[str]:
+        """Detect indirect recursion cycles in function-like macros.
+
+        Returns the set of macro names involved in a cycle with `name`,
+        or an empty set if no cycle exists.
+        E.g. for F(x)->G(x), G(x)->F(x), calling with 'F' returns {'F', 'G'}.
+        """
+        # Build a reference graph for function-like macros
+        fn_refs: Dict[str, Set[str]] = {}
+        for k, (params, body, is_variadic) in self._fn_macros.items():
+            refs: Set[str] = set()
+            for other_name in self._fn_macros:
+                if re.search(rf"\b{re.escape(other_name)}\s*\(", body):
+                    refs.add(other_name)
+            fn_refs[k] = refs
+
+        # Check if name can reach itself through the reference graph
+        visited: Set[str] = set()
+        stack = list(fn_refs.get(name, set()))
+        can_reach_self = False
+        while stack:
+            node = stack.pop()
+            if node == name:
+                can_reach_self = True
+                break
+            if node in visited:
+                continue
+            visited.add(node)
+            stack.extend(fn_refs.get(node, set()))
+
+        if not can_reach_self:
+            return set()
+
+        # Collect all macros in the cycle
+        cycle: Set[str] = {name}
+        for m in visited:
+            # Check if m can reach name
+            vis2: Set[str] = set()
+            stk2 = list(fn_refs.get(m, set()))
+            while stk2:
+                nd = stk2.pop()
+                if nd == name:
+                    cycle.add(m)
+                    break
+                if nd in vis2:
+                    continue
+                vis2.add(nd)
+                stk2.extend(fn_refs.get(nd, set()))
+        return cycle
 
     def _find_fn_macro_call(self, text: str, name: str, *, start_idx: int) -> Tuple[Optional[int], Optional[int]]:
         """Find next function-like macro call site (subset).
