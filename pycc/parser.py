@@ -327,6 +327,8 @@ class Parser:
 
         # Support parenthesized declarators at top-level:
         #   int (*get(void))(int) { ... }
+        #   int (*(*fp)(int))[10];
+        #   int (*fp)(int);
         if self._match(TokenType.LPAREN):
             ptr_ty = base_type
             # Inside the parentheses we expect `*name` (possibly multiple `*`).
@@ -339,6 +341,106 @@ class Parser:
                     ptr_ty._normalize_pointer_state()
                 else:
                     ptr_ty = Type(base=getattr(ptr_ty, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(ptr_ty, "line", 1), column=getattr(ptr_ty, "column", 1))
+
+            # Check for nested parenthesized declarator: (*(*fp)(int))[10]
+            if self._at(TokenType.LPAREN):
+                # Could be a nested paren group like (*fp) inside (*(*fp)(int))
+                # Save state and try to parse as nested declarator
+                self._expect(TokenType.LPAREN, "Expected '('")
+                inner_ptr_ty = ptr_ty
+                while self._match(TokenType.STAR):
+                    if isinstance(inner_ptr_ty, Type):
+                        inner_ptr_ty.pointer_level = int(getattr(inner_ptr_ty, "pointer_level", 0)) + 1
+                        if not getattr(inner_ptr_ty, "pointer_quals", None):
+                            inner_ptr_ty.pointer_quals = []
+                        inner_ptr_ty.pointer_quals.insert(0, set())
+                        inner_ptr_ty._normalize_pointer_state()
+                    else:
+                        inner_ptr_ty = Type(base=getattr(inner_ptr_ty, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(inner_ptr_ty, "line", 1), column=getattr(inner_ptr_ty, "column", 1))
+                name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+                self._expect(TokenType.RPAREN, "Expected ')' in nested declarator")
+
+                # Consume inner-level suffixes (parameter lists, array dims)
+                while self._at(TokenType.LPAREN) or self._at(TokenType.LBRACKET):
+                    if self._match(TokenType.LPAREN):
+                        try:
+                            inner_params = self._parse_parameter_list()
+                            inner_arity = len([p for p in inner_params if getattr(p, "name", None) != "..."])
+                        except Exception:
+                            inner_params = None
+                            inner_arity = None
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._match(TokenType.LPAREN):
+                                    depth += 1
+                                    continue
+                                if self._match(TokenType.RPAREN):
+                                    depth -= 1
+                                    continue
+                                self.advance()
+                        self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+                        inner_ptr_ty = Type(
+                            base=f"{inner_ptr_ty.base} (*)()",
+                            is_pointer=True,
+                            pointer_level=max(1, int(getattr(inner_ptr_ty, "pointer_level", 0) or 1)),
+                            line=inner_ptr_ty.line,
+                            column=inner_ptr_ty.column,
+                        )
+                        inner_ptr_ty._normalize_pointer_state()
+                        try:
+                            inner_ptr_ty.fn_param_count = inner_arity
+                            inner_ptr_ty.fn_return_type = Type(
+                                base=base_type.base,
+                                is_unsigned=getattr(base_type, 'is_unsigned', False),
+                                is_signed=getattr(base_type, 'is_signed', False),
+                                line=base_type.line, column=base_type.column,
+                            )
+                            if inner_params is not None:
+                                inner_ptr_ty.fn_param_types = [p.type for p in inner_params if getattr(p, "name", None) != "..."]
+                        except Exception:
+                            pass
+                    elif self._match(TokenType.LBRACKET):
+                        size_expr = None
+                        if not self._at(TokenType.RBRACKET):
+                            size_expr = self._parse_expression()
+                        self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+
+                # Close outer parenthesized group
+                self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+
+                # Consume outer-level suffixes via _finish_declarator
+                decl = self._finish_declarator(inner_ptr_ty, name_tok, paren_declarator=True)
+                decl.storage_class = storage_class
+
+                # Could be a variable declaration or multi-declarator
+                if not self._at(TokenType.COMMA):
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
+                    return decl
+
+                decls = [decl]
+                while self._match(TokenType.COMMA):
+                    extra_ty = Type(
+                        base=base_type.base,
+                        is_const=base_type.is_const,
+                        is_volatile=base_type.is_volatile,
+                        is_unsigned=base_type.is_unsigned,
+                        is_signed=base_type.is_signed,
+                        line=base_type.line,
+                        column=base_type.column,
+                    )
+                    while self._match(TokenType.STAR):
+                        extra_ty.pointer_level = int(getattr(extra_ty, "pointer_level", 0)) + 1
+                        if not getattr(extra_ty, "pointer_quals", None):
+                            extra_ty.pointer_quals = []
+                        extra_ty.pointer_quals.insert(0, set())
+                        extra_ty._normalize_pointer_state()
+                    n_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier in multi-declarator")
+                    d = self._finish_declarator(extra_ty, n_tok)
+                    d.storage_class = storage_class
+                    decls.append(d)
+                self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
+                return decls
+
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
 
             # optional parameter list inside the parentheses: `(*name(void))`
@@ -352,7 +454,41 @@ class Parser:
                         depth -= 1
                         continue
                     self.advance()
+
+            # Check what follows: ')' then '(' means function decl pattern,
+            # ')' then '[' or ';' means variable decl pattern.
             self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+
+            if self._at(TokenType.LBRACKET) or self._at(TokenType.SEMICOLON) or self._at(TokenType.ASSIGN) or self._at(TokenType.COMMA):
+                # Variable declaration: int (*fp)[10]; or int (*fp); or int (*fp) = ...;
+                decl = self._finish_declarator(ptr_ty, name_tok, paren_declarator=True)
+                decl.storage_class = storage_class
+                if not self._at(TokenType.COMMA):
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
+                    return decl
+                decls = [decl]
+                while self._match(TokenType.COMMA):
+                    extra_ty = Type(
+                        base=base_type.base,
+                        is_const=base_type.is_const,
+                        is_volatile=base_type.is_volatile,
+                        is_unsigned=base_type.is_unsigned,
+                        is_signed=base_type.is_signed,
+                        line=base_type.line,
+                        column=base_type.column,
+                    )
+                    while self._match(TokenType.STAR):
+                        extra_ty.pointer_level = int(getattr(extra_ty, "pointer_level", 0)) + 1
+                        if not getattr(extra_ty, "pointer_quals", None):
+                            extra_ty.pointer_quals = []
+                        extra_ty.pointer_quals.insert(0, set())
+                        extra_ty._normalize_pointer_state()
+                    n_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier in multi-declarator")
+                    d = self._finish_declarator(extra_ty, n_tok)
+                    d.storage_class = storage_class
+                    decls.append(d)
+                self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
+                return decls
 
             # first parameter list belongs to the function itself
             self._expect(TokenType.LPAREN, "Expected '(' after function name")
@@ -950,7 +1086,7 @@ class Parser:
         # `int *const p` (const-qualified pointer object).
 
         if self._match(TokenType.LPAREN):
-            # parse inner pointer part: (*name)
+            # parse inner pointer part: (*name) or nested (*(*name)(params))
             ptr_ty = base_type
             while self._match(TokenType.STAR):
                 ptr_ty.pointer_level = int(getattr(ptr_ty, "pointer_level", 0)) + 1
@@ -958,21 +1094,95 @@ class Parser:
                     ptr_ty.pointer_quals = []
                 ptr_ty.pointer_quals.insert(0, set())
                 ptr_ty._normalize_pointer_state()
-            name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
-            # support array-of-function-pointer declarator: (*name[...])
-            if self._match(TokenType.LBRACKET):
-                size_expr = None
-                if not self._at(TokenType.RBRACKET):
-                    size_expr = self._parse_expression()
-                self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
-                # Record array size for this name; keep element type as pointer.
-                array_size_val = size_expr.value if isinstance(size_expr, IntLiteral) else None
+
+            # Check for nested parenthesized declarator: (*(*fp)(int))[10]
+            # After consuming '*' tokens, if we see '(' instead of IDENTIFIER,
+            # there is a deeper nesting level.
+            if self._at(TokenType.LPAREN):
+                # Save position of outer pointer type; recurse into inner parens.
+                outer_ptr_ty = ptr_ty
+                self._expect(TokenType.LPAREN, "Expected '('")
+                inner_ptr_ty = outer_ptr_ty
+                while self._match(TokenType.STAR):
+                    inner_ptr_ty.pointer_level = int(getattr(inner_ptr_ty, "pointer_level", 0)) + 1
+                    if not getattr(inner_ptr_ty, "pointer_quals", None):
+                        inner_ptr_ty.pointer_quals = []
+                    inner_ptr_ty.pointer_quals.insert(0, set())
+                    inner_ptr_ty._normalize_pointer_state()
+                name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+                self._expect(TokenType.RPAREN, "Expected ')' in nested declarator")
+
+                # Consume inner-level suffixes (parameter lists, array dims)
+                # that appear before the outer closing ')'.
+                # e.g. in (*(*fp)(int))[10], the (int) is an inner suffix.
+                while self._at(TokenType.LPAREN) or self._at(TokenType.LBRACKET):
+                    if self._match(TokenType.LPAREN):
+                        # Function parameter list suffix at inner level
+                        try:
+                            inner_params = self._parse_parameter_list()
+                            inner_arity = len([p for p in inner_params if getattr(p, "name", None) != "..."])
+                        except Exception:
+                            inner_params = None
+                            inner_arity = None
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._match(TokenType.LPAREN):
+                                    depth += 1
+                                    continue
+                                if self._match(TokenType.RPAREN):
+                                    depth -= 1
+                                    continue
+                                self.advance()
+                        self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+                        # Wrap type as function pointer
+                        inner_ptr_ty = Type(
+                            base=f"{inner_ptr_ty.base} (*)()",
+                            is_pointer=True,
+                            pointer_level=max(1, int(getattr(inner_ptr_ty, "pointer_level", 0) or 1)),
+                            line=inner_ptr_ty.line,
+                            column=inner_ptr_ty.column,
+                        )
+                        inner_ptr_ty._normalize_pointer_state()
+                        try:
+                            inner_ptr_ty.fn_param_count = inner_arity
+                            inner_ptr_ty.fn_return_type = Type(
+                                base=base_type.base,
+                                is_unsigned=getattr(base_type, 'is_unsigned', False),
+                                is_signed=getattr(base_type, 'is_signed', False),
+                                line=base_type.line, column=base_type.column,
+                            )
+                            if inner_params is not None:
+                                inner_ptr_ty.fn_param_types = [p.type for p in inner_params if getattr(p, "name", None) != "..."]
+                        except Exception:
+                            pass
+                    elif self._match(TokenType.LBRACKET):
+                        # Array suffix at inner level
+                        size_expr = None
+                        if not self._at(TokenType.RBRACKET):
+                            size_expr = self._parse_expression()
+                        self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+
+                # Close outer parenthesized group
                 self._expect(TokenType.RPAREN, "Expected ')' in declarator")
-                decl = self._finish_declarator(ptr_ty, name_tok)
-                decl.array_size = array_size_val
+
+                # Now consume outer-level suffixes: [] or () after the outer ')'
+                decl = self._finish_declarator(inner_ptr_ty, name_tok, paren_declarator=True)
             else:
-                self._expect(TokenType.RPAREN, "Expected ')' in declarator")
-                decl = self._finish_declarator(ptr_ty, name_tok, paren_declarator=True)
+                name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
+                # support array-of-function-pointer declarator: (*name[...])
+                if self._match(TokenType.LBRACKET):
+                    size_expr = None
+                    if not self._at(TokenType.RBRACKET):
+                        size_expr = self._parse_expression()
+                    self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+                    # Record array size for this name; keep element type as pointer.
+                    array_size_val = size_expr.value if isinstance(size_expr, IntLiteral) else None
+                    self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+                    decl = self._finish_declarator(ptr_ty, name_tok)
+                    decl.array_size = array_size_val
+                else:
+                    self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+                    decl = self._finish_declarator(ptr_ty, name_tok, paren_declarator=True)
         else:
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
             decl = self._finish_declarator(base_type, name_tok)
