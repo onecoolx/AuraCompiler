@@ -691,6 +691,7 @@ class CodeGenerator:
         xmm_arg_regs = ["%xmm0", "%xmm1", "%xmm2", "%xmm3", "%xmm4", "%xmm5", "%xmm6", "%xmm7"]
         gp_idx = 0
         xmm_idx = 0
+        stack_arg_off = 0  # offset for stack-passed params (e.g. long double)
         # If we consumed %rdi for the hidden return pointer, skip it.
         if self._hidden_ret_ptr_off:
             gp_idx = 1
@@ -700,12 +701,26 @@ class CodeGenerator:
             ty = str(d.operand1 or "").strip()
             off = self._locals.get(d.result)
             if off is None:
-                if ty in ("float", "double"):
+                if ty == "long double":
+                    # long double params are passed on the stack (MEMORY class)
+                    # but no local slot allocated — just skip and advance stack offset
+                    stack_arg_off += 16
+                elif ty in ("float", "double"):
                     xmm_idx += 1
                 else:
                     gp_idx += 1
                 continue
-            if ty in ("float", "double"):
+            if ty == "long double":
+                # SysV ABI: long double is MEMORY class, passed on the stack.
+                # Copy from caller's stack frame into local slot.
+                # Stack args start at 16(%rbp): 0(%rbp)=saved rbp, 8(%rbp)=ret addr
+                self._emit(f"  movq {16 + stack_arg_off}(%rbp), %rax")
+                self._emit(f"  movq %rax, -{off}(%rbp)")
+                self._emit(f"  movq {16 + stack_arg_off + 8}(%rbp), %rax")
+                self._emit(f"  movq %rax, -{off - 8}(%rbp)")
+                self._var_types[d.result] = "long double"
+                stack_arg_off += 16
+            elif ty in ("float", "double"):
                 if xmm_idx < len(xmm_arg_regs):
                     s = "s" if ty == "float" else "d"
                     self._emit(f"  movs{s} {xmm_arg_regs[xmm_idx]}, -{off}(%rbp)")
@@ -1922,13 +1937,16 @@ class CodeGenerator:
 
             # Build an argument descriptor list.
             _arg_descs = []  # list of (arg, a_ty, kind, extra)
-            #   kind: 'float', 'struct_reg', 'struct_hidden', 'struct_stack', 'gp'
+            #   kind: 'float', 'long_double', 'struct_reg', 'struct_hidden', 'struct_stack', 'gp'
             #   extra: for struct_hidden -> temp slot offset holding the pointer
             _pre_gp = gp_idx
             _pre_xmm = 0
             for idx, a in enumerate(ins.args or []):
                 a_ty = self._var_types.get(a, "") if isinstance(a, str) else ""
-                if isinstance(a_ty, str) and a_ty in ("float", "double"):
+                if isinstance(a_ty, str) and a_ty.strip() == "long double":
+                    # SysV ABI: long double is MEMORY class, passed on the stack
+                    _arg_descs.append((a, a_ty, "long_double", None))
+                elif isinstance(a_ty, str) and a_ty in ("float", "double"):
                     _arg_descs.append((a, a_ty, "float", None))
                     _pre_xmm += 1
                 elif isinstance(a_ty, str) and (a_ty.strip().startswith("struct ") or a_ty.strip().startswith("union ")):
@@ -1981,10 +1999,18 @@ class CodeGenerator:
                     self._emit(f"  movq %rax, -{tmp_off}(%rbp)")
                     _hidden_ptr_slots[desc_idx] = tmp_off
 
-            # Also push struct_stack args (register-exhausted structs) right-to-left.
+            # Also push struct_stack args and long_double args (register-exhausted structs) right-to-left.
             for desc_idx in reversed(range(len(_arg_descs))):
                 a, a_ty, kind, extra = _arg_descs[desc_idx]
-                if kind == "struct_stack":
+                if kind == "long_double":
+                    # SysV ABI: long double passed on stack (16 bytes)
+                    off = self._ensure_local(a, size=16)
+                    # Push high 8 bytes first, then low 8 bytes (right-to-left)
+                    self._emit(f"  pushq -{off - 8}(%rbp)")
+                    self._emit(f"  pushq -{off}(%rbp)")
+                    stack_pad += 16
+                    self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 16
+                elif kind == "struct_stack":
                     sz = extra["sz"]
                     off = self._ensure_local(a)
                     chunks = (sz + 7) // 8
@@ -2022,6 +2048,8 @@ class CodeGenerator:
                         gp_idx += 1
                 elif kind == "struct_stack":
                     pass  # already pushed in pass 1
+                elif kind == "long_double":
+                    pass  # already pushed on stack in pass 1
                 elif kind == "gp":
                     if gp_idx < len(arg_regs):
                         self._load_operand(a, "%rax")
@@ -2125,9 +2153,23 @@ class CodeGenerator:
             if stack_pad:
                 self._emit(f"  addq ${stack_pad}, %rsp")
                 self._call_stack_adjust = max(0, getattr(self, "_call_stack_adjust", 0) - stack_pad)
-            # Float return: result in xmm0
+            # long double return: SysV ABI returns via x87 st(0)
             ret_ty = str(ins.operand2 or "")
-            if "float" in ret_ty and "function" in ret_ty:
+            _ret_is_ld = False
+            if "long double" in ret_ty and "function" in ret_ty:
+                _ret_is_ld = True
+            elif ins.result and isinstance(self._var_types.get(ins.result, ""), str) and self._var_types.get(ins.result, "").strip() == "long double":
+                _ret_is_ld = True
+            if _ret_is_ld:
+                if ins.result:
+                    off_r = self._ensure_local(ins.result, size=16)
+                    self._emit(f"  fstpt -{off_r}(%rbp)")
+                    self._var_types[ins.result] = "long double"
+                else:
+                    # Pop x87 stack if no result needed
+                    self._emit("  fstp %st(0)")
+            # Float return: result in xmm0
+            elif "float" in ret_ty and "function" in ret_ty:
                 fp = "float" if ret_ty.endswith("float") else "double"
                 s = "s" if fp == "float" else "d"
                 if ins.result:
@@ -2497,6 +2539,21 @@ class CodeGenerator:
             src = ins.operand1 or ""
             src_ty = self._var_types.get(src, "") if isinstance(src, str) else ""
             rty = getattr(self, "_fn_ret_ty", "") or ""
+
+            # long double return: SysV ABI returns via x87 st(0)
+            if isinstance(src_ty, str) and src_ty.strip() == "long double":
+                off = self._ensure_local(src, size=16)
+                self._emit(f"  fldt -{off}(%rbp)")
+                self._emit("  leave")
+                self._emit("  ret")
+                return
+            if isinstance(rty, str) and rty.strip() == "long double":
+                off = self._ensure_local(src, size=16)
+                self._emit(f"  fldt -{off}(%rbp)")
+                self._emit("  leave")
+                self._emit("  ret")
+                return
+
             if isinstance(src_ty, str) and src_ty in ("float", "double"):
                 s = "s" if src_ty == "float" else "d"
                 off = self._ensure_local(src)
