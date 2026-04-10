@@ -291,7 +291,17 @@ class CodeGenerator:
                 val = float(gf.operand1 or "0.0")
                 if gf.label != "static":
                     self._emit(f".globl {name}")
-                if fp_type == "float":
+                if fp_type == "long double":
+                    self._emit(f"  .align 16")
+                    self._emit(f"{name}:")
+                    # Emit 80-bit extended precision as 10 bytes + 6 padding bytes
+                    # Use struct to get the double bits, then emit via .quad + .short
+                    # For simplicity, store as double precision in 16 bytes
+                    # (the x87 will load it correctly via fldl)
+                    bits = _struct.unpack('<Q', _struct.pack('<d', val))[0]
+                    self._emit(f"  .quad {bits}")
+                    self._emit(f"  .quad 0")  # padding to 16 bytes
+                elif fp_type == "float":
                     self._emit(f"  .align 4")
                     self._emit(f"{name}:")
                     bits = _struct.unpack('<I', _struct.pack('<f', val))[0]
@@ -595,6 +605,14 @@ class CodeGenerator:
                     offset += size_bytes
                     self._locals[sym] = offset
                     self._var_types[sym] = ty_str
+                elif ty_str.strip() == "long double":
+                    # long double needs 16-byte aligned slot (x86-64 ABI)
+                    # Align offset to 16-byte boundary first
+                    if offset % 16 != 0:
+                        offset += 16 - (offset % 16)
+                    offset += 16
+                    self._locals[sym] = offset
+                    self._var_types[sym] = "long double"
                 else:
                     # Scalar locals: reserve a full 8-byte slot (simplifies addressing).
                     offset += 8
@@ -926,6 +944,21 @@ class CodeGenerator:
 
         if op == "fmov":
             fp_type = (ins.meta or {}).get("fp_type", "double")
+            if fp_type == "long double":
+                # x87 long double: load constant via memory (use double approximation,
+                # then store as 80-bit extended via x87 stack)
+                val_str = ins.operand1 or "0.0"
+                lbl = self._intern_float_literal(float(val_str), "double")
+                # Load double constant into x87 stack, then store as 80-bit tbyte
+                self._emit(f"  fldl {lbl}(%rip)")
+                if ins.result:
+                    off = self._ensure_local(ins.result, size=16)
+                    self._emit(f"  fstpt -{off}(%rbp)")
+                    self._var_types[ins.result] = "long double"
+                else:
+                    # Pop x87 stack if no result
+                    self._emit("  fstp %st(0)")
+                return
             val_str = ins.operand1 or "0.0"
             lbl = self._intern_float_literal(float(val_str), fp_type)
             if fp_type == "float":
@@ -943,6 +976,23 @@ class CodeGenerator:
 
         if op in ("fadd", "fsub", "fmul", "fdiv"):
             fp_type = (ins.meta or {}).get("fp_type", "double")
+            if fp_type == "long double":
+                # x87 long double arithmetic
+                off1 = self._ensure_local(ins.operand1, size=16)
+                off2 = self._ensure_local(ins.operand2, size=16)
+                # Load first operand, then second operand onto x87 stack
+                self._emit(f"  fldt -{off1}(%rbp)")
+                self._emit(f"  fldt -{off2}(%rbp)")
+                # Perform operation: st(1) op st(0), pop
+                # Note: fsubrp/fdivrp for correct operand order (a - b, a / b)
+                x87_ops = {"fadd": "faddp", "fsub": "fsubrp",
+                           "fmul": "fmulp", "fdiv": "fdivrp"}
+                self._emit(f"  {x87_ops[op]} %st(0), %st(1)")
+                # Store result from x87 stack
+                off_r = self._ensure_local(ins.result, size=16)
+                self._emit(f"  fstpt -{off_r}(%rbp)")
+                self._var_types[ins.result] = "long double"
+                return
             s = "s" if fp_type == "float" else "d"
             mov = f"movs{s}"
             off1 = self._ensure_local(ins.operand1)
@@ -959,6 +1009,26 @@ class CodeGenerator:
 
         if op == "fcmp":
             fp_type = (ins.meta or {}).get("fp_type", "double")
+            if fp_type == "long double":
+                # x87 long double comparison using fcomip
+                off1 = self._ensure_local(ins.operand1, size=16)
+                off2 = self._ensure_local(ins.operand2, size=16)
+                # Load operands: first load b (operand2), then a (operand1)
+                # so a is in st(0) and b is in st(1)
+                self._emit(f"  fldt -{off2}(%rbp)")
+                self._emit(f"  fldt -{off1}(%rbp)")
+                # fcomip compares st(0) with st(1), sets EFLAGS, pops st(0)
+                self._emit("  fcomip %st(1), %st(0)")
+                # Pop remaining st(0) (was st(1))
+                self._emit("  fstp %st(0)")
+                cmp_op = ins.label or "<"
+                set_map = {"<": "setb", "<=": "setbe", ">": "seta", ">=": "setae",
+                           "==": "sete", "!=": "setne"}
+                self._emit(f"  {set_map.get(cmp_op, 'setb')} %al")
+                self._emit("  movzbl %al, %eax")
+                self._emit("  movslq %eax, %rax")
+                self._store_result(ins.result, "%rax")
+                return
             s = "s" if fp_type == "float" else "d"
             mov = f"movs{s}"
             off1 = self._ensure_local(ins.operand1)
@@ -1026,6 +1096,77 @@ class CodeGenerator:
             self._emit("  cvtsd2ss %xmm0, %xmm0")
             off_r = self._ensure_local(ins.result)
             self._emit(f"  movss %xmm0, -{off_r}(%rbp)")
+            return
+
+        # --- long double (x87) conversion ops ---
+
+        if op == "i2ld":
+            # int → long double: push int to memory, use fildq, store as tbyte
+            self._load_operand(ins.operand1, "%rax")
+            # Store int to a temp memory slot for fild
+            tmp_off = self._ensure_local(self._new_spill_name())
+            self._emit(f"  movq %rax, -{tmp_off}(%rbp)")
+            self._emit(f"  fildq -{tmp_off}(%rbp)")
+            off_r = self._ensure_local(ins.result, size=16)
+            self._emit(f"  fstpt -{off_r}(%rbp)")
+            self._var_types[ins.result] = "long double"
+            return
+
+        if op == "ld2i":
+            # long double → int: load tbyte, use fistp to convert and store
+            off1 = self._ensure_local(ins.operand1, size=16)
+            self._emit(f"  fldt -{off1}(%rbp)")
+            # Use a temp slot for fistp result
+            tmp_off = self._ensure_local(self._new_spill_name())
+            # Set rounding mode to truncation (like C cast behavior)
+            # Save current x87 control word, set truncation mode, fistp, restore
+            cw_off = self._ensure_local(self._new_spill_name())
+            cw_new_off = self._ensure_local(self._new_spill_name())
+            self._emit(f"  fnstcw -{cw_off}(%rbp)")
+            self._emit(f"  movw -{cw_off}(%rbp), %ax")
+            self._emit("  orw $0x0c00, %ax")  # Set RC=11 (truncate)
+            self._emit(f"  movw %ax, -{cw_new_off}(%rbp)")
+            self._emit(f"  fldcw -{cw_new_off}(%rbp)")
+            self._emit(f"  fistpq -{tmp_off}(%rbp)")
+            self._emit(f"  fldcw -{cw_off}(%rbp)")  # Restore original CW
+            self._emit(f"  movq -{tmp_off}(%rbp), %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "d2ld":
+            # double → long double: load double via fldl, store as tbyte
+            off1 = self._ensure_local(ins.operand1)
+            self._emit(f"  fldl -{off1}(%rbp)")
+            off_r = self._ensure_local(ins.result, size=16)
+            self._emit(f"  fstpt -{off_r}(%rbp)")
+            self._var_types[ins.result] = "long double"
+            return
+
+        if op == "ld2d":
+            # long double → double: load tbyte, store as double via fstpl
+            off1 = self._ensure_local(ins.operand1, size=16)
+            self._emit(f"  fldt -{off1}(%rbp)")
+            off_r = self._ensure_local(ins.result)
+            self._emit(f"  fstpl -{off_r}(%rbp)")
+            self._var_types[ins.result] = "double"
+            return
+
+        if op == "f2ld":
+            # float → long double: load float via flds, store as tbyte
+            off1 = self._ensure_local(ins.operand1)
+            self._emit(f"  flds -{off1}(%rbp)")
+            off_r = self._ensure_local(ins.result, size=16)
+            self._emit(f"  fstpt -{off_r}(%rbp)")
+            self._var_types[ins.result] = "long double"
+            return
+
+        if op == "ld2f":
+            # long double → float: load tbyte, store as float via fstps
+            off1 = self._ensure_local(ins.operand1, size=16)
+            self._emit(f"  fldt -{off1}(%rbp)")
+            off_r = self._ensure_local(ins.result)
+            self._emit(f"  fstps -{off_r}(%rbp)")
+            self._var_types[ins.result] = "float"
             return
 
         if op == "sext16":
@@ -2915,9 +3056,15 @@ class CodeGenerator:
             return 2
         if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
             return 4
+        if b == "long double":
+            return 16
         if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
             return 8
         if "long long" in b:
+            return 8
+        if b == "float":
+            return 4
+        if b == "double":
             return 8
         return 8
 
@@ -2973,6 +3120,18 @@ class CodeGenerator:
         import struct
         if fp_type == "float":
             bits = struct.pack('<f', value).hex()
+        elif fp_type == "long double":
+            # Store as double precision in the constant pool;
+            # codegen will load via fldl (64-bit double load into x87 stack)
+            bits = struct.pack('<d', value).hex()
+            # Use "double" key prefix so the pool entry is a .quad
+            key = f"double:{bits}"
+            if key in self._float_pool:
+                return self._float_pool[key]
+            lbl = f".LF{self._float_counter}"
+            self._float_counter += 1
+            self._float_pool[key] = lbl
+            return lbl
         else:
             bits = struct.pack('<d', value).hex()
         key = f"{fp_type}:{bits}"
