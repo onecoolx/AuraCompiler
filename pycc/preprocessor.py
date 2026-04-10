@@ -258,7 +258,14 @@ class MacroExpander:
 
     @staticmethod
     def _stringize(tokens: List[PPToken]) -> str:
-        """Convert token sequence to a string literal (# operator)."""
+        """Convert token sequence to a string literal (# operator).
+
+        C89 §6.8.3.2: Each occurrence of whitespace between the argument's
+        preprocessing tokens becomes a single space character.  Backslash
+        and double-quote characters within string/char literals are escaped.
+        Tab and newline characters in the token text are preserved as their
+        escape representations (\\t, \\n).
+        """
         parts: List[str] = []
         for t in tokens:
             if t.kind == 'space':
@@ -268,6 +275,8 @@ class MacroExpander:
                 text = t.text
                 if t.kind in ('string', 'char'):
                     text = text.replace('\\', '\\\\').replace('"', '\\"')
+                # Escape tab and newline characters in any token text
+                text = text.replace('\t', '\\t').replace('\n', '\\n')
                 parts.append(text)
         inner = ''.join(parts).strip()
         return f'"{inner}"'
@@ -2368,16 +2377,22 @@ class Preprocessor:
         return "".join(out)
 
     def _apply_stringize(self, body: str, param: str, arg: str) -> str:
-        # Very small subset of stringize (#param):
+        # Stringize (#param) per C89 §6.8.3.2:
         # - whitespace normalization: collapse runs of whitespace to single spaces
-        # - escapes backslashes and double-quotes (subset)
+        # - escapes backslashes and double-quotes
+        # - escapes tab (\t) and newline (\n) characters
         # - wraps raw argument text in double quotes
         # Only match `#param` when '#' is not part of '##'.
+        def _stringize_arg(_m):
+            s = re.sub(r"\s+", " ", arg.strip())
+            s = s.replace("\\", "\\\\")
+            s = s.replace('"', '\\"')
+            s = s.replace('\t', '\\t')
+            s = s.replace('\n', '\\n')
+            return '"' + s + '"'
         return re.sub(
             rf"(?<!#)#\s*{re.escape(param)}\b",
-            lambda _m: '"'
-            + re.sub(r"\s+", " ", arg.strip()).replace("\\", "\\\\").replace('"', '\\"')
-            + '"',
+            _stringize_arg,
             body,
         )
 
