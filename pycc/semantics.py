@@ -217,8 +217,7 @@ class SemanticAnalyzer:
                         getattr(p, "name", None) == "..." for p in params
                     )
                     self._function_sigs[decl.name] = (str(ret_base_s), param_count, is_variadic)
-                    # Store full parameter types and return type for function pointer
-                    # type compatibility checks.
+                    # Store full parameter types for cross-TU compatibility checks.
                     try:
                         _param_types = []
                         for p in params:
@@ -227,10 +226,19 @@ class SemanticAnalyzer:
                             pt = getattr(p, "type", None)
                             if pt is not None:
                                 _param_types.append(pt)
-                        # For single (void) param, store empty list
                         if param_count == 0:
                             _param_types = []
                         self._function_full_sig[decl.name] = (_param_types, ret_base)
+                        # Also store as string list for cross-TU driver checks.
+                        if _param_types:
+                            self._function_param_types[decl.name] = [
+                                (str(getattr(t, "base", "int")) + ("*" * int(getattr(t, "pointer_level", 0) or 0))
+                                 if getattr(t, "is_pointer", False)
+                                 else str(getattr(t, "base", "int")))
+                                for t in _param_types
+                            ]
+                        elif param_count is not None:
+                            self._function_param_types[decl.name] = []
                     except Exception:
                         pass
                 except Exception:

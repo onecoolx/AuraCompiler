@@ -259,10 +259,25 @@ class Compiler:
                                 )
 
                         # Keep per-parameter prototype info for future tightening.
-                        # Do not enforce yet: the frontend does not encode full
-                        # parameter qualifier spellings reliably for all cases.
                         cur_ptys = fptys.get(name)
+                        prev_ptys = fn_param_types.get(name)
+                        # Enforce parameter type compatibility when both TUs
+                        # provide a prototype (C89 §6.1.2.6).
+                        if cur_ptys is not None and prev_ptys is not None:
+                            if len(cur_ptys) == len(prev_ptys):
+                                for pi, (ct, pt) in enumerate(zip(cur_ptys, prev_ptys)):
+                                    ct_c = _canon_global_obj_type(str(ct))
+                                    pt_c = _canon_global_obj_type(str(pt))
+                                    if ct_c != pt_c:
+                                        return CompilationResult(
+                                            success=False,
+                                            errors=[
+                                                f"error: multi-tu: incompatible parameter {pi+1} type for function '{name}': '{pt_c}' vs '{ct_c}'"
+                                            ],
+                                        )
                         fn_param_types.setdefault(name, cur_ptys)
+                        if cur_ptys is not None and fn_param_types[name] is None:
+                            fn_param_types[name] = cur_ptys
                         continue
                     # Skip internal linkage symbols (static) since they are TU-local.
                     if glink.get(name) == "internal":
