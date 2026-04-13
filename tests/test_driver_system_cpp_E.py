@@ -20,7 +20,7 @@ int main(void){ return 0; }
 
     out = tmp_path / "out.i"
     p = subprocess.run(
-        [sys.executable, "pycc.py", "--use-system-cpp", "-E", str(src), "-o", str(out)],
+        [sys.executable, "pycc.py", "-E", str(src), "-o", str(out)],
         cwd=Path(__file__).resolve().parents[1],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

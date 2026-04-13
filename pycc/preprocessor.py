@@ -1903,66 +1903,62 @@ class Preprocessor:
             return cur
 
         # Subset hide-set behavior for self-referential object-like macros.
-        # If a macro's replacement mentions itself (e.g. `A -> A + 1`), disable
-        # it during rescans of the containing line to prevent runaway growth.
-        # Also detect indirect recursion cycles (A -> B + 1, B -> A + 2) by
-        # building a reference graph and finding all macros involved in cycles.
-        self_refs: Set[str] = set()
-        # Build reference graph: which macros does each macro's replacement mention?
-        macro_refs: Dict[str, Set[str]] = {}
-        for k, v in macros.items():
-            if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
-                continue
-            refs: Set[str] = set()
-            for m_name in macros:
-                if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", m_name) and re.search(rf"\b{re.escape(m_name)}\b", v):
-                    refs.add(m_name)
-            macro_refs[k] = refs
-            # Direct self-reference
-            if k in refs:
-                self_refs.add(k)
-        # Detect indirect recursion cycles via DFS
-        for k in macro_refs:
-            if k in self_refs:
-                continue
-            # Check if k can reach itself through the reference graph
-            visited: Set[str] = set()
-            stack = list(macro_refs.get(k, set()))
-            while stack:
-                node = stack.pop()
-                if node == k:
+        # Cache the self-referential macro set to avoid rebuilding the O(n²)
+        # reference graph on every line.  Invalidate when the macro set changes.
+        cache_key = len(macros)
+        if not hasattr(self, '_obj_self_refs_cache') or self._obj_self_refs_cache_key != cache_key:
+            self_refs: Set[str] = set()
+            macro_refs: Dict[str, Set[str]] = {}
+            # Only consider identifier-shaped macro names
+            ident_macros = {k: v for k, v in macros.items() if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k)}
+            for k, v in ident_macros.items():
+                refs: Set[str] = set()
+                for m_name in ident_macros:
+                    if re.search(rf"\b{re.escape(m_name)}\b", v):
+                        refs.add(m_name)
+                macro_refs[k] = refs
+                if k in refs:
                     self_refs.add(k)
-                    break
-                if node in visited:
+            # Detect indirect recursion cycles via DFS
+            for k in macro_refs:
+                if k in self_refs:
                     continue
-                visited.add(node)
-                stack.extend(macro_refs.get(node, set()))
-        # Also add all macros that are part of any cycle to self_refs
-        # so that mutual recursion like A->B, B->A both get disabled
-        for k in list(self_refs):
-            # Add all macros reachable from k that can reach back to k
-            visited_fwd: Set[str] = set()
-            stack_fwd = list(macro_refs.get(k, set()))
-            while stack_fwd:
-                node = stack_fwd.pop()
-                if node in visited_fwd:
-                    continue
-                visited_fwd.add(node)
-                stack_fwd.extend(macro_refs.get(node, set()))
-            for m in visited_fwd:
-                if m in macro_refs:
-                    # Check if m can reach k
-                    vis2: Set[str] = set()
-                    stk2 = list(macro_refs.get(m, set()))
-                    while stk2:
-                        nd = stk2.pop()
-                        if nd == k:
-                            self_refs.add(m)
-                            break
-                        if nd in vis2:
-                            continue
-                        vis2.add(nd)
-                        stk2.extend(macro_refs.get(nd, set()))
+                visited: Set[str] = set()
+                stack = list(macro_refs.get(k, set()))
+                while stack:
+                    node = stack.pop()
+                    if node == k:
+                        self_refs.add(k)
+                        break
+                    if node in visited:
+                        continue
+                    visited.add(node)
+                    stack.extend(macro_refs.get(node, set()))
+            for k in list(self_refs):
+                visited_fwd: Set[str] = set()
+                stack_fwd = list(macro_refs.get(k, set()))
+                while stack_fwd:
+                    node = stack_fwd.pop()
+                    if node in visited_fwd:
+                        continue
+                    visited_fwd.add(node)
+                    stack_fwd.extend(macro_refs.get(node, set()))
+                for m in visited_fwd:
+                    if m in macro_refs:
+                        vis2: Set[str] = set()
+                        stk2 = list(macro_refs.get(m, set()))
+                        while stk2:
+                            nd = stk2.pop()
+                            if nd == k:
+                                self_refs.add(m)
+                                break
+                            if nd in vis2:
+                                continue
+                            vis2.add(nd)
+                            stk2.extend(macro_refs.get(nd, set()))
+            self._obj_self_refs_cache = frozenset(self_refs)
+            self._obj_self_refs_cache_key = cache_key
+        self_refs = self._obj_self_refs_cache
 
         cur = line
         # First pass: allow normal expansions.

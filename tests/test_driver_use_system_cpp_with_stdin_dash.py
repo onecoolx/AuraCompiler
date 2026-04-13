@@ -27,7 +27,7 @@ int main(void){ printf(\"hi\\n\"); return 0; }
             sys.executable,
             str(REPO_ROOT / "pycc.py"),
             "-",
-            "--use-system-cpp",
+           
             "-o",
             str(out),
         ],

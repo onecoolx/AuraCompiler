@@ -24,7 +24,7 @@ int x = (int)sizeof(size_t);
         [
             sys.executable,
             str(REPO_ROOT / "pycc.py"),
-            "--use-system-cpp",
+           
             "-E",
             "-",
         ],

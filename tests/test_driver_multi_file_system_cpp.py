@@ -39,7 +39,7 @@ int get(void) {
         [
             sys.executable,
             "pycc.py",
-            "--use-system-cpp",
+           
             str(a),
             str(b),
             "-o",

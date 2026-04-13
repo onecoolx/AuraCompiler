@@ -59,7 +59,7 @@ def test_E_system_cpp_outputs_expansion_if_available(tmp_path: Path):
     )
 
     repo = Path(__file__).resolve().parents[1]
-    res = _run_pycc(["-E", "--use-system-cpp", "-I", str(inc), str(src)], cwd=repo)
+    res = _run_pycc(["-E", "-I", str(inc), str(src)], cwd=repo)
     assert res.returncode == 0, res.stderr
     assert "RET" not in res.stdout
     assert "return 6" in res.stdout
@@ -90,7 +90,7 @@ def test_compile_builtin_vs_system_cpp_same_result(tmp_path: Path):
     assert res1.returncode == 0, res1.stderr
 
     out2 = tmp_path / "a_system.out"
-    res2 = _run_pycc(["--use-system-cpp", "-I", str(inc), str(src), "-o", str(out2)], cwd=repo)
+    res2 = _run_pycc(["-I", str(inc), str(src), "-o", str(out2)], cwd=repo)
     assert res2.returncode == 0, res2.stderr
 
     run1 = subprocess.run([str(out1)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)

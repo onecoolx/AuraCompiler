@@ -40,11 +40,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("-S", action="store_true", help="Compile only; emit assembly (.s)")
     ap.add_argument("-c", action="store_true", help="Compile only; emit object (.o)")
     ap.add_argument(
-        "--use-system-cpp",
-        action="store_true",
-        help="Preprocess with system gcc -E before compiling (subset; for glibc headers)",
-    )
-    ap.add_argument(
         "-D",
         dest="defines",
         action="append",
@@ -262,24 +257,14 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         src = args.source[0]
         try:
-            if args.use_system_cpp:
-                # Reuse the compiler's system-cpp preprocessing path so -E
-                # behaves consistently with normal compilation.
-                c = Compiler(
-                    optimize=False,
-                    include_paths=args.include_dirs,
-                    defines=initial_macros,
-                    use_system_cpp=True,
-                )
-                text = c._preprocess_with_system_cpp(src)
-            else:
-                pp = Preprocessor(include_paths=args.include_dirs)
-                res = pp.preprocess(src, initial_macros=initial_macros)
-                if not res.success:
-                    for e in (res.errors or []):
-                        print(f"Error: {e}")
-                    return 1
-                text = res.text
+            # -E mode: always use built-in preprocessor
+            pp = Preprocessor(include_paths=args.include_dirs)
+            res = pp.preprocess(src, initial_macros=initial_macros)
+            if not res.success:
+                for e in (res.errors or []):
+                    print(f"Error: {e}")
+                return 1
+            text = res.text
         except Exception as e:
             print(f"Error: {e}")
             if src_is_temp:
@@ -384,7 +369,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=False,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             pres = cc.compile_file(src, None, preprocess_only=True)
             if not pres.success:
@@ -412,7 +397,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=False,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             pres = cc.compile_file(src, None, preprocess_only=True)
             if not pres.success:
@@ -442,7 +427,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=not args.no_opt,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             res = cc.compile_file(src, args.dump_asm_only_to)
             if not res.success:
@@ -471,7 +456,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=not args.no_opt,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             res = cc.compile_file(src, out_s)
             if not res.success:
@@ -495,7 +480,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=not args.no_opt,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             pres = c.compile_file(src, None, preprocess_only=True)
             if not pres.success:
@@ -530,7 +515,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=not args.no_opt,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             # Preprocess
             pres = c.compile_file(src, None, preprocess_only=True)
@@ -588,7 +573,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=False,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             res = c.compile_file(args.source[0], None, preprocess_only=True)
             if not res.success:
@@ -619,7 +604,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 optimize=False,
                 include_paths=args.include_dirs,
                 defines=compile_defines,
-                use_system_cpp=args.use_system_cpp,
+                use_system_cpp=True,
             )
             # Reuse compile_file preprocessing path but stop after preprocessing.
             res = c.compile_file(args.source[0], None, preprocess_only=True)
@@ -640,7 +625,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         optimize=not args.no_opt,
         include_paths=args.include_dirs,
         defines=compile_defines,
-        use_system_cpp=args.use_system_cpp,
+        use_system_cpp=True,
         wall=getattr(args, "wall", False),
         werror=getattr(args, "werror", False),
     )

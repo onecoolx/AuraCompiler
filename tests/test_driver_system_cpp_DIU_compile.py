@@ -43,7 +43,7 @@ def test_system_cpp_compile_forwards_I_D_U(tmp_path):
     cmd = [
         "python",
         "pycc.py",
-        "--use-system-cpp",
+       
         str(src),
         "-o",
         str(exe),
