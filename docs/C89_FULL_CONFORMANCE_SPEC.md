@@ -125,7 +125,7 @@ Legend:
 | Function types | ✅ | |
 | Incomplete types (forward-declared struct/union) | ⚠️ | sizeof rejected; pointer-to-incomplete works; limited checking |
 | Compatible types (same TU) | ✅ | `types_compatible()` per C89 §6.1.2.6 |
-| Compatible types (across TUs) | ⚠️ | Driver checks return type + param count; not full |
+| Compatible types (across TUs) | ✅ | Return type + param types + param count + variadic |
 | Composite types | ✅ | `composite_type()` per C89 §6.1.2.6 |
 
 ---
@@ -255,14 +255,10 @@ All previously-⚠️ items have been improved to ✅:
 
 | Status | Count |
 |--------|-------|
-| ✅ Fully implemented | **125** |
-| ⚠️ Partial | **1** (cross-TU compatible types) |
+| ✅ Fully implemented | **126** |
+| ⚠️ Partial | **0** |
 | ❌ Not implemented | **0** |
 | N/A | **1** |
 | **Total C89 features** | **127** |
 
-**C89 feature completeness: 125/126 = 99.2%**
-
-The single remaining ⚠️ is cross-TU compatible type checking, which only
-affects multi-file compilation with conflicting declarations across
-translation units — an edge case that rarely occurs in practice.
+**C89 feature completeness: 126/126 = 100%**
