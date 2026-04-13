@@ -1,8 +1,8 @@
 # AuraCompiler Feature Tracker (Living)
 
-Last updated: 2026-03-31
+Last updated: 2026-04-13
 
-Status: **DEPRECATED** (kept for historical context).
+Status: **DEPRECATED** (kept for historical context). See `docs/PROJECT_SUMMARY.md` for current status.
 
 Current sources of truth:
 - Test results: `pytest -q`

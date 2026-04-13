@@ -19,6 +19,7 @@ Assumptions (current stage):
 
 from __future__ import annotations
 
+import struct as _struct
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 
@@ -284,7 +285,6 @@ class CodeGenerator:
                     # int
                     self._emit(f"  .long {imm.lstrip('$')}")
 
-            import struct as _struct
             for gf in gfloats:
                 name = (gf.result or "").lstrip("@")
                 fp_type = (gf.meta or {}).get("fp_type", "double")
@@ -448,19 +448,18 @@ class CodeGenerator:
                 self._emit(f"{lbl}:")
                 self._emit(f"  .string {self._gas_escape(s)}")
             # Emit float constants
-            import struct
             for key, lbl in self._float_pool.items():
                 fp_type, bits_hex = key.split(":", 1)
                 raw = bytes.fromhex(bits_hex)
                 if fp_type == "float":
                     self._emit(f"  .align 4")
                     self._emit(f"{lbl}:")
-                    val = struct.unpack('<I', raw)[0]
+                    val = _struct.unpack('<I', raw)[0]
                     self._emit(f"  .long {val}")
                 else:
                     self._emit(f"  .align 8")
                     self._emit(f"{lbl}:")
-                    val = struct.unpack('<Q', raw)[0]
+                    val = _struct.unpack('<Q', raw)[0]
                     self._emit(f"  .quad {val}")
 
         return "\n".join(self.assembly_lines) + "\n"
@@ -3174,14 +3173,10 @@ class CodeGenerator:
         return lbl
 
     def _intern_float_literal(self, value: float, fp_type: str) -> str:
-        import struct
         if fp_type == "float":
-            bits = struct.pack('<f', value).hex()
+            bits = _struct.pack('<f', value).hex()
         elif fp_type == "long double":
-            # Store as double precision in the constant pool;
-            # codegen will load via fldl (64-bit double load into x87 stack)
-            bits = struct.pack('<d', value).hex()
-            # Use "double" key prefix so the pool entry is a .quad
+            bits = _struct.pack('<d', value).hex()
             key = f"double:{bits}"
             if key in self._float_pool:
                 return self._float_pool[key]
@@ -3190,7 +3185,7 @@ class CodeGenerator:
             self._float_pool[key] = lbl
             return lbl
         else:
-            bits = struct.pack('<d', value).hex()
+            bits = _struct.pack('<d', value).hex()
         key = f"{fp_type}:{bits}"
         if key in self._float_pool:
             return self._float_pool[key]

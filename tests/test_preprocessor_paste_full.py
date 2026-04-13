@@ -76,20 +76,23 @@ class TestProcessPaste:
         assert result[0].text == '<='
         assert result[0].kind == 'punct'
 
-    def test_paste_invalid_produces_diagnostic(self, capsys):
+    def test_paste_invalid_produces_diagnostic(self):
         """Pasting tokens that don't form a valid token produces a warning."""
+        import warnings
         expander = MacroExpander()
         tokens = [
             PPToken('punct', ')'),
             PPToken('punct', '##'),
             PPToken('punct', '('),
         ]
-        result = expander._process_paste(tokens)
-        assert len(result) == 1
-        assert result[0].text == ')('
-        assert result[0].kind == 'other'
-        captured = capsys.readouterr()
-        assert 'does not give a valid preprocessing token' in captured.err
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = expander._process_paste(tokens)
+            assert len(result) == 1
+            assert result[0].text == ')('
+            assert result[0].kind == 'other'
+            assert len(w) >= 1
+            assert 'does not give a valid preprocessing token' in str(w[0].message)
 
     def test_paste_hide_set_intersection(self):
         """## paste uses intersection of hide-sets."""

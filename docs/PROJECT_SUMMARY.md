@@ -1,6 +1,6 @@
 # AuraCompiler (pycc): Practical C89 Compiler - Project Summary
 
-Last updated: 2026-04-08
+Last updated: 2026-04-13
 
 ## Executive Summary
 
@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **947 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **1346 passed**.
 
 ### Recent changes
 
@@ -88,14 +88,9 @@ pycc/
 - `goto`/labels
 
 **Known gaps (updated):**
-- Preprocessor is implemented (broad subset) but standards-accurate macro expansion engine is still regex-based. See `docs/PREPROCESSOR_C89_CHECKLIST.md`.
-- `long double` has no IR or x87 codegen support
-- `struct`/`union` by-value assignment, parameter passing, and return not implemented
-- `va_arg` builtin not implemented (can pass `va_list` to libc but cannot extract args in user code)
-- Designated initializers (`.member = val`, `[index] = val`) not implemented
-- `volatile` qualifier parsed but codegen does not honor it (no memory barriers)
 - Optimizer is a no-op stub
 - Diagnostics and conformance testing vs `gcc -std=c89` not comprehensive yet
+- No incremental compilation
 
 ---
 
@@ -118,9 +113,15 @@ Legend: **DONE** = implemented + tested; **PARTIAL** = implemented subset + test
 - **DONE**: `struct`/`union` layout + member access (`.`/`->`), bit-fields.
 - **DONE**: Storage classes (`static`/`extern`/`auto`/`register`) incl. local `static` with constant initializer.
 - **DONE**: `const` qualifier semantics (assignment rejection, pointer compat).
-- **PARTIAL**: `volatile` qualifier (parsed, no special codegen).
-- **TODO**: `long double` (no x87 codegen).
-- **TODO**: `struct`/`union` by-value assignment, parameter passing, and return.
+- **DONE**: `volatile` qualifier (parsed + codegen emits memory access with `# volatile` markers).
+- **DONE**: `long double` (IR type marking + x87 FPU codegen: `fldt`/`fstpt`/`faddp`/`fsubp`/`fmulp`/`fdivp`/`fcomip`, conversions `i2ld`/`ld2i`/`d2ld`/`ld2d`, ABI via x87 st0).
+- **DONE**: `struct`/`union` by-value assignment, parameter passing (SysV ABI StructClassifier: INTEGER/SSE/MEMORY), and return (rax/rdx, xmm0/xmm1, hidden pointer).
+- **DONE**: Designated initializers (`.member = val`, `[index] = val`, nested, mixed with sequential, zero-fill).
+- **DONE**: `va_arg` builtin (`__builtin_va_arg_int`) for user-defined variadic functions.
+- **DONE**: Function pointer full type compatibility checks (parameter types + return type, not just arity).
+- **DONE**: C89 §6.1.2.6 compatible/composite type algorithm (`types_compatible`, `composite_type`).
+- **DONE**: Complex nested declarators (`int (*(*fp)(int))[10]`, `int (*f(int))(double)`).
+- **DONE**: Preprocessor improvements: multi-round rescan (C89 §6.8.3), hide-set indirect recursion termination, `#` stringize special char escaping, `##` paste validation + diagnostics, `#if` integer suffix parsing, whitespace preservation.
 
 ### Expressions / Semantics
 
@@ -820,22 +821,15 @@ print(print_ast(ast))
 ## Part 7: Known Limitations
 
 ### Current Limitations
-- Preprocessor macro expansion engine is regex-based, not standards-accurate preprocessing-token model
-- `long double` has no x87 codegen
-- `struct`/`union` by-value assignment, parameter passing, and return not implemented
-- `va_arg` builtin not implemented
-- Designated initializers not implemented
-- `volatile` codegen not honored
 - Optimizer is a no-op stub
 - No incremental compilation
+- Diagnostics and conformance testing vs `gcc -std=c89` not comprehensive yet
 
 ### Future Enhancements
-1. `struct`/`union` by-value operations (assignment, params, return)
-2. `va_arg` builtin for user-defined variadic functions
-3. `long double` x87 codegen
-4. Designated initializers
-5. Standards-accurate preprocessing-token macro expansion engine
-6. Optimization passes (const folding, DCE, CSE)
+1. Optimizer passes (constant folding, dead code elimination, etc.)
+2. Systematic C89 conformance suite with `gcc -std=c89` comparison
+3. Improved diagnostics with source-location tracking
+4. Debug information (DWARF) generation. Optimization passes (const folding, DCE, CSE)
 7. Debug symbol generation (-g / DWARF)
 8. `-Wall`/`-Werror` warning system
 9. ARM/MIPS/WebAssembly backend support

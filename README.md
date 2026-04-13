@@ -21,13 +21,18 @@ Generates **x86-64 SysV** assembly and uses **binutils `as`/`ld`** to produce EL
 ### Implemented language features (high level)
 
 - Declarations: globals/locals, `static`/`extern`, function prototypes + definitions, multi-declarator (`int a, b;`)
-- Types: `int`, `char`, `short`, `long` (signed/unsigned), `float`, `double`, pointers, arrays, `typedef`
-- Aggregates: `struct`/`union` (layout + member access `.` / `->`, bit-fields, `typedef struct {} T;`)
+- Types: `int`, `char`, `short`, `long` (signed/unsigned), `float`, `double`, `long double`, pointers, arrays, `typedef`
+- Aggregates: `struct`/`union` (layout + member access `.` / `->`, bit-fields, by-value assignment/param/return, `typedef struct {} T;`)
 - Control flow: `if/else`, `for`, `while`, `do/while`, `switch/case/default`, `break/continue`, `goto`/labels
 - Expressions: arithmetic/bitwise/compare, assignment, `++`/`--` (pre/post), calls, `?:`, `&`, member access
 - Operators: `sizeof` (incl. struct/union), C-style cast `(type)expr`, comma operator
 - Enums: `enum` definitions + enumerator constants
-- Floating point: `float`/`double` literals, arithmetic, comparisons, int↔float casts, function params/return (SSE/SSE2)
+- Floating point: `float`/`double` (SSE/SSE2), `long double` (x87 FPU), int↔float casts, function params/return
+- Designated initializers: `.member = val`, `[index] = val`, nested, mixed with sequential
+- Variadic functions: `va_start`/`va_arg`/`va_end` builtins for user-defined variadic functions
+- Volatile: `volatile` qualifier with codegen memory-access enforcement
+- Function pointers: full type compatibility checks (param types + return type)
+- Preprocessor: `#include`, `#define` (object/function-like), `#if`/`#ifdef`/`#ifndef`/`#else`/`#elif`/`#endif`, `#line`, `#error`, `#warning`, `#pragma once`, variadic macros, `#`/`##` operators, hide-set algorithm
 - Preprocessor: `#define`/`#undef`, `#include`, `#if`/`#ifdef`/`#elif`/`#else`, `#`/`##`, `#line`, trigraphs
 - String literals: adjacent concatenation (`"ab" "cd"`), wide chars (`L'x'`, `L"str"`)
 

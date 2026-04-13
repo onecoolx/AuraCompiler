@@ -270,10 +270,12 @@ class MacroExpander:
                     i += 2
                     continue
                 else:
-                    # Not a valid preprocessing token — emit diagnostic
                     kind = 'other'
-                    import sys
-                    print(f"warning: pasting \"{lhs.text}\" and \"{rhs.text}\" does not give a valid preprocessing token", file=sys.stderr)
+                    import warnings
+                    warnings.warn(
+                        f'pasting "{lhs.text}" and "{rhs.text}" does not give a valid preprocessing token',
+                        stacklevel=2,
+                    )
                 result.append(PPToken(kind, pasted_text,
                                        lhs.hide_set & rhs.hide_set,
                                        lhs.line, lhs.column))
