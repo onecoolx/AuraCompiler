@@ -1298,7 +1298,7 @@ class SemanticAnalyzer:
             if self._lookup_decl_type(expr.name) is None and not self._is_declared(expr.name):
                 # C89 implicit extern/implicit int isn't desired for variables.
                 # But allow unknown names if they are used as function identifiers.
-                self.errors.append(f"Use of undeclared identifier: {expr.name}")
+                self._err(f"use of undeclared identifier '{expr.name}'", expr)
             try:
                 ty = self._lookup_decl_type(expr.name)
                 if ty is not None:
@@ -1350,7 +1350,7 @@ class SemanticAnalyzer:
             # Best-effort: reject `void* +/- integer` and `integer +/- void*`.
             if expr.operator in {"+", "-"}:
                 if _is_void_ptr(expr.left) or _is_void_ptr(expr.right):
-                    self.errors.append("void* pointer arithmetic is not allowed")
+                    self._err("void* pointer arithmetic is not allowed", expr)
 
             # C89/C99: pointer + pointer is not allowed (only pointer +/- integer,
             # and pointer - pointer). Catch identifiers, casts, and arrays which
@@ -1358,7 +1358,7 @@ class SemanticAnalyzer:
             if expr.operator == "+":
                 # Detect any pointer-like expression on the left/right.
                 if _is_ptrlike(expr.left) and _is_ptrlike(expr.right):
-                    self.errors.append("pointer + pointer is not allowed")
+                    self._err("pointer + pointer is not allowed", expr)
 
             # Conservative: relational comparisons require either two pointers
             # (typically within the same aggregate/object) or two arithmetic
@@ -1385,9 +1385,9 @@ class SemanticAnalyzer:
                     if _is_ptrdiff_like(expr.left) or _is_ptrdiff_like(expr.right):
                         pass
                     else:
-                        self.errors.append(f"pointer and non-pointer comparison is not allowed: '{expr.operator}'")
+                        self._err(f"pointer and non-pointer comparison is not allowed: '{expr.operator}'", expr)
                 elif lp and rp and (_is_void_ptr(expr.left) or _is_void_ptr(expr.right)):
-                    self.errors.append("relational comparison on void* pointer is not allowed")
+                    self._err("relational comparison on void* pointer is not allowed", expr)
 
             # Conservative: for equality comparisons, allow:
             # - pointer ==/!= pointer (including void*)
@@ -1445,7 +1445,7 @@ class SemanticAnalyzer:
                     ):
                         pass
                     else:
-                        self.errors.append(f"pointer and non-pointer equality comparison is not allowed: '{expr.operator}'")
+                        self._err(f"pointer and non-pointer equality comparison is not allowed: '{expr.operator}'", expr)
 
             # Best-effort: reject subtraction of pointers with obviously
             # different base types (e.g. int* - char*).
@@ -1466,7 +1466,7 @@ class SemanticAnalyzer:
                 lb = _ptr_base(expr.left)
                 rb = _ptr_base(expr.right)
                 if lb is not None and rb is not None and lb != rb:
-                    self.errors.append("pointer - pointer with different base types is not allowed")
+                    self._err("pointer - pointer with different base types is not allowed", expr)
 
             # Ensure we still analyze nested expressions for other checks.
 
@@ -1586,7 +1586,7 @@ class SemanticAnalyzer:
                 # `T const p` (non-pointer const object) and `T * const p`
                 # (const-qualified pointer object).
                 if ty is not None and not getattr(ty, "is_pointer", False) and getattr(ty, "is_const", False):
-                    self.errors.append(f"Assignment to const-qualified variable '{expr.target.name}'")
+                    self._err(f"Assignment to const-qualified variable '{expr.target.name}'", expr)
 
                 # Also reject assignment to a const-qualified pointer object: `T *const p; p = ...;`
                 # This is distinct from `const T *p` (pointer-to-const), which remains assignable.
@@ -1605,7 +1605,7 @@ class SemanticAnalyzer:
                         is_ptr_obj_const = False
 
                     if is_ptr_obj_const:
-                        self.errors.append(f"Assignment to const-qualified pointer variable '{expr.target.name}'")
+                        self._err(f"Assignment to const-qualified pointer variable '{expr.target.name}'", expr)
 
             def _expr_is_nonmodifiable_lvalue(e: Expression) -> bool:
                 """Return True if e is a non-modifiable lvalue (const-qualified).
@@ -1637,7 +1637,7 @@ class SemanticAnalyzer:
             # Stricter rule: reject assignment to const-qualified subobjects
             # like `a[0]` when `a` is `const T[]`.
             if _expr_is_nonmodifiable_lvalue(expr.target):
-                self.errors.append("Assignment to non-modifiable lvalue")
+                self._err("Assignment to non-modifiable lvalue", expr)
 
             # Feature B (subset): reject writes through pointers-to-const.
             # Detect `*p = ...` where `p` was declared as `const T*`.
@@ -1650,7 +1650,7 @@ class SemanticAnalyzer:
                     # Current representation: pointee const for `const T *p`
                     # is stored on Type.is_const (even for pointers).
                     if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
-                        self.errors.append(f"Assignment through pointer to const is not allowed: '*{p_name}'")
+                        self._err(f"Assignment through pointer to const is not allowed: '*{p_name}'", expr)
 
             # Pointer assignment from integer (subset): allow only 0 as a null
             # pointer constant in plain '=' assignment.
