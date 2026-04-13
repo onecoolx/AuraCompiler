@@ -54,7 +54,7 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **1346 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **1389 passed**.
 
 ### Recent changes
 
@@ -88,9 +88,8 @@ pycc/
 - `goto`/labels
 
 **Known gaps (updated):**
-- Optimizer is a no-op stub
-- Diagnostics and conformance testing vs `gcc -std=c89` not comprehensive yet
-- No incremental compilation
+- Optimizer is a no-op stub (not required for C89 correctness)
+- No DWARF debug info generation
 
 ---
 

@@ -2,7 +2,7 @@
 
 Last updated: 2026-04-13
 
-Source of truth: `pytest -q` — **1383 passed** (incl. 32 gcc comparison tests)
+Source of truth: `pytest -q` — **1389 passed, 0 skipped** (incl. 34 gcc comparison tests)
 
 Legend: **DONE** / **PARTIAL** / **TODO**
 
@@ -34,6 +34,9 @@ Legend: **DONE** / **PARTIAL** / **TODO**
 | Function pointer full type checking | DONE | `test_fnptr_type_compat*.py` |
 | Complex nested declarators | DONE | `test_complex_declarators.py` |
 | Compatible/composite types (C89 §6.1.2.6) | DONE | `test_composite_types.py` |
+| Implicit `int` return type (C89) | DONE | `test_gcc_comparison.py` |
+| Multi-level pointers (`int **pp`) | DONE | `test_gcc_comparison.py` |
+| 2D array brace-enclosed initializer | DONE | `test_gcc_comparison.py` |
 
 ## Expressions / Semantics
 
@@ -67,15 +70,14 @@ Legend: **DONE** / **PARTIAL** / **TODO**
 
 ## gcc Correctness Comparison
 
-| Area | Status | Tests |
-|---|---|---|
-| 32 C89 programs compiled with both pycc and gcc | DONE | `test_gcc_comparison.py` |
+34 C89 programs compiled with both pycc and gcc, all producing identical exit codes.
 
-## Known Gaps
+See `tests/test_gcc_comparison.py`.
+
+## Non-C89 Items (not required for conformance)
 
 | Area | Status | Notes |
 |---|---|---|
-| 2D array brace-enclosed initializer | TODO | `int m[2][3] = {{1,2,3},{4,5,6}}` |
-| Double pointer dereference `**pp` | TODO | Segfaults at runtime |
-| Optimizer | TODO | No-op stub |
-| Debug info (DWARF) | TODO | Not implemented |
+| Optimizer | Stub | No-op; not required for correctness |
+| Debug info (DWARF) | N/A | Not part of C89 standard |
+| Compound literals (C99) | N/A | Not C89 |
