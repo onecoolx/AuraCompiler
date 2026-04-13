@@ -371,12 +371,30 @@ class CodeGenerator:
                 #   func_ret
                 #   param...
                 # so we must skip func_ret when building the prologue decl list.
+                #
+                # IMPORTANT: collect ALL decl/param instructions in the entire
+                # function body (up to func_end), not just the ones at the top.
+                # C89/C99 allows declarations after statements, and the IR
+                # generator emits decl instructions at the point of declaration.
+                # If we only collect top-of-function decls, later struct locals
+                # get allocated via _ensure_local's late-local path which places
+                # them after the 4KB spill area, causing stack frame corruption.
                 body_start = i + 1
                 decls: List[IRInstruction] = []
-                while body_start < len(instructions) and instructions[body_start].op in {"decl", "param", "func_ret"}:
-                    if instructions[body_start].op in {"decl", "param"}:
-                        decls.append(instructions[body_start])
-                    body_start += 1
+                # Skip initial prologue-only instructions (func_ret, param, decl)
+                # to find where the body starts for code emission.
+                prologue_end = body_start
+                while prologue_end < len(instructions) and instructions[prologue_end].op in {"decl", "param", "func_ret"}:
+                    if instructions[prologue_end].op in {"decl", "param"}:
+                        decls.append(instructions[prologue_end])
+                    prologue_end += 1
+                # Now scan the rest of the function body for additional decls.
+                scan = prologue_end
+                while scan < len(instructions) and instructions[scan].op != "func_end":
+                    if instructions[scan].op in {"decl", "param"}:
+                        decls.append(instructions[scan])
+                    scan += 1
+                body_start = prologue_end
 
                 # Compute stack frame layout for locals/params
                 # Reserve a fixed spill area for lazily-created temporaries.
