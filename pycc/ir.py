@@ -2038,7 +2038,22 @@ class IRGenerator:
                         elem_ty = item.type.base
                         if getattr(item.type, "is_pointer", False):
                             elem_ty = f"{item.type.base}*"
-                        op1 = f"array({elem_ty},${item.array_size})"
+                        # For multi-dimensional arrays, compute total element
+                        # count as the product of all dimensions so the backing
+                        # store is large enough.
+                        total_elems = int(item.array_size)
+                        try:
+                            ad = getattr(item, "array_dims", None)
+                            if isinstance(ad, list) and len(ad) >= 2:
+                                prod = 1
+                                for d in ad:
+                                    if isinstance(d, int):
+                                        prod *= d
+                                if prod > total_elems:
+                                    total_elems = prod
+                        except Exception:
+                            pass
+                        op1 = f"array({elem_ty},${total_elems})"
                     else:
                         # Infer `char[]` size from string-literal initializer.
                         if item.type.base in {"char", "unsigned char"} and item.initializer is not None:

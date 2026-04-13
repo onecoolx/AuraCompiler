@@ -309,7 +309,6 @@ int main(void) {
 """)
 
 
-@pytest.mark.skip(reason="2D array brace-enclosed initializer not yet supported")
 def test_2d_array(tmp_path):
     _compare(tmp_path, r"""
 int main(void) {
