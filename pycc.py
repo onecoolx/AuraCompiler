@@ -159,6 +159,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
     ap.add_argument("-o", dest="output", required=False, help="Output: .s, .o, or executable")
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
+    ap.add_argument("-Wall", action="store_true", dest="wall", help="Enable all warnings")
+    ap.add_argument("-Werror", action="store_true", dest="werror", help="Treat warnings as errors")
     args = ap.parse_args(argv)
 
     if args.version:
@@ -639,6 +641,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         include_paths=args.include_dirs,
         defines=compile_defines,
         use_system_cpp=args.use_system_cpp,
+        wall=getattr(args, "wall", False),
+        werror=getattr(args, "werror", False),
     )
 
     # Single input: preserve previous behavior.
@@ -677,6 +681,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             for e in result.errors:
                 print("Error:", e)
             return 1
+        for w in (result.warnings or []):
+            print(w, file=sys.stderr)
         if args.print_asm:
             try:
                 sys.stdout.write(open(args.output, "r", encoding="utf-8").read())

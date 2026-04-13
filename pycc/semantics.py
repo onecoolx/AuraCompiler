@@ -109,15 +109,16 @@ class SemanticError(Exception):
 
 
 class SemanticAnalyzer:
-    """Semantic analyzer for C99"""
+    """Semantic analyzer for C89"""
     
-    def __init__(self):
+    def __init__(self, *, wall: bool = False):
         # A simple scope stack: list of dict(name -> kind)
         self._scopes: List[Dict[str, str]] = [{}]
         # typedef scope stack: list of dict(name -> Type)
         self._typedefs: List[Dict[str, Type]] = [{}]
         self.errors: List[str] = []
         self.warnings: List[str] = []
+        self._wall = wall
         # Track globally known functions (including implicit decls)
         self._functions: Set[str] = set()
         self._layouts: Dict[str, StructLayout] = {}
@@ -382,15 +383,7 @@ class SemanticAnalyzer:
         )
 
     def _err(self, msg: str, node: object = None) -> None:
-        """Record a semantic error with best-effort source location.
-
-        The compiler driver formats errors as:
-          error: semantics: <message> (at <file>:<line>:<col>)
-
-        `Compiler._fmt_error` also recognizes messages containing ` at L:C`.
-        We append that suffix when we can.
-        """
-
+        """Record a semantic error with best-effort source location."""
         try:
             line = getattr(node, "line", None)
             col = getattr(node, "column", None)
@@ -400,6 +393,24 @@ class SemanticAnalyzer:
         except Exception:
             pass
         self.errors.append(msg)
+
+    def _warn(self, msg: str, node: object = None, *, always: bool = False) -> None:
+        """Record a semantic warning with best-effort source location.
+
+        If *always* is True the warning is emitted regardless of ``-Wall``.
+        Otherwise it is only emitted when ``self._wall`` is set.
+        """
+        if not always and not self._wall:
+            return
+        try:
+            line = getattr(node, "line", None)
+            col = getattr(node, "column", None)
+            if isinstance(line, int) and isinstance(col, int):
+                self.warnings.append(f"warning: {msg} at {line}:{col}")
+                return
+        except Exception:
+            pass
+        self.warnings.append(f"warning: {msg}")
 
     def _register_enum_decl(self, decl: EnumDecl) -> None:
         cur = -1
@@ -1017,9 +1028,32 @@ class SemanticAnalyzer:
         missing = sorted(self._labels_gotoed - self._labels_defined)
         for m in missing:
             self.errors.append(f"Undefined label '{m}'")
-        # Keep locals/params visible throughout analysis; pop now that we're
-        # done analyzing the entire function.
+
+        # -Wall: warn about missing return in non-void functions
+        ret_ty = getattr(fn, "return_type", None)
+        ret_base = getattr(ret_ty, "base", "int") if ret_ty else "int"
+        if ret_base != "void" and fn.name != "main":
+            has_return = self._body_has_return(fn.body)
+            if not has_return:
+                self._warn(f"control reaches end of non-void function '{fn.name}'", fn)
+
         self._pop_scope()
+
+    def _body_has_return(self, body) -> bool:
+        """Check if a function body definitely has a return statement on all paths."""
+        if isinstance(body, CompoundStmt):
+            for stmt in reversed(body.statements or []):
+                if isinstance(stmt, ReturnStmt):
+                    return True
+                if isinstance(stmt, IfStmt):
+                    has_then = self._body_has_return(stmt.then_branch)
+                    has_else = self._body_has_return(stmt.else_branch) if stmt.else_branch else False
+                    if has_then and has_else:
+                        return True
+            return False
+        if isinstance(body, ReturnStmt):
+            return True
+        return False
 
     def _analyze_stmt(self, stmt: Statement) -> None:
         if isinstance(stmt, CompoundStmt):
@@ -1818,7 +1852,7 @@ class SemanticAnalyzer:
                 if expr.function.name not in self._functions and not self._is_declared(expr.function.name):
                     self._functions.add(expr.function.name)
                     self._declare_global(expr.function.name, "function")
-                    self.warnings.append(f"Implicit declaration of function: {expr.function.name}")
+                    self._warn(f"implicit declaration of function '{expr.function.name}'", expr, always=True)
             else:
                 self._analyze_expr(expr.function)
 

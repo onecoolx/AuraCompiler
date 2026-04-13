@@ -47,8 +47,12 @@ class Compiler:
         include_paths: Optional[List[str]] = None,
         defines: Optional[dict] = None,
         use_system_cpp: bool = False,
+        wall: bool = False,
+        werror: bool = False,
     ):
         self.optimize = optimize
+        self.wall = wall
+        self.werror = werror
 
         # Preprocessor options (very small subset).
         self._pp_include_paths = list(include_paths or [])
@@ -448,8 +452,15 @@ class Compiler:
             sema_ctx, analyzer = self.analyze_semantics(ast)
             warnings.extend(list(getattr(analyzer, "warnings", []) or []))
         except Exception as e:
-            # Surface SemanticError and any other semantic-stage exception.
             return CompilationResult(success=False, errors=[_fmt_error(phase="semantics", msg=str(e))], warnings=warnings)
+
+        # -Werror: treat warnings as errors
+        if getattr(self, "werror", False) and warnings:
+            return CompilationResult(
+                success=False,
+                errors=[f"error (via -Werror): {w}" for w in warnings],
+                warnings=warnings,
+            )
         
         # Phase 4: IR Generation
         try:
@@ -731,7 +742,7 @@ class Compiler:
     
     def analyze_semantics(self, ast):
         """Perform semantic analysis"""
-        analyzer = SemanticAnalyzer()
+        analyzer = SemanticAnalyzer(wall=getattr(self, "wall", False))
         sema_ctx = analyzer.analyze(ast)
         return sema_ctx, analyzer
     
