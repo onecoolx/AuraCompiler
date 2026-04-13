@@ -231,7 +231,19 @@ class Parser:
                     return [sd, td]
             return td
 
-        base_type = self._parse_type_specifier()
+        # C89 §6.7.1: implicit int return type — if the current token is an
+        # identifier (not a type specifier) followed by '(', treat as a
+        # function definition/declaration with implicit 'int' return type.
+        if (
+            not self._is_type_specifier()
+            and self.current_token
+            and self.current_token.type == TokenType.IDENTIFIER
+            and self.peek(1)
+            and self.peek(1).type == TokenType.LPAREN
+        ):
+            base_type = Type(base="int", line=self.current_token.line, column=self.current_token.column)
+        else:
+            base_type = self._parse_type_specifier()
         # If the declaration starts with qualifiers like `const`, and the
         # underlying type is a typedef-name, `_parse_type_specifier()` will
         # return the normalized base type and stop with the typedef-name
