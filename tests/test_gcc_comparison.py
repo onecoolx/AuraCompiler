@@ -336,7 +336,6 @@ int main(void) {
 """)
 
 
-@pytest.mark.skip(reason="double pointer dereference **pp not yet supported")
 def test_pointer_to_pointer(tmp_path):
     _compare(tmp_path, r"""
 int main(void) {

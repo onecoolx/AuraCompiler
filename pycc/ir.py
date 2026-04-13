@@ -2137,10 +2137,12 @@ class IRGenerator:
                                 pass
                             if getattr(item.type, "is_pointer", False):
                                 decl_base = str(decl_op1).strip()
+                                plevel = int(getattr(item.type, "pointer_level", 1) or 1)
+                                stars = "*" * plevel
                                 if decl_base.startswith("struct ") or decl_base.startswith("union "):
-                                    decl_op1 = f"{decl_base}*"
+                                    decl_op1 = f"{decl_base}{stars}"
                                 else:
-                                    decl_op1 = f"{decl_op1}*"
+                                    decl_op1 = f"{decl_op1}{stars}"
                             self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
                             self._var_types[self._resolve_name(item.name)] = str(decl_op1)
 
@@ -3435,18 +3437,26 @@ class IRGenerator:
             if expr.operator == "*":
                 base = self._gen_expr(expr.operand)
                 # propagate pointer type so codegen can choose correct width
+                pointee_ty = None
                 try:
                     op_ty = getattr(self, "_var_types", {}).get(base)
                     if not op_ty and isinstance(expr.operand, Identifier):
                         op_ty = getattr(self, "_var_types", {}).get(f"@{expr.operand.name}")
                     if isinstance(op_ty, str) and "*" in op_ty:
                         self._var_types[base] = op_ty
+                        # Compute the type of the dereferenced value (peel one *)
+                        stripped = op_ty.rstrip()
+                        if stripped.endswith("*"):
+                            pointee_ty = stripped[:-1].rstrip()
                 except Exception:
                     pass
                 t = self._new_temp()
                 _deref_vol3 = self._is_volatile_deref(expr.operand)
                 self.instructions.append(IRInstruction(op="load", result=t, operand1=base,
                                                        meta={"volatile": True} if _deref_vol3 else None))
+                # Record the type of the loaded value for downstream ops
+                if pointee_ty:
+                    self._var_types[t] = pointee_ty
                 return t
 
             # ++/-- operators
