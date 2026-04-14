@@ -872,6 +872,14 @@ class Parser:
                     while self._match(TokenType.STAR):
                         mem_ty = Type(base=mem_ty.base, is_pointer=True, line=mem_ty.line, column=mem_ty.column)
 
+                    # C11 anonymous struct/union members: `union { ... };` with
+                    # no member name.  Skip them gracefully (treat as padding).
+                    if self._at(TokenType.SEMICOLON):
+                        base = getattr(mem_ty, "base", "")
+                        if isinstance(base, str) and (base.startswith("struct ") or base.startswith("union ")):
+                            self.advance()  # consume ';'
+                            continue
+
                     mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
 
                     # Support simple fixed-size array members (subset):

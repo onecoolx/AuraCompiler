@@ -403,6 +403,25 @@ class Compiler:
             "-Drestrict=",
             # Drop asm labels in system prototypes.
             "-D__asm__(x)=",
+            # GCC inline variants
+            "-D__inline=",
+            "-D__inline__=",
+            "-D__forceinline=",
+            # GCC builtin functions used in system headers
+            "-D__builtin_bswap16(x)=(x)",
+            "-D__builtin_bswap32(x)=(x)",
+            "-D__builtin_bswap64(x)=(x)",
+            "-D__builtin_expect(x,y)=(x)",
+            "-D__builtin_constant_p(x)=0",
+            "-D__builtin_types_compatible_p(x,y)=0",
+            "-D__builtin_offsetof(t,m)=((unsigned long)&((t*)0)->m)",
+            # GCC typeof (used in some system macros)
+            "-D__typeof__(x)=int",
+            "-D__typeof(x)=int",
+            # Misc GCC extensions
+            "-D__THROW=",
+            "-D__nonnull(x)=",
+            "-D__wur=",
         ]
         for d in self._pp_include_paths:
             cmd += ["-I", d]
