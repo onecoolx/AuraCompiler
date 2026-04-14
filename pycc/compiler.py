@@ -78,7 +78,7 @@ class Compiler:
         - otherwise: link to ELF executable (via gcc)
         """
         try:
-            with open(source_file, 'r') as f:
+            with open(source_file, 'r', encoding='utf-8', errors='replace') as f:
                 source_code = f.read()
             # Preprocess before lex/parse.
             if self._use_system_cpp:
