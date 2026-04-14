@@ -173,10 +173,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Warning flags
     ap.add_argument("-Wextra", action="store_true", dest="wextra", help="Extra warnings (ignored)")
     ap.add_argument("-Wpedantic", "-pedantic", action="store_true", dest="wpedantic", help="Pedantic warnings (ignored)")
-    ap.add_argument("-Wno-unused-parameter", action="store_true", help="(ignored)")
-    ap.add_argument("-Wno-unused-variable", action="store_true", help="(ignored)")
-    ap.add_argument("-Wno-unused-function", action="store_true", help="(ignored)")
-    ap.add_argument("-Wno-implicit-function-declaration", action="store_true", help="(ignored)")
+    # All other -W* flags are accepted via parse_known_args
     # Standard selection
     ap.add_argument("-std", dest="std", metavar="STANDARD", help="C standard (e.g. c89, c99; ignored)")
     ap.add_argument("-ansi", action="store_true", help="ANSI C mode (ignored)")
@@ -207,7 +204,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("-w", action="store_true", dest="suppress_warnings", help="Suppress all warnings")
     ap.add_argument("-Wl", dest="wl_args", action="append", default=[], help="Pass option to linker (ignored)")
 
-    args = ap.parse_args(argv)
+    args, _unknown = ap.parse_known_args(argv)
 
     # -w suppresses all warnings
     if getattr(args, "suppress_warnings", False):
