@@ -940,7 +940,9 @@ class SemanticAnalyzer:
         # best-effort map of identifier -> declared Type
         for p in fn.parameters:
             # C89: parameter of type void is invalid (except sole parameter list 'void').
-            if getattr(p, "type", None) is not None and getattr(p.type, "base", None) == "void":
+            if (getattr(p, "type", None) is not None
+                    and getattr(p.type, "base", None) == "void"
+                    and not getattr(p.type, "is_pointer", False)):
                 self._err(f"parameter '{p.name}' declared with type void", p)
             self._declare_local(p.name, "param")
             self._decl_types[p.name] = p.type
