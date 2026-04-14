@@ -249,9 +249,26 @@ class Parser:
                 return td
 
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
-            self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
             self._typedefs.add(td.name)
+            results = [td]
+
+            # Multi-name typedef: typedef struct _XOC *XOC, *XFontSet;
+            while self._match(TokenType.COMMA):
+                extra_ty = Type(base=getattr(base_type, "base", "int"),
+                                line=base_type.line, column=base_type.column)
+                while self._match(TokenType.STAR):
+                    extra_ty.pointer_level = int(getattr(extra_ty, "pointer_level", 0)) + 1
+                    if not getattr(extra_ty, "pointer_quals", None):
+                        extra_ty.pointer_quals = []
+                    extra_ty.pointer_quals.insert(0, set())
+                    extra_ty._normalize_pointer_state()
+                en = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
+                etd = TypedefDecl(name=en.value, type=extra_ty, line=en.line, column=en.column)
+                self._typedefs.add(en.value)
+                results.append(etd)
+
+            self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             # If the typedef involves a named struct/union with members, also emit a StructDecl
             b = getattr(base_type, 'base', '')
             if isinstance(b, str) and (b.startswith("struct ") or b.startswith("union ")):
@@ -263,8 +280,10 @@ class Parser:
                         sd = StructDecl(name=tag, members=members, line=base_type.line, column=base_type.column)
                     else:
                         sd = UnionDecl(name=tag, members=members, line=base_type.line, column=base_type.column)
-                    return [sd, td]
-            return td
+                    return [sd] + results
+            if len(results) == 1:
+                return results[0]
+            return results
 
         # C89 §6.7.1: implicit int return type — if the current token is an
         # identifier (not a type specifier) followed by '(', treat as a
