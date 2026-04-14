@@ -430,6 +430,8 @@ class Compiler:
             "-D_Float32x=double",
             # Disable assert() to avoid GCC statement expressions ({ ... })
             "-DNDEBUG",
+            # GCC internal NULL representation
+            "-D__null=0",
         ]
         for d in self._pp_include_paths:
             cmd += ["-I", d]

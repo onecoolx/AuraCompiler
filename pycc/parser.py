@@ -490,6 +490,16 @@ class Parser:
 
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier")
 
+            # Optional array suffix inside parenthesized declarator:
+            # e.g. (*op_table_func[])(GLContext *, GLParam *)
+            _inner_array = False
+            while self._match(TokenType.LBRACKET):
+                _inner_array = True
+                # Consume array size expression (if any) until ']'
+                while self.current_token and not self._at(TokenType.RBRACKET):
+                    self.advance()
+                self._expect(TokenType.RBRACKET, "Expected ']'")
+
             # optional parameter list inside the parentheses: `(*name(void))`
             if self._match(TokenType.LPAREN):
                 depth = 1
@@ -505,6 +515,26 @@ class Parser:
             # Check what follows: ')' then '(' means function decl pattern,
             # ')' then '[' or ';' means variable decl pattern.
             self._expect(TokenType.RPAREN, "Expected ')' in declarator")
+
+            # For function pointer arrays like (*name[])(params), consume the
+            # trailing parameter list — it describes the pointed-to function's
+            # signature, not a function definition.
+            if _inner_array and self._at(TokenType.LPAREN):
+                self.advance()  # consume '('
+                depth = 1
+                while self.current_token and depth > 0:
+                    if self._at(TokenType.LPAREN):
+                        depth += 1
+                    elif self._at(TokenType.RPAREN):
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    self.advance()
+                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+                # Build function pointer type: base (*)(...)
+                ptr_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
+                              line=base_type.line, column=base_type.column)
+                ptr_ty._normalize_pointer_state()
 
             if self._at(TokenType.LBRACKET) or self._at(TokenType.SEMICOLON) or self._at(TokenType.ASSIGN) or self._at(TokenType.COMMA):
                 # Variable declaration: int (*fp)[10]; or int (*fp); or int (*fp) = ...;
