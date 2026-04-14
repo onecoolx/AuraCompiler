@@ -201,10 +201,11 @@ class CodeGenerator:
         gdefs = [ins for ins in instructions if ins.op == "gdef"]
         gblobs = [ins for ins in instructions if ins.op == "gdef_blob"]
         gfloats = [ins for ins in instructions if ins.op == "gdef_float"]
+        gptrarrs = [ins for ins in instructions if ins.op == "gdef_ptr_array"]
         gdecls = [ins for ins in instructions if ins.op == "gdecl"]
 
         # Symbols with definitions should not also get .bss tentative entries
-        defined_syms = {(ins.result or "").lstrip("@") for ins in instructions if ins.op in ("gdef", "gdef_blob", "gdef_float")}
+        defined_syms = {(ins.result or "").lstrip("@") for ins in instructions if ins.op in ("gdef", "gdef_blob", "gdef_float", "gdef_ptr_array")}
 
         if gdecls:
             self._emit(".bss")
@@ -231,7 +232,7 @@ class CodeGenerator:
                     sz = 8
                 self._emit(f"  .comm {name},{sz},{sz}")
 
-        if gdefs or gblobs or gfloats:
+        if gdefs or gblobs or gfloats or gptrarrs:
             self._emit(".data")
             for gd in gblobs:
                 name = (gd.result or "").lstrip("@")
@@ -312,11 +313,27 @@ class CodeGenerator:
                     bits = _struct.unpack('<Q', _struct.pack('<d', val))[0]
                     self._emit(f"  .quad {bits}")
 
+            # Pointer arrays (e.g. char *arr[] = {"s1", "s2"} or fnptr arrays)
+            for gpa in gptrarrs:
+                name = (gpa.result or "").lstrip("@")
+                meta = gpa.meta or {}
+                if gpa.label != "static":
+                    self._emit(f".globl {name}")
+                self._emit(f"  .align 8")
+                self._emit(f"{name}:")
+                if "strings" in meta:
+                    for s in meta["strings"]:
+                        lbl = self._intern_string(s)
+                        self._emit(f"  .quad {lbl}")
+                elif "symbols" in meta:
+                    for sym in meta["symbols"]:
+                        self._emit(f"  .quad {sym}")
+
         self._emit(".text")
         i = 0
         while i < len(instructions):
             ins = instructions[i]
-            if ins.op in {"gdecl", "gdef", "gdef_blob", "gdef_float"}:
+            if ins.op in {"gdecl", "gdef", "gdef_blob", "gdef_float", "gdef_ptr_array"}:
                 i += 1
                 continue
             if ins.op == "func_begin":

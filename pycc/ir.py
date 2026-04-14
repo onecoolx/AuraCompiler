@@ -404,6 +404,38 @@ class IRGenerator:
                             )
                             continue
                         elif imm is None and ptr is None:
+                            # Try: array of string-literal pointers
+                            # e.g. char *arr[] = {"str1", "str2"};
+                            # or   void (*fn_arr[])(T*) = {f, g};  (function pointer array)
+                            if isinstance(init, Initializer) and getattr(decl.type, "is_pointer", False):
+                                inits_list = self._const_initializer_list(init)
+                                if inits_list and all(isinstance(e, StringLiteral) for e in inits_list):
+                                    # Emit pointer array with string literal references.
+                                    # Codegen will intern each string and emit .quad <label>.
+                                    str_values = [e.value for e in inits_list]
+                                    self.instructions.append(
+                                        IRInstruction(
+                                            op="gdef_ptr_array",
+                                            result=f"@{decl.name}",
+                                            operand1=decl.type.base,
+                                            label=sc,
+                                            meta={"strings": str_values},
+                                        )
+                                    )
+                                    continue
+                                # Function pointer array: emit each name as a symbol ref
+                                if inits_list and all(isinstance(e, Identifier) for e in inits_list):
+                                    sym_labels = [e.name for e in inits_list]
+                                    self.instructions.append(
+                                        IRInstruction(
+                                            op="gdef_ptr_array",
+                                            result=f"@{decl.name}",
+                                            operand1=decl.type.base,
+                                            label=sc,
+                                            meta={"symbols": sym_labels},
+                                        )
+                                    )
+                                    continue
                             raise IRGenError(
                                 f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
                             )
@@ -1040,18 +1072,45 @@ class IRGenerator:
         return "blob:" + blob.hex()
 
     def _const_expr_to_int(self, expr: Any) -> Optional[int]:
-        """Best-effort const int evaluator (subset)."""
+        """Best-effort const int evaluator for global initializers."""
         if expr is None:
             return None
         if isinstance(expr, IntLiteral):
             return int(expr.value)
         if isinstance(expr, CharLiteral):
             return ord(expr.value)
-        if isinstance(expr, UnaryOp) and expr.operator in {"+", "-"}:
+        if isinstance(expr, UnaryOp) and expr.operator in {"+", "-", "~", "!"}:
             v = self._const_expr_to_int(expr.operand)
             if v is None:
                 return None
-            return v if expr.operator == "+" else -v
+            if expr.operator == "+": return v
+            if expr.operator == "-": return -v
+            if expr.operator == "~": return ~v
+            return 0 if v != 0 else 1
+        if isinstance(expr, BinaryOp):
+            l = self._const_expr_to_int(expr.left)
+            r = self._const_expr_to_int(expr.right)
+            if l is None or r is None:
+                return None
+            op = expr.operator
+            if op == "+": return l + r
+            if op == "-": return l - r
+            if op == "*": return l * r
+            if op == "/": return int(l / r) if r != 0 else None
+            if op == "%": return l % r if r != 0 else None
+            if op == "|": return l | r
+            if op == "&": return l & r
+            if op == "^": return l ^ r
+            if op == "<<": return l << r
+            if op == ">>": return l >> r
+        if isinstance(expr, Cast):
+            return self._const_expr_to_int(expr.expression)
+        if isinstance(expr, Identifier):
+            v = getattr(expr, '_enum_value', None)
+            if v is not None:
+                return int(v)
+            if expr.name in getattr(self, "_enum_constants", {}):
+                return self._enum_constants[expr.name]
         return None
 
     def _is_volatile_sym(self, sym: str) -> bool:
