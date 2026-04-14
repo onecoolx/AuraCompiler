@@ -19,6 +19,7 @@ from pycc.semantics import SemanticAnalyzer
 from pycc.ir import IRGenerator
 from pycc.optimizer import Optimizer
 from pycc.codegen import CodeGenerator
+from pycc.gcc_extensions import strip_gcc_extensions
 
 
 @dataclass
@@ -395,17 +396,12 @@ class Compiler:
             # Keep the builtin type name simple for now.
             # We'll model the ABI at codegen when lowering __builtin_va_start.
             "-D__builtin_va_list=void *",
-            "-D__extension__=",
-            # Drop gcc-style attributes from system headers.
-            "-D__attribute__(x)=",
-            # Remove common glibc qualifiers we don't model.
-            "-D__restrict=",
+            # GCC extensions (__attribute__, __extension__, __asm__,
+            # __inline/__inline__, __restrict/__restrict__, _Float*)
+            # are now stripped by the post-processing pass in
+            # gcc_extensions.strip_gcc_extensions(). Only keep macros
+            # the stripper does not handle.
             "-Drestrict=",
-            # Drop asm labels in system prototypes.
-            "-D__asm__(x)=",
-            # GCC inline variants
-            "-D__inline=",
-            "-D__inline__=",
             "-D__forceinline=",
             # GCC builtin functions used in system headers
             "-D__builtin_bswap16(x)=(x)",
@@ -422,12 +418,7 @@ class Compiler:
             "-D__THROW=",
             "-D__nonnull(x)=",
             "-D__wur=",
-            # GCC-specific types not in C89
-            "-D_Float128=long double",
-            "-D_Float64=double",
-            "-D_Float32=float",
-            "-D_Float64x=long double",
-            "-D_Float32x=double",
+            # _Float* types are now handled by strip_gcc_extensions().
             # Disable assert() to avoid GCC statement expressions ({ ... })
             "-DNDEBUG",
             # GCC internal NULL representation
@@ -447,7 +438,8 @@ class Compiler:
         # `__builtin_va_start` / `__builtin_va_end` and are required for correct
         # runtime behavior when passing a va_list to libc (e.g. vsnprintf).
         # We now handle these builtins in the frontend/codegen pipeline.
-        return p.stdout
+        # Post-process: strip GCC extensions that survived macro expansion.
+        return strip_gcc_extensions(p.stdout)
     
     def compile_code(self, source_code: str, output_file: Optional[str] = None, source_path: str = "<input>") -> CompilationResult:
         """Compile source code"""
