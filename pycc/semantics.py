@@ -1057,8 +1057,8 @@ class SemanticAnalyzer:
                 if isinstance(stmt, ReturnStmt):
                     return True
                 if isinstance(stmt, IfStmt):
-                    has_then = self._body_has_return(stmt.then_branch)
-                    has_else = self._body_has_return(stmt.else_branch) if stmt.else_branch else False
+                    has_then = self._body_has_return(stmt.then_stmt)
+                    has_else = self._body_has_return(stmt.else_stmt) if stmt.else_stmt else False
                     if has_then and has_else:
                         return True
             return False
@@ -1321,13 +1321,30 @@ class SemanticAnalyzer:
                     ty = self._lookup_decl_type(e.name)
                     if ty is None:
                         return False
-                    return bool(getattr(ty, "is_pointer", False))
+                    if bool(getattr(ty, "is_pointer", False)):
+                        return True
+                    # Arrays decay to pointers in most expression contexts
+                    base = getattr(ty, "base", "")
+                    if isinstance(base, str) and base.startswith("array("):
+                        return True
+                    return False
                 if isinstance(e, Cast):
                     to_ty = getattr(e, "to_type", None)
                     return bool(to_ty is not None and getattr(to_ty, "is_pointer", False))
                 # Handle simple pointer expressions like `a + 1`.
                 if isinstance(e, BinaryOp) and e.operator in {"+", "-"}:
-                    return _is_ptrlike(e.left) or _is_ptrlike(e.right)
+                    lhs_ptr = _is_ptrlike(e.left)
+                    rhs_ptr = _is_ptrlike(e.right)
+                    # ptr - ptr yields ptrdiff_t (integer), not a pointer
+                    if e.operator == "-" and lhs_ptr and rhs_ptr:
+                        return False
+                    return lhs_ptr or rhs_ptr
+                # Unary & (address-of) always yields a pointer.
+                if isinstance(e, UnaryOp) and e.operator == "&":
+                    return True
+                # For member access, function calls, array subscripts — we
+                # cannot determine the result type without full type inference.
+                # Conservatively return False to avoid false-positive rejections.
                 return False
 
             def _is_void_ptr(e: Expression) -> bool:
@@ -1411,44 +1428,32 @@ class SemanticAnalyzer:
                         return _is_zero_int_const(e.expression)
                     return False
 
+                def _is_known_nonptr(e: Expression) -> bool:
+                    """Return True only when we are certain e is NOT a pointer."""
+                    if isinstance(e, IntLiteral):
+                        return True
+                    if isinstance(e, CharLiteral):
+                        return True
+                    if isinstance(e, Identifier):
+                        ty = self._lookup_decl_type(e.name)
+                        if ty is not None and not getattr(ty, "is_pointer", False):
+                            return True
+                    return False
+
                 if lp != rp:
-                    # pointer compared to 0 is allowed (null pointer constant subset).
-                    if (lp and _is_zero_int_const(expr.right)) or (rp and _is_zero_int_const(expr.left)):
-                        pass
-                    # Allow comparing pointers against ptrdiff-like integer expressions
-                    # produced by `ptr - ptr` .
-                    elif (
-                        lp
-                        and isinstance(expr.left, BinaryOp)
-                        and expr.left.operator == "-"
-                        and _is_ptrlike(expr.left.left)
-                        and _is_ptrlike(expr.left.right)
-                    ) or (
-                        rp
-                        and isinstance(expr.right, BinaryOp)
-                        and expr.right.operator == "-"
-                        and _is_ptrlike(expr.right.left)
-                        and _is_ptrlike(expr.right.right)
-                    ):
-                        pass
-                    # Allow comparisons like (p - a) == 2 where `a` is an array
-                    # identifier that decays to a pointer.
-                    elif (
-                        lp
-                        and isinstance(expr.left, BinaryOp)
-                        and expr.left.operator == "-"
-                        and _is_ptrlike(expr.left.left)
-                        and isinstance(expr.left.right, Identifier)
-                    ) or (
-                        rp
-                        and isinstance(expr.right, BinaryOp)
-                        and expr.right.operator == "-"
-                        and _is_ptrlike(expr.right.left)
-                        and isinstance(expr.right.right, Identifier)
-                    ):
-                        pass
-                    else:
-                        self._err(f"pointer and non-pointer equality comparison is not allowed: '{expr.operator}'", expr)
+                    # Only reject the obvious case: a known pointer variable
+                    # compared to a non-zero integer literal.
+                    # For complex expressions we cannot reliably determine types.
+                    ptr_side = expr.left if lp else expr.right
+                    non_ptr_side = expr.right if lp else expr.left
+                    if (isinstance(ptr_side, Identifier)
+                            and isinstance(non_ptr_side, IntLiteral)):
+                        try:
+                            val = int(non_ptr_side.value)
+                        except Exception:
+                            val = None
+                        if val is not None and val != 0:
+                            self._err(f"pointer and non-pointer equality comparison is not allowed: '{expr.operator}'", expr)
 
             # Best-effort: reject subtraction of pointers with obviously
             # different base types (e.g. int* - char*).

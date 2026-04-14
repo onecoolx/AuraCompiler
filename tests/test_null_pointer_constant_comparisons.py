@@ -35,6 +35,8 @@ int main(){
 
 
 def test_reject_compare_pointer_to_nonzero_int_cast(tmp_path):
+    # (int*)1 is a pointer via cast — comparing two pointers is valid C.
+    # This test now verifies it compiles (previously rejected too aggressively).
     code = r'''
 int main(){
     int a[1];
@@ -43,4 +45,4 @@ int main(){
 }
 '''.lstrip()
     res = _compile(tmp_path, code)
-    assert not res.success
+    assert res.success

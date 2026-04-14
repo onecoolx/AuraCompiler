@@ -2595,13 +2595,17 @@ class IRGenerator:
             return
 
         if isinstance(stmt, LabelStmt):
-            # C labels are function-scoped. Lower to a plain IR label.
-            self.instructions.append(IRInstruction(op="label", label=f".Luser_{stmt.name}"))
+            # C labels are function-scoped. Use function name + label name
+            # to ensure uniqueness across functions in the same TU.
+            fn = getattr(self, "_fn_name", "") or ""
+            lbl = f".Luser_{fn}_{stmt.name}"
+            self.instructions.append(IRInstruction(op="label", label=lbl))
             self._gen_stmt(stmt.statement)
             return
 
         if isinstance(stmt, GotoStmt):
-            self.instructions.append(IRInstruction(op="jmp", label=f".Luser_{stmt.label}"))
+            fn = getattr(self, "_fn_name", "") or ""
+            self.instructions.append(IRInstruction(op="jmp", label=f".Luser_{fn}_{stmt.label}"))
             return
 
         if isinstance(stmt, BreakStmt):
