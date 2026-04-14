@@ -64,12 +64,12 @@ class IRGenError(Exception):
     pass
 
 
-def _eval_const_int_expr(expr: Expression) -> int:
+def _eval_const_int_expr(expr: Expression, enum_constants: dict = None) -> int:
     """Unified integer constant expression (ICE) evaluator (C89).
 
     Supports: integer/char literals, sizeof(type-name), enum constants (via
-    attached value), unary +/-/~/!, all binary arithmetic/bitwise/relational/
-    logical operators, ternary, comma, and casts.
+    attached value or enum_constants dict), unary +/-/~/!, all binary
+    arithmetic/bitwise/relational/logical operators, ternary, comma, and casts.
     """
 
     if isinstance(expr, IntLiteral):
@@ -77,7 +77,7 @@ def _eval_const_int_expr(expr: Expression) -> int:
     if isinstance(expr, CharLiteral):
         return ord(expr.value)
     if isinstance(expr, UnaryOp) and expr.operator in {"+", "-", "~", "!"}:
-        v = _eval_const_int_expr(expr.operand)
+        v = _eval_const_int_expr(expr.operand, enum_constants)
         if expr.operator == "+":
             return v
         if expr.operator == "-":
@@ -88,8 +88,8 @@ def _eval_const_int_expr(expr: Expression) -> int:
     _binops = {"+", "-", "*", "/", "%", "|", "&", "^", "<<", ">>",
                "<", ">", "<=", ">=", "==", "!=", "&&", "||"}
     if isinstance(expr, BinaryOp) and expr.operator in _binops:
-        l = _eval_const_int_expr(expr.left)
-        r = _eval_const_int_expr(expr.right)
+        l = _eval_const_int_expr(expr.left, enum_constants)
+        r = _eval_const_int_expr(expr.right, enum_constants)
         op = expr.operator
         if op == "+": return l + r
         if op == "-": return l - r
@@ -110,27 +110,29 @@ def _eval_const_int_expr(expr: Expression) -> int:
         if op == "&&": return 1 if (l != 0 and r != 0) else 0
         if op == "||": return 1 if (l != 0 or r != 0) else 0
     if isinstance(expr, CommaOp):
-        _eval_const_int_expr(expr.left)
-        return _eval_const_int_expr(expr.right)
+        _eval_const_int_expr(expr.left, enum_constants)
+        return _eval_const_int_expr(expr.right, enum_constants)
     if isinstance(expr, TernaryOp):
-        cond = _eval_const_int_expr(expr.condition)
+        cond = _eval_const_int_expr(expr.condition, enum_constants)
         if cond != 0:
-            return _eval_const_int_expr(expr.true_expr)
-        return _eval_const_int_expr(expr.false_expr)
+            return _eval_const_int_expr(expr.true_expr, enum_constants)
+        return _eval_const_int_expr(expr.false_expr, enum_constants)
     # Cast: evaluate inner expression
     if isinstance(expr, Cast):
-        return _eval_const_int_expr(expr.expression)
+        return _eval_const_int_expr(expr.expression, enum_constants)
     # sizeof(type-name)
     from pycc.ast_nodes import SizeOf
     if isinstance(expr, SizeOf):
         if expr.type is not None:
             return int(_type_size(expr.type))
         raise IRGenError("sizeof(expression) is not an integer constant expression")
-    # Identifier with attached enum value
+    # Identifier: check attached enum value or enum_constants dict
     if isinstance(expr, Identifier):
         v = getattr(expr, '_enum_value', None)
         if v is not None:
             return int(v)
+        if enum_constants and expr.name in enum_constants:
+            return int(enum_constants[expr.name])
 
     raise IRGenError("not an integer constant expression")
 
@@ -2527,9 +2529,11 @@ class IRGenerator:
                 if isinstance(it, CaseStmt):
                     # C89 subset: case labels must be integer constant expressions.
                     try:
-                        cvi = _eval_const_int_expr(it.value)
+                        cvi = _eval_const_int_expr(it.value, getattr(self, "_enum_constants", None))
                     except IRGenError:
-                        raise IRGenError("switch case value must be an integer constant expression")
+                        cvi = self._const_expr_to_int(it.value)
+                        if cvi is None:
+                            raise IRGenError("switch case value must be an integer constant expression")
                     if cvi in seen_case_values:
                         raise IRGenError(f"duplicate case value in switch: {cvi}")
                     seen_case_values.add(cvi)
