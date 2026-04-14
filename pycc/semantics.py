@@ -279,12 +279,7 @@ class SemanticAnalyzer:
                     # Named struct typedef: ensure the struct layout is registered
                     base = getattr(decl.type, 'base', '')
                     if isinstance(base, str) and (base.startswith("struct ") or base.startswith("union ")):
-                        tag_key = base
-                        if tag_key not in self._layouts or self._layouts[tag_key].size == 0:
-                            # Look up tag members from parser
-                            from pycc.parser import Parser
-                            # Members may have been stored during parsing
-                            pass  # Layout will be registered when StructDecl is processed
+                        pass  # Layout will be registered when StructDecl is processed
                 self._declare_typedef_global(decl.name, decl.type)
             elif isinstance(decl, (StructDecl, UnionDecl)):
                 self._register_layout_decl(decl)
@@ -1284,7 +1279,13 @@ class SemanticAnalyzer:
         }
 
     def _expr_type(self, expr: Expression) -> Optional[Type]:
-        # For Cast nodes, expr.type is the target type of the cast — return it directly.
+        """Infer the result type of an expression.
+
+        Returns the Type of the expression, or None if the type cannot be
+        determined. Handles Cast, Identifier, UnaryOp, MemberAccess,
+        PointerMemberAccess, FunctionCall, ArrayAccess, and pointer
+        arithmetic in BinaryOp.
+        """
         if isinstance(expr, Cast):
             return getattr(expr, "type", None)
 
@@ -1699,13 +1700,7 @@ class SemanticAnalyzer:
                 if b is not None and b.name in getattr(self, "_register_locals", set()):
                     self._err(f"Cannot take address of register variable '{b.name}'", b)
             if expr.operator == "+":
-                def _is_ptrlike(e: Expression) -> bool:
-                    ty = self._expr_type(e)
-                    if ty is not None:
-                        return bool(getattr(ty, "is_pointer", False)) or (getattr(ty, "pointer_level", 0) or 0) > 0
-                    return False
-                # Detect any pointer-like expression on the left/right.
-                # NOTE: Unary '+' only has one operand; pointer+pointer is a BinaryOp check.
+                pass  # Unary '+' has one operand; pointer+pointer is a BinaryOp check.
             self._analyze_expr(expr.operand)
             return
 

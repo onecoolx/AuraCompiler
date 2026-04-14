@@ -382,8 +382,6 @@ class Compiler:
         # Reduce the complexity of glibc headers for our subset compiler.
         # These avoid typedefs and builtins that we don't parse yet.
         cmd += [
-            # Reduce the complexity of glibc headers for our subset compiler.
-            # These avoid typedefs and builtins that we don't parse yet.
             "-D__GNUG__=0",
             "-D__GNUC_PREREQ(maj,min)=0",
             "-D__glibc_clang_has_extension(x)=0",
@@ -393,14 +391,8 @@ class Compiler:
             "-D__has_attribute(x)=0",
             "-D__has_declspec_attribute(x)=0",
             "-D__has_cpp_attribute(x)=0",
-            # Keep the builtin type name simple for now.
-            # We'll model the ABI at codegen when lowering __builtin_va_start.
             "-D__builtin_va_list=void *",
-            # GCC extensions (__attribute__, __extension__, __asm__,
-            # __inline/__inline__, __restrict/__restrict__, _Float*)
-            # are now stripped by the post-processing pass in
-            # gcc_extensions.strip_gcc_extensions(). Only keep macros
-            # the stripper does not handle.
+            # Remaining macros not handled by strip_gcc_extensions().
             "-Drestrict=",
             "-D__forceinline=",
             # GCC builtin functions used in system headers
@@ -418,10 +410,7 @@ class Compiler:
             "-D__THROW=",
             "-D__nonnull(x)=",
             "-D__wur=",
-            # _Float* types are now handled by strip_gcc_extensions().
-            # Disable assert() to avoid GCC statement expressions ({ ... })
             "-DNDEBUG",
-            # GCC internal NULL representation
             "-D__null=0",
         ]
         for d in self._pp_include_paths:
@@ -433,11 +422,6 @@ class Compiler:
         if p.returncode != 0:
             msg = p.stderr.strip() or p.stdout.strip() or "(no output)"
             raise RuntimeError(f"system cpp failed: {msg}")
-        # Keep varargs builtins intact.
-        # In GCC/glibc headers, va_start/va_end expand to
-        # `__builtin_va_start` / `__builtin_va_end` and are required for correct
-        # runtime behavior when passing a va_list to libc (e.g. vsnprintf).
-        # We now handle these builtins in the frontend/codegen pipeline.
         # Post-process: strip GCC extensions that survived macro expansion.
         return strip_gcc_extensions(p.stdout)
     
