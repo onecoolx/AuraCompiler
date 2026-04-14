@@ -1120,39 +1120,81 @@ class Parser:
                 ptr_ty = base_type
                 while self._match(TokenType.STAR):
                     ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
-                name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
-                self._expect(TokenType.RPAREN, "Expected ')' in parameter declarator")
-                # consume trailing function parameter list
-                if self._match(TokenType.LPAREN):
-                    # Best-effort: parse parameter list so we can preserve arity.
-                    try:
-                        fp_params = self._parse_parameter_list()
-                        fp_arity: Optional[int] = len([p for p in fp_params if getattr(p, "name", None) != "..."])
-                    except Exception:
-                        fp_arity = None
-                        depth = 1
-                        while self.current_token and depth > 0:
-                            if self._match(TokenType.LPAREN):
-                                depth += 1
-                                continue
-                            if self._match(TokenType.RPAREN):
-                                depth -= 1
-                                continue
-                            self.advance()
-                    self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+
+                # Check whether this is an unnamed function pointer: int (*)(int, int)
+                # vs a named one: int (*fp)(int, int)
+                if self._at(TokenType.RPAREN):
+                    # Unnamed function pointer parameter: e.g. int (*)(int, int)
+                    self._expect(TokenType.RPAREN, "Expected ')'")
+                    fp_params = []
+                    fp_arity: Optional[int] = 0
+                    if self._match(TokenType.LPAREN):
+                        try:
+                            fp_params = self._parse_parameter_list()
+                            fp_arity = len([p for p in fp_params if getattr(p, "name", None) != "..."])
+                        except Exception:
+                            fp_arity = None
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._match(TokenType.LPAREN):
+                                    depth += 1
+                                    continue
+                                if self._match(TokenType.RPAREN):
+                                    depth -= 1
+                                    continue
+                                self.advance()
+                        self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
 
                     ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
                     try:
                         ptr_ty.fn_param_count = fp_arity
-                        # Store full function pointer signature for type compatibility checks.
                         ptr_ty.fn_return_type = Type(base=base_type.base,
                                                      is_unsigned=getattr(base_type, 'is_unsigned', False),
                                                      is_signed=getattr(base_type, 'is_signed', False),
                                                      line=base_type.line, column=base_type.column)
-                        ptr_ty.fn_param_types = [p.type for p in fp_params if getattr(p, "name", None) != "..."]
+                        if fp_params:
+                            ptr_ty.fn_param_types = [p.type for p in fp_params if getattr(p, "name", None) != "..."]
                     except Exception:
                         pass
-                params.append(Declaration(name=name_tok.value, type=ptr_ty, line=name_tok.line, column=name_tok.column))
+                    params.append(Declaration(name=None, type=ptr_ty, line=ptr_ty.line, column=ptr_ty.column))
+                elif self._at(TokenType.IDENTIFIER):
+                    # Named function pointer parameter: e.g. int (*fp)(int, int)
+                    name_tok = self._expect(TokenType.IDENTIFIER, "Expected parameter name")
+                    self._expect(TokenType.RPAREN, "Expected ')' in parameter declarator")
+                    # consume trailing function parameter list
+                    if self._match(TokenType.LPAREN):
+                        # Best-effort: parse parameter list so we can preserve arity.
+                        try:
+                            fp_params = self._parse_parameter_list()
+                            fp_arity: Optional[int] = len([p for p in fp_params if getattr(p, "name", None) != "..."])
+                        except Exception:
+                            fp_arity = None
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._match(TokenType.LPAREN):
+                                    depth += 1
+                                    continue
+                                if self._match(TokenType.RPAREN):
+                                    depth -= 1
+                                    continue
+                                self.advance()
+                        self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+
+                        ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                        try:
+                            ptr_ty.fn_param_count = fp_arity
+                            # Store full function pointer signature for type compatibility checks.
+                            ptr_ty.fn_return_type = Type(base=base_type.base,
+                                                         is_unsigned=getattr(base_type, 'is_unsigned', False),
+                                                         is_signed=getattr(base_type, 'is_signed', False),
+                                                         line=base_type.line, column=base_type.column)
+                            ptr_ty.fn_param_types = [p.type for p in fp_params if getattr(p, "name", None) != "..."]
+                        except Exception:
+                            pass
+                    params.append(Declaration(name=name_tok.value, type=ptr_ty, line=name_tok.line, column=name_tok.column))
+                else:
+                    # Unexpected token after (*; raise error
+                    raise ParserError("Expected identifier or ')' in function pointer parameter", self.current_token)
             else:
                 # Allow unnamed parameters in prototypes (common in system headers).
                 # Example: `int f(int);`
