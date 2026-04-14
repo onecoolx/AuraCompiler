@@ -12,3 +12,8 @@ a.out
 
 # Local scratch files
 t.c
+a.c
+_commit_msg.txt
+_debug_*.py
+_fix_*.py
+_fix_*.sh
