@@ -72,6 +72,8 @@ class StructLayout:
     # Used by IR/codegen for nested aggregate handling.
     member_types: Dict[str, str] | None = None
     bit_fields: set | None = None  # set of member names that are bit-fields
+    # Full Type objects for members, used by _expr_type() for type inference.
+    member_decl_types: Dict[str, Type] | None = None
 
 
 @dataclass
@@ -620,7 +622,12 @@ class SemanticAnalyzer:
         if kind == "struct" and size % max_align != 0:
             size += (max_align - (size % max_align))
 
-        layout = StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None)
+        # Build member_decl_types: full Type objects for each member.
+        mdecl_types: Dict[str, Type] = {}
+        for m in members:
+            if m.name is not None and getattr(m, "type", None) is not None:
+                mdecl_types[m.name] = m.type
+        layout = StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None, member_decl_types=mdecl_types if mdecl_types else None)
         if bf_members:
             layout._bf_info = {}
             for m in members:
@@ -1277,11 +1284,157 @@ class SemanticAnalyzer:
         }
 
     def _expr_type(self, expr: Expression) -> Optional[Type]:
+        # For Cast nodes, expr.type is the target type of the cast — return it directly.
+        if isinstance(expr, Cast):
+            return getattr(expr, "type", None)
+
+        # For other nodes, check if a type was attached during analysis.
         ty: Optional[Type] = getattr(expr, "type", None)
         if ty is not None:
             return ty
         if isinstance(expr, Identifier):
             return self._lookup_decl_type(expr.name)
+
+        if isinstance(expr, UnaryOp):
+            if expr.operator == "&":
+                inner = self._expr_type(expr.operand)
+                if inner:
+                    new_level = (getattr(inner, "pointer_level", 0) or 0) + 1
+                    return Type(
+                        base=inner.base,
+                        is_pointer=True,
+                        pointer_level=new_level,
+                        is_const=bool(getattr(inner, "is_const", False)),
+                        is_volatile=bool(getattr(inner, "is_volatile", False)),
+                        is_unsigned=bool(getattr(inner, "is_unsigned", False)),
+                        is_signed=bool(getattr(inner, "is_signed", False)),
+                        line=getattr(inner, "line", 0),
+                        column=getattr(inner, "column", 0),
+                    )
+                return None
+            if expr.operator == "*":
+                inner = self._expr_type(expr.operand)
+                if inner and (getattr(inner, "pointer_level", 0) or 0) > 0:
+                    new_level = inner.pointer_level - 1
+                    return Type(
+                        base=inner.base,
+                        is_pointer=new_level > 0,
+                        pointer_level=new_level,
+                        is_const=bool(getattr(inner, "is_const", False)),
+                        is_volatile=bool(getattr(inner, "is_volatile", False)),
+                        is_unsigned=bool(getattr(inner, "is_unsigned", False)),
+                        is_signed=bool(getattr(inner, "is_signed", False)),
+                        line=getattr(inner, "line", 0),
+                        column=getattr(inner, "column", 0),
+                    )
+                return None
+
+        if isinstance(expr, (MemberAccess, PointerMemberAccess)):
+            return self._lookup_member_type(expr)
+
+        if isinstance(expr, FunctionCall):
+            return self._lookup_function_return_type(expr)
+
+        if isinstance(expr, ArrayAccess):
+            base_ty = self._expr_type(expr.array)
+            if base_ty and (getattr(base_ty, "pointer_level", 0) or 0) > 0:
+                new_level = base_ty.pointer_level - 1
+                return Type(
+                    base=base_ty.base,
+                    is_pointer=new_level > 0,
+                    pointer_level=new_level,
+                    is_const=bool(getattr(base_ty, "is_const", False)),
+                    is_volatile=bool(getattr(base_ty, "is_volatile", False)),
+                    is_unsigned=bool(getattr(base_ty, "is_unsigned", False)),
+                    is_signed=bool(getattr(base_ty, "is_signed", False)),
+                    line=getattr(base_ty, "line", 0),
+                    column=getattr(base_ty, "column", 0),
+                )
+            return None
+
+        if isinstance(expr, BinaryOp):
+            if expr.operator in {"+", "-"}:
+                left_ty = self._expr_type(expr.left)
+                right_ty = self._expr_type(expr.right)
+                if left_ty and getattr(left_ty, "is_pointer", False):
+                    if expr.operator == "-" and right_ty and getattr(right_ty, "is_pointer", False):
+                        return Type(base="long", line=0, column=0)
+                    return left_ty
+                if right_ty and getattr(right_ty, "is_pointer", False):
+                    return right_ty
+            return None
+
+        return None
+
+    def _lookup_member_type(self, expr) -> Optional[Type]:
+        """Look up the declared type of a struct/union member access."""
+        if isinstance(expr, MemberAccess):
+            obj_ty = self._expr_type(expr.object)
+        elif isinstance(expr, PointerMemberAccess):
+            ptr_ty = self._expr_type(expr.pointer)
+            if ptr_ty is None:
+                return None
+            # For p->member, p should be a pointer to struct; dereference one level.
+            if (getattr(ptr_ty, "pointer_level", 0) or 0) > 0:
+                obj_ty = Type(
+                    base=ptr_ty.base,
+                    is_pointer=(ptr_ty.pointer_level - 1) > 0,
+                    pointer_level=ptr_ty.pointer_level - 1,
+                    line=getattr(ptr_ty, "line", 0),
+                    column=getattr(ptr_ty, "column", 0),
+                )
+            else:
+                obj_ty = ptr_ty
+        else:
+            return None
+
+        if obj_ty is None:
+            return None
+
+        # Resolve the struct/union tag from the base type.
+        base = getattr(obj_ty, "base", "")
+        if not isinstance(base, str):
+            return None
+
+        # Try direct lookup: "struct Tag" or "union Tag"
+        layout = self._layouts.get(base)
+        if layout is None:
+            # Try with prefix
+            for prefix in ("struct ", "union "):
+                if not base.startswith(prefix):
+                    layout = self._layouts.get(prefix + base)
+                    if layout is not None:
+                        break
+        if layout is None:
+            # Try resolving through typedef
+            td = self._resolve_typedef(base)
+            if td is not None:
+                td_base = getattr(td, "base", "")
+                if isinstance(td_base, str):
+                    layout = self._layouts.get(td_base)
+
+        if layout is None:
+            return None
+
+        member_name = expr.member
+        # Prefer full Type objects from member_decl_types.
+        mdecl = getattr(layout, "member_decl_types", None)
+        if mdecl and member_name in mdecl:
+            return mdecl[member_name]
+        return None
+
+    def _lookup_function_return_type(self, expr: FunctionCall) -> Optional[Type]:
+        """Look up the return type of a function call."""
+        func = expr.function
+        name = None
+        if isinstance(func, Identifier):
+            name = func.name
+        if name is None:
+            return None
+        sig = self._function_full_sig.get(name)
+        if sig is not None:
+            _param_types, ret_type = sig
+            return ret_type
         return None
 
     def _is_scalar_expr(self, expr: Expression) -> bool:
