@@ -200,6 +200,14 @@ class Parser:
             storage_class = self.current_token.value
             self.advance()
 
+        # C99 function specifier: 'inline' — accept and ignore
+        if (
+            self.current_token
+            and self.current_token.type == TokenType.KEYWORD
+            and self.current_token.value == "inline"
+        ):
+            self.advance()
+
         # handle 'typedef' at top-level
         if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
             self.advance()
@@ -213,6 +221,33 @@ class Parser:
                     base_type._normalize_pointer_state()
                 else:
                     base_type = Type(base=getattr(base_type, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(base_type, "line", 1), column=getattr(base_type, "column", 1))
+
+            # Function pointer typedef: typedef int (*name)(params);
+            if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
+                self.advance()  # consume '('
+                self.advance()  # consume '*'
+                name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
+                self._expect(TokenType.RPAREN, "Expected ')' after function pointer name")
+                # Parse parameter list
+                if self._match(TokenType.LPAREN):
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._at(TokenType.LPAREN):
+                            depth += 1
+                        elif self._at(TokenType.RPAREN):
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        self.advance()
+                    self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+                fp_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
+                             line=base_type.line, column=base_type.column)
+                fp_ty._normalize_pointer_state()
+                self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
+                td = TypedefDecl(name=name_tok.value, type=fp_ty, line=name_tok.line, column=name_tok.column)
+                self._typedefs.add(td.name)
+                return td
+
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
@@ -880,30 +915,44 @@ class Parser:
                             self.advance()  # consume ';'
                             continue
 
+                    # Function pointer member: int (*name)(params);
+                    if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
+                        self.advance()  # consume '('
+                        self.advance()  # consume '*'
+                        mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                        self._expect(TokenType.RPAREN, "Expected ')'")
+                        # Consume parameter list
+                        if self._match(TokenType.LPAREN):
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._at(TokenType.LPAREN):
+                                    depth += 1
+                                elif self._at(TokenType.RPAREN):
+                                    depth -= 1
+                                    if depth == 0:
+                                        break
+                                self.advance()
+                            self._expect(TokenType.RPAREN, "Expected ')'")
+                        fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
+                                     line=mem_ty.line, column=mem_ty.column)
+                        fp_ty._normalize_pointer_state()
+                        self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
+                        members.append(Declaration(name=mem_name.value, type=fp_ty,
+                                                   line=mem_name.line, column=mem_name.column))
+                        continue
+
                     mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
 
-                    # Support simple fixed-size array members (subset):
-                    #   int a[2];
-                    # This is needed for many system headers (e.g. glibc's __fsid_t).
-                    if self._match(TokenType.LBRACKET):
-                        # Array members appear frequently in system headers.
-                        # We support a permissive subset:
-                        #   int a[2];
-                        #   char b[];            (unknown size)
-                        #   char c[EXPR];        (we ignore EXPR tokens)
-                        #
-                        # For now we discard the array extent in the AST/type.
-                        # This is a parsing-compatibility feature.
+                    # Support fixed-size array members (incl. multi-dimensional):
+                    while self._match(TokenType.LBRACKET):
                         depth = 1
                         while self.current_token and depth > 0:
                             if self._match(TokenType.RBRACKET):
                                 depth -= 1
                                 break
-                            # Be robust if an expression contains nested brackets (rare here).
                             if self._match(TokenType.LBRACKET):
                                 depth += 1
                                 continue
-                            # Otherwise consume tokens until we reach ']'.
                             self.advance()
                         if depth != 0:
                             raise ParserError("Expected ']' after array declarator", self.current_token)
@@ -917,11 +966,37 @@ class Parser:
                         else:
                             bit_width = 0
 
-                    self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
                     d = Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column)
                     if bit_width is not None:
                         d.bit_width = bit_width
                     members.append(d)
+
+                    # Multi-declarator: int a, b, *c;
+                    while self._match(TokenType.COMMA):
+                        extra_ty = Type(base=mem_ty.base, line=mem_ty.line, column=mem_ty.column)
+                        while self._match(TokenType.STAR):
+                            extra_ty = Type(base=extra_ty.base, is_pointer=True, line=extra_ty.line, column=extra_ty.column)
+                        en = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                        if self._match(TokenType.LBRACKET):
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._match(TokenType.RBRACKET):
+                                    depth -= 1
+                                    break
+                                if self._match(TokenType.LBRACKET):
+                                    depth += 1
+                                    continue
+                                self.advance()
+                        ebw = None
+                        if self._match(TokenType.COLON):
+                            bw_expr = self._parse_expression()
+                            ebw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
+                        ed = Declaration(name=en.value, type=extra_ty, line=en.line, column=en.column)
+                        if ebw is not None:
+                            ed.bit_width = ebw
+                        members.append(ed)
+
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
                 self._expect(TokenType.RBRACE, "Expected '}' after struct/union members")
 
                 # Remember members for named tags so outer declaration `struct T {...};`

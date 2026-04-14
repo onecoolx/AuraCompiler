@@ -422,6 +422,14 @@ class Compiler:
             "-D__THROW=",
             "-D__nonnull(x)=",
             "-D__wur=",
+            # GCC-specific types not in C89
+            "-D_Float128=long double",
+            "-D_Float64=double",
+            "-D_Float32=float",
+            "-D_Float64x=long double",
+            "-D_Float32x=double",
+            # Disable assert() to avoid GCC statement expressions ({ ... })
+            "-DNDEBUG",
         ]
         for d in self._pp_include_paths:
             cmd += ["-I", d]
