@@ -156,7 +156,62 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--no-opt", action="store_true", help="Disable optimizations")
     ap.add_argument("-Wall", action="store_true", dest="wall", help="Enable all warnings")
     ap.add_argument("-Werror", action="store_true", dest="werror", help="Treat warnings as errors")
+
+    # ── gcc-compatible flags (accepted but ignored for now) ──────────
+    # Optimization levels
+    ap.add_argument("-O0", action="store_const", const=0, dest="opt_level", default=None, help="No optimization (default)")
+    ap.add_argument("-O1", "-O", action="store_const", const=1, dest="opt_level", help="Basic optimization (ignored)")
+    ap.add_argument("-O2", action="store_const", const=2, dest="opt_level", help="Standard optimization (ignored)")
+    ap.add_argument("-O3", action="store_const", const=3, dest="opt_level", help="Aggressive optimization (ignored)")
+    ap.add_argument("-Os", action="store_const", const=-1, dest="opt_level", help="Optimize for size (ignored)")
+    # Debug info
+    ap.add_argument("-g", action="store_true", dest="debug_info", help="Generate debug info (ignored)")
+    ap.add_argument("-g0", action="store_const", const=0, dest="debug_level", default=None, help="No debug info")
+    ap.add_argument("-g1", action="store_const", const=1, dest="debug_level", help="Minimal debug info (ignored)")
+    ap.add_argument("-g2", action="store_const", const=2, dest="debug_level", help="Default debug info (ignored)")
+    ap.add_argument("-g3", action="store_const", const=3, dest="debug_level", help="Maximum debug info (ignored)")
+    # Warning flags
+    ap.add_argument("-Wextra", action="store_true", dest="wextra", help="Extra warnings (ignored)")
+    ap.add_argument("-Wpedantic", "-pedantic", action="store_true", dest="wpedantic", help="Pedantic warnings (ignored)")
+    ap.add_argument("-Wno-unused-parameter", action="store_true", help="(ignored)")
+    ap.add_argument("-Wno-unused-variable", action="store_true", help="(ignored)")
+    ap.add_argument("-Wno-unused-function", action="store_true", help="(ignored)")
+    ap.add_argument("-Wno-implicit-function-declaration", action="store_true", help="(ignored)")
+    # Standard selection
+    ap.add_argument("-std", dest="std", metavar="STANDARD", help="C standard (e.g. c89, c99; ignored)")
+    ap.add_argument("-ansi", action="store_true", help="ANSI C mode (ignored)")
+    # Linker flags
+    ap.add_argument("-l", dest="link_libs", action="append", default=[], metavar="LIB", help="Link library (passed to linker)")
+    ap.add_argument("-L", dest="link_dirs", action="append", default=[], metavar="DIR", help="Library search path (passed to linker)")
+    # Preprocessor
+    ap.add_argument("-include", dest="force_includes", action="append", default=[], metavar="FILE", help="Force include file (ignored)")
+    ap.add_argument("-M", action="store_true", dest="dep_only", help="Output dependency rules (ignored)")
+    ap.add_argument("-MM", action="store_true", dest="dep_no_sys", help="Output dependency rules, no system headers (ignored)")
+    ap.add_argument("-MD", action="store_true", help="Write dependency file alongside output (ignored)")
+    ap.add_argument("-MF", dest="dep_file", metavar="FILE", help="Dependency output file (ignored)")
+    ap.add_argument("-MT", dest="dep_target", metavar="TARGET", help="Dependency target name (ignored)")
+    # Code generation
+    ap.add_argument("-fPIC", "-fpic", action="store_true", dest="fpic", help="Position-independent code (ignored)")
+    ap.add_argument("-fno-strict-aliasing", action="store_true", help="(ignored)")
+    ap.add_argument("-fomit-frame-pointer", action="store_true", help="(ignored)")
+    ap.add_argument("-fno-omit-frame-pointer", action="store_true", help="(ignored)")
+    ap.add_argument("-fstack-protector", action="store_true", help="(ignored)")
+    ap.add_argument("-fno-stack-protector", action="store_true", help="(ignored)")
+    # Machine
+    ap.add_argument("-m32", action="store_true", help="32-bit mode (not supported, ignored)")
+    ap.add_argument("-m64", action="store_true", help="64-bit mode (default, ignored)")
+    ap.add_argument("-march", dest="march", metavar="ARCH", help="Target architecture (ignored)")
+    ap.add_argument("-mtune", dest="mtune", metavar="CPU", help="Tune for CPU (ignored)")
+    # Misc
+    ap.add_argument("-pipe", action="store_true", help="Use pipes (ignored)")
+    ap.add_argument("-w", action="store_true", dest="suppress_warnings", help="Suppress all warnings")
+    ap.add_argument("-Wl", dest="wl_args", action="append", default=[], help="Pass option to linker (ignored)")
+
     args = ap.parse_args(argv)
+
+    # -w suppresses all warnings
+    if getattr(args, "suppress_warnings", False):
+        args.wall = False
 
     if args.version:
         # Keep this intentionally simple and stable for tests/scripts.
