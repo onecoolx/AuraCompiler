@@ -208,6 +208,7 @@ class SemanticAnalyzer:
                         if (
                             param_count == 1
                             and getattr(getattr(params[0], "type", None), "base", None) == "void"
+                            and not getattr(getattr(params[0], "type", None), "is_pointer", False)
                             and getattr(params[0], "name", None) != "..."
                         ):
                             param_count = 0
@@ -1944,8 +1945,9 @@ class SemanticAnalyzer:
                         got = len(getattr(expr, "arguments", []) or [])
 
                         if expected != got:
-                            self.errors.append(
-                                f"incorrect number of arguments for function '{name}': expected {expected}, got {got}"
+                            self._err(
+                                f"incorrect number of arguments for function '{name}': expected {expected}, got {got}",
+                                expr,
                             )
             except Exception:
                 pass
