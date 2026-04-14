@@ -1,11 +1,12 @@
 import os
+import tempfile
 
 from pycc.preprocessor import Preprocessor
 
 
-def _pp(text: str, *, include_paths=None, filename: str = "t.c"):
+def _pp(tmp_path, text: str, *, include_paths=None, filename: str = "t.c"):
     pp = Preprocessor(include_paths=include_paths or [])
-    path = os.path.join(os.getcwd(), filename)
+    path = os.path.join(str(tmp_path), filename)
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 
@@ -15,7 +16,6 @@ def _pp(text: str, *, include_paths=None, filename: str = "t.c"):
 
 
 def test_include_operand_expands_object_like_header_name_angle(tmp_path):
-    # Arrange: provide a dummy header in an include directory.
     inc = tmp_path / "inc"
     inc.mkdir()
     (inc / "foo.h").write_text("#define FOO_FROM_HEADER 123\n", encoding="utf-8")
@@ -26,7 +26,7 @@ def test_include_operand_expands_object_like_header_name_angle(tmp_path):
 int x = FOO_FROM_HEADER;
 """.lstrip()
 
-    out = _pp(src, include_paths=[str(inc)])
+    out = _pp(tmp_path, src, include_paths=[str(inc)])
     assert "int x" in out
 
 
@@ -41,7 +41,7 @@ def test_include_operand_expands_to_quoted_header_name(tmp_path):
 int y = BAR_FROM_HEADER;
 """.lstrip()
 
-    out = _pp(src, include_paths=[str(inc)])
+    out = _pp(tmp_path, src, include_paths=[str(inc)])
     assert "int y" in out
 
 
@@ -55,10 +55,9 @@ def test_include_operand_macro_must_expand_to_header_name(tmp_path):
 """.lstrip()
 
     pp = Preprocessor(include_paths=[str(inc)])
-    path = os.path.join(os.getcwd(), "t.c")
+    path = os.path.join(str(tmp_path), "t.c")
     with open(path, "w", encoding="utf-8") as f:
         f.write(src)
     res = pp.preprocess(path)
     assert res.errors, "expected an error"
-    # Must include directive location.
-    assert res.errors[0].startswith("t.c:2:"), res.errors[0]
+    assert "t.c:2:" in res.errors[0], res.errors[0]
