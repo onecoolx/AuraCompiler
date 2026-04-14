@@ -856,7 +856,16 @@ class Parser:
             return t
 
         # forms like: 'unsigned' (=> unsigned int), 'long' (=> long int), etc.
+        # But first check if the current token is a typedef name — handles
+        # `const GLvoid *p` where const was consumed but GLvoid is the type.
         if saw_any:
+            cur = self.current_token
+            if cur and cur.type == TokenType.IDENTIFIER and cur.value in self._typedefs:
+                self.advance()
+                t = Type(base=cur.value, line=cur.line, column=cur.column)
+                t.is_const = is_const
+                t.is_volatile = is_volatile
+                return t
             if tok is None:
                 raise ParserError("Expected type specifier", tok)
             t = Type(base="int", line=tok.line, column=tok.column)
@@ -1043,12 +1052,23 @@ class Parser:
                 base_ty._anon_members = members
             return base_ty
 
-        # typedef-name as type specifier
+        # typedef-name as type specifier (check current token, not the
+        # original `tok`, because qualifiers like const/volatile may have
+        # been consumed above)
+        cur = self.current_token
+        if cur and cur.type == TokenType.IDENTIFIER and cur.value in self._typedefs:
+            self.advance()
+            t = Type(base=cur.value, line=cur.line, column=cur.column)
+            t.is_const = is_const
+            t.is_volatile = is_volatile
+            return t
+
+        # Also check the original tok for the no-qualifier case
         if tok.type == TokenType.IDENTIFIER and tok.value in self._typedefs:
             self.advance()
             return Type(base=tok.value, line=tok.line, column=tok.column)
 
-        raise ParserError("Expected type specifier", tok)
+        raise ParserError("Expected type specifier", self.current_token or tok)
 
     def _parse_parameter_list(self) -> List[Declaration]:
         params: List[Declaration] = []
