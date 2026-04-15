@@ -559,7 +559,7 @@ class IRGenerator:
                     # Only treat a struct/union as an unsized array if the
                     # initializer is nested (i.e., looks like {{...},{...}}).
                     (self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])))
-                    or str(base).strip() in {"char", "unsigned char", "int", "unsigned int", "float", "double", "long double"}
+                    or self._resolve_elem_type(str(base).strip()) in {"char", "unsigned char", "int", "unsigned int", "float", "double", "long double"}
                 )
             )
         )
@@ -588,6 +588,8 @@ class IRGenerator:
             # In that case, the element type is the struct itself.
             if self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])):
                 elem_base = str(base).strip()
+            # Resolve typedef to underlying type for matching.
+            elem_base = self._resolve_elem_type(elem_base)
             if elem_base in {"char", "unsigned char"}:
                 # string literal init
                 inits = self._const_initializer_list(init)
@@ -1184,6 +1186,22 @@ class IRGenerator:
             if l is not None and r is not None:
                 return l * r
         return None
+
+    def _resolve_elem_type(self, name: str) -> str:
+        """Resolve a type name through typedefs to its underlying primitive."""
+        _KNOWN = {"char", "unsigned char", "signed char",
+                  "short", "unsigned short", "int", "unsigned int",
+                  "long", "unsigned long", "float", "double", "long double",
+                  "void"}
+        if name in _KNOWN or self._is_struct_or_union_type(name):
+            return name
+        if self._sema_ctx is not None:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(name)
+            if td is not None:
+                rb = str(getattr(td, "base", "")).strip()
+                if rb:
+                    return self._resolve_elem_type(rb)
+        return name
 
     def _is_volatile_sym(self, sym: str) -> bool:
         """Check if an IR symbol refers to a volatile-qualified variable.

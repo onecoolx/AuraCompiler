@@ -46,3 +46,17 @@ def test_sized_float_array(tmp_path):
     comp = Compiler(optimize=False)
     res = comp.compile_file(str(src), str(tmp_path / "t.s"))
     assert res.success, "compile failed: " + "\n".join(res.errors)
+
+
+def test_typedef_float_array(tmp_path):
+    """GLfloat mat[] = {...} where GLfloat is typedef for float (mech.c pattern)."""
+    src = tmp_path / "t.c"
+    src.write_text(
+        "typedef float GLfloat;\n"
+        "GLfloat mat_specular[] = {0.628281, 0.555802, 0.366065, 1.0};\n"
+        "GLfloat mat_shininess[] = {128.0 * 0.4};\n"
+        "int main(void) { return 0; }\n"
+    )
+    comp = Compiler(optimize=False)
+    res = comp.compile_file(str(src), str(tmp_path / "t.s"))
+    assert res.success, "compile failed: " + "\n".join(res.errors)
