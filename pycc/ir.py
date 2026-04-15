@@ -559,13 +559,7 @@ class IRGenerator:
                     # Only treat a struct/union as an unsized array if the
                     # initializer is nested (i.e., looks like {{...},{...}}).
                     (self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])))
-                    or self._resolve_elem_type(str(base).strip()) in {
-                        "char", "unsigned char", "signed char",
-                        "short", "unsigned short",
-                        "int", "unsigned int",
-                        "long", "unsigned long",
-                        "float", "double", "long double",
-                    }
+                    or self._scalar_pack_info(self._resolve_elem_type(str(base).strip())) is not None
                 )
             )
         )
@@ -619,7 +613,6 @@ class IRGenerator:
             total = n
             ad = getattr(decl, "array_dims", None)
             if isinstance(ad, list) and len(ad) >= 2:
-                # Compute total from known dims; infer None dims from initializer.
                 known_product = 1
                 has_none = False
                 for dim in ad:
@@ -628,14 +621,13 @@ class IRGenerator:
                     else:
                         has_none = True
                 if has_none:
-                    # Infer total from flattened initializer count.
                     flat_preview = _flatten_inits(inits_raw)
                     total = max(len(flat_preview), known_product)
                 else:
                     total = known_product
 
-            # String literal init for char arrays (special case, not flattened).
-            if elem_base in {"char", "unsigned char"}:
+            # --- Special case: char array from string literal (not flattened) ---
+            if elem_base in {"char", "unsigned char", "signed char"}:
                 if len(inits_raw) == 1 and isinstance(inits_raw[0], StringLiteral):
                     s = inits_raw[0].value
                     bytes_vals = [ord(c) for c in s]
@@ -648,93 +640,20 @@ class IRGenerator:
                         bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
                     return "blob:" + "".join(f"{b & 0xFF:02x}" for b in bytes_vals)
 
-            # For scalar element types, flatten and encode.
-            flat = _flatten_inits(inits_raw)
-
-            if elem_base in {"char", "unsigned char"}:
-                if len(flat) > total:
-                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
-                vals: list[int] = []
-                for e in flat[:total]:
-                    imm = self._const_expr_to_int(e)
-                    if imm is None:
-                        return None
-                    vals.append(imm & 0xFF)
-                vals += [0] * (total - len(vals))
-                return "blob:" + "".join(f"{b:02x}" for b in vals)
-
-            if elem_base in {"int", "unsigned int"}:
-                if len(flat) > total:
-                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
-                vals: list[int] = []
-                for e in flat[:total]:
-                    imm = self._const_expr_to_int(e)
-                    if imm is None:
-                        return None
-                    v = imm & 0xFFFFFFFF
-                    vals.extend([(v >> (8 * i)) & 0xFF for i in range(4)])
-                vals += [0] * (4 * (total - len(flat)))
-                return "blob:" + "".join(f"{b:02x}" for b in vals)
-
-            if elem_base in {"short", "unsigned short"}:
+            # --- Unified scalar array blob: table-driven packing ---
+            pack_info = self._scalar_pack_info(elem_base)
+            if pack_info is not None:
+                elem_sz, pack_fn = pack_info
+                flat = _flatten_inits(inits_raw)
                 if len(flat) > total:
                     raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
                 blob = bytearray()
                 for e in flat[:total]:
-                    imm = self._const_expr_to_int(e)
-                    if imm is None:
+                    packed = pack_fn(e)
+                    if packed is None:
                         return None
-                    blob.extend(_struct.pack("<H", imm & 0xFFFF))
-                blob += b'\x00' * (2 * (total - len(flat)))
-                return "blob:" + blob.hex()
-
-            if elem_base in {"long", "unsigned long"}:
-                if len(flat) > total:
-                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
-                blob = bytearray()
-                for e in flat[:total]:
-                    imm = self._const_expr_to_int(e)
-                    if imm is None:
-                        return None
-                    blob.extend(_struct.pack("<q", imm))
-                blob += b'\x00' * (8 * (total - len(flat)))
-                return "blob:" + blob.hex()
-
-            if elem_base == "float":
-                if len(flat) > total:
-                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
-                blob = bytearray()
-                for e in flat[:total]:
-                    fv = self._const_expr_to_float(e)
-                    if fv is None:
-                        return None
-                    blob.extend(_struct.pack("<f", fv))
-                blob += b'\x00' * (4 * (total - len(flat)))
-                return "blob:" + blob.hex()
-
-            if elem_base == "double":
-                if len(flat) > total:
-                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
-                blob = bytearray()
-                for e in flat[:total]:
-                    fv = self._const_expr_to_float(e)
-                    if fv is None:
-                        return None
-                    blob.extend(_struct.pack("<d", fv))
-                blob += b'\x00' * (8 * (total - len(flat)))
-                return "blob:" + blob.hex()
-
-            if elem_base == "long double":
-                if len(flat) > total:
-                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
-                blob = bytearray()
-                for e in flat[:total]:
-                    fv = self._const_expr_to_float(e)
-                    if fv is None:
-                        return None
-                    raw = _struct.pack("<d", fv)
-                    blob.extend(raw + b'\x00' * 8)
-                blob += b'\x00' * (16 * (total - len(flat)))
+                    blob.extend(packed)
+                blob += b'\x00' * (elem_sz * (total - len(flat)))
                 return "blob:" + blob.hex()
 
             # Array of struct/union (subset): nested brace lists where each element
@@ -1227,6 +1146,61 @@ class IRGenerator:
             if l is not None and r is not None:
                 return l * r
         return None
+
+    def _scalar_pack_info(self, elem_base: str):
+        """Return (elem_size, pack_fn) for a scalar type, or None.
+
+        pack_fn(expr) -> Optional[bytes]: converts a constant expression to
+        its little-endian binary representation, or None if not constant.
+        This is the single source of truth for scalar element packing in
+        constant initializer blobs — no per-type if/elif branches needed.
+        """
+        def _pack_int(expr, mask, fmt):
+            v = self._const_expr_to_int(expr)
+            if v is None:
+                return None
+            return _struct.pack(fmt, v & mask)
+
+        def _pack_float(expr, fmt):
+            v = self._const_expr_to_float(expr)
+            if v is None:
+                # Allow integer literals in float context (e.g. {1, 0, 0})
+                iv = self._const_expr_to_int(expr)
+                if iv is not None:
+                    v = float(iv)
+            if v is None:
+                return None
+            return _struct.pack(fmt, v)
+
+        def _pack_long_double(expr):
+            v = self._const_expr_to_float(expr)
+            if v is None:
+                iv = self._const_expr_to_int(expr)
+                if iv is not None:
+                    v = float(iv)
+            if v is None:
+                return None
+            # x86-64: 80-bit extended stored in 16-byte slot
+            return _struct.pack("<d", v) + b'\x00' * 8
+
+        _TABLE = {
+            "char":           (1, lambda e: _pack_int(e, 0xFF, "<B")),
+            "signed char":    (1, lambda e: _pack_int(e, 0xFF, "<B")),
+            "unsigned char":  (1, lambda e: _pack_int(e, 0xFF, "<B")),
+            "short":          (2, lambda e: _pack_int(e, 0xFFFF, "<H")),
+            "signed short":   (2, lambda e: _pack_int(e, 0xFFFF, "<H")),
+            "unsigned short": (2, lambda e: _pack_int(e, 0xFFFF, "<H")),
+            "int":            (4, lambda e: _pack_int(e, 0xFFFFFFFF, "<I")),
+            "signed int":     (4, lambda e: _pack_int(e, 0xFFFFFFFF, "<I")),
+            "unsigned int":   (4, lambda e: _pack_int(e, 0xFFFFFFFF, "<I")),
+            "long":           (8, lambda e: _pack_int(e, 0xFFFFFFFFFFFFFFFF, "<Q")),
+            "signed long":    (8, lambda e: _pack_int(e, 0xFFFFFFFFFFFFFFFF, "<Q")),
+            "unsigned long":  (8, lambda e: _pack_int(e, 0xFFFFFFFFFFFFFFFF, "<Q")),
+            "float":          (4, lambda e: _pack_float(e, "<f")),
+            "double":         (8, lambda e: _pack_float(e, "<d")),
+            "long double":    (16, _pack_long_double),
+        }
+        return _TABLE.get(elem_base)
 
     def _resolve_elem_type(self, name: str) -> str:
         """Resolve a type name through typedefs to its underlying primitive."""
