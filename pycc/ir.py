@@ -631,12 +631,28 @@ class IRGenerator:
                 inits = self._const_initializer_list(init)
                 if inits is None:
                     return None
-                if len(inits) > n:
+                # Flatten nested initializers for multi-dimensional arrays.
+                flat: list = []
+                for e in inits:
+                    sub = self._const_initializer_list(e)
+                    if sub is not None:
+                        flat.extend(sub)
+                    else:
+                        flat.append(e)
+                # Total element count for multi-dim arrays.
+                total = n
+                ad = getattr(decl, "array_dims", None)
+                if isinstance(ad, list) and len(ad) >= 2:
+                    total = 1
+                    for dim in ad:
+                        if isinstance(dim, int) and dim > 0:
+                            total *= dim
+                if len(flat) > total:
                     raise IRGenError(
                         f"excess elements in initializer for array '{decl.name}'"
                     )
                 vals: list[int] = []
-                for e in inits[:n]:
+                for e in flat[:total]:
                     imm = self._const_expr_to_int(e)
                     if imm is None:
                         return None
@@ -644,7 +660,7 @@ class IRGenerator:
                     v = imm & 0xFFFFFFFF
                     vals.extend([(v >> (8 * i)) & 0xFF for i in range(4)])
                 # zero-fill remaining
-                rem = n - min(n, len(inits))
+                rem = total - len(flat)
                 if rem > 0:
                     vals.extend([0] * (4 * rem))
                 return "blob:" + "".join(f"{b:02x}" for b in vals)
@@ -2158,21 +2174,30 @@ class IRGenerator:
                         if getattr(item, "initializer", None) is None:
                             self.instructions.append(IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2="$0", label="static"))
                         else:
-                            imm = self._const_initializer_imm(item.initializer)
-                            ptr = self._const_initializer_ptr(item.initializer)
-                            if imm is None and ptr is None:
-                                raise IRGenError(
-                                    f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
+                            # Try aggregate blob first (arrays, structs).
+                            blob = self._const_initializer_blob(item)
+                            if blob is not None:
+                                self.instructions.append(
+                                    IRInstruction(op="gdef_blob", result=f"@{gname}", operand1=item.type.base, operand2=blob, label="static")
                                 )
-                            self.instructions.append(
-                                IRInstruction(
-                                    op="gdef",
-                                    result=f"@{gname}",
-                                    operand1=item.type.base,
-                                    operand2=imm if imm is not None else ptr,
-                                    label="static",
-                                )
-                            )
+                            else:
+                                imm = self._const_initializer_imm(item.initializer)
+                                ptr = self._const_initializer_ptr(item.initializer)
+                                # Float scalar
+                                if isinstance(item.initializer, FloatLiteral):
+                                    suffix = getattr(item.initializer, 'suffix', '')
+                                    fp_type = "long double" if suffix in ('l','L') else "float" if suffix in ('f','F') else "double"
+                                    self.instructions.append(
+                                        IRInstruction(op="gdef_float", result=f"@{gname}", operand1=str(item.initializer.value), label="static", meta={"fp_type": fp_type})
+                                    )
+                                elif imm is not None or ptr is not None:
+                                    self.instructions.append(
+                                        IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2=imm if imm is not None else ptr, label="static")
+                                    )
+                                else:
+                                    raise IRGenError(
+                                        f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
+                                    )
 
                         # Record type for the lowered global symbol.
                         self._var_types[f"@{gname}"] = str(item.type.base)
