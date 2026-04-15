@@ -744,8 +744,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     obj_paths: List[str] = []
+    link_extra: List[str] = []
     with tempfile.TemporaryDirectory(prefix="pycc_mf_") as td:
         for i, src in enumerate(args.source):
+            ext = os.path.splitext(src)[1]
+            if ext in (".o", ".a"):
+                # Pre-compiled object or archive — pass directly to linker.
+                obj_paths.append(src)
+                continue
             obj = os.path.join(td, f"tu{i}.o")
             if args.verbose:
                 print(f"[pycc] compile: {src} -> {obj}")
@@ -756,10 +762,17 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 1
             obj_paths.append(obj)
 
+        # Build linker flags from -L and -l
+        for d in args.link_dirs:
+            link_extra += ["-L", d]
+        for lib in args.link_libs:
+            link_extra.append(f"-l{lib}")
+
+        link_cmd = ["gcc", "-no-pie", "-o", args.output] + obj_paths + link_extra
         # Link using system gcc.
         if args.verbose:
-            print(f"[pycc] link: gcc -no-pie -o {args.output} {' '.join(obj_paths)}")
-        link = subprocess.run(["gcc", "-no-pie", "-o", args.output, *obj_paths])
+            print(f"[pycc] link: {' '.join(link_cmd)}")
+        link = subprocess.run(link_cmd)
         if link.returncode != 0:
             print("Error: link failed")
             return 1
