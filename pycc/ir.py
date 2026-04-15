@@ -559,7 +559,13 @@ class IRGenerator:
                     # Only treat a struct/union as an unsized array if the
                     # initializer is nested (i.e., looks like {{...},{...}}).
                     (self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])))
-                    or self._resolve_elem_type(str(base).strip()) in {"char", "unsigned char", "int", "unsigned int", "float", "double", "long double"}
+                    or self._resolve_elem_type(str(base).strip()) in {
+                        "char", "unsigned char", "signed char",
+                        "short", "unsigned short",
+                        "int", "unsigned int",
+                        "long", "unsigned long",
+                        "float", "double", "long double",
+                    }
                 )
             )
         )
@@ -590,16 +596,49 @@ class IRGenerator:
                 elem_base = str(base).strip()
             # Resolve typedef to underlying type for matching.
             elem_base = self._resolve_elem_type(elem_base)
+
+            # --- Unified: flatten nested initializers and compute total element count ---
+            inits_raw = self._const_initializer_list(init)
+            if inits_raw is None:
+                return None
+
+            def _flatten_inits(items: list) -> list:
+                """Recursively flatten nested Initializer lists."""
+                out = []
+                for e in items:
+                    if isinstance(e, Initializer):
+                        sub = self._const_initializer_list(e)
+                        if sub is not None:
+                            out.extend(_flatten_inits(sub))
+                        else:
+                            out.append(e)
+                    else:
+                        out.append(e)
+                return out
+
+            total = n
+            ad = getattr(decl, "array_dims", None)
+            if isinstance(ad, list) and len(ad) >= 2:
+                # Compute total from known dims; infer None dims from initializer.
+                known_product = 1
+                has_none = False
+                for dim in ad:
+                    if isinstance(dim, int) and dim > 0:
+                        known_product *= dim
+                    else:
+                        has_none = True
+                if has_none:
+                    # Infer total from flattened initializer count.
+                    flat_preview = _flatten_inits(inits_raw)
+                    total = max(len(flat_preview), known_product)
+                else:
+                    total = known_product
+
+            # String literal init for char arrays (special case, not flattened).
             if elem_base in {"char", "unsigned char"}:
-                # string literal init
-                inits = self._const_initializer_list(init)
-                if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
-                    s = inits[0].value
+                if len(inits_raw) == 1 and isinstance(inits_raw[0], StringLiteral):
+                    s = inits_raw[0].value
                     bytes_vals = [ord(c) for c in s]
-                    # C89: string literal used to initialize a character array
-                    # includes the terminating '\0' (when space permits).
-                    # Constraint: if the array is too small to contain the
-                    # string literal plus terminating NUL, it's an error.
                     if len(bytes_vals) + 1 > n:
                         raise IRGenError(
                             f"string literal initializer too long for array '{decl.name}'"
@@ -609,107 +648,93 @@ class IRGenerator:
                         bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
                     return "blob:" + "".join(f"{b & 0xFF:02x}" for b in bytes_vals)
 
-                # brace list of scalar consts
-                inits = self._const_initializer_list(init)
-                if inits is None:
-                    return None
-                if len(inits) > n:
-                    raise IRGenError(
-                        f"excess elements in initializer for array '{decl.name}'"
-                    )
-                vals: list[int] = []
-                for e in inits[:n]:
-                    imm = self._const_expr_to_int(e)
-                    if imm is None:
-                        return None
-                    vals.append(imm & 0xFF)
-                if len(vals) < n:
-                    vals += [0] * (n - len(vals))
-                return "blob:" + "".join(f"{b:02x}" for b in vals)
+            # For scalar element types, flatten and encode.
+            flat = _flatten_inits(inits_raw)
 
-            if elem_base == "int" or elem_base == "unsigned int":
-                inits = self._const_initializer_list(init)
-                if inits is None:
-                    return None
-                # Flatten nested initializers for multi-dimensional arrays.
-                flat: list = []
-                for e in inits:
-                    sub = self._const_initializer_list(e)
-                    if sub is not None:
-                        flat.extend(sub)
-                    else:
-                        flat.append(e)
-                # Total element count for multi-dim arrays.
-                total = n
-                ad = getattr(decl, "array_dims", None)
-                if isinstance(ad, list) and len(ad) >= 2:
-                    total = 1
-                    for dim in ad:
-                        if isinstance(dim, int) and dim > 0:
-                            total *= dim
+            if elem_base in {"char", "unsigned char"}:
                 if len(flat) > total:
-                    raise IRGenError(
-                        f"excess elements in initializer for array '{decl.name}'"
-                    )
+                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
                 vals: list[int] = []
                 for e in flat[:total]:
                     imm = self._const_expr_to_int(e)
                     if imm is None:
                         return None
-                    # store as 32-bit little endian
-                    v = imm & 0xFFFFFFFF
-                    vals.extend([(v >> (8 * i)) & 0xFF for i in range(4)])
-                # zero-fill remaining
-                rem = total - len(flat)
-                if rem > 0:
-                    vals.extend([0] * (4 * rem))
+                    vals.append(imm & 0xFF)
+                vals += [0] * (total - len(vals))
                 return "blob:" + "".join(f"{b:02x}" for b in vals)
 
-            if elem_base == "float":
-                inits = self._const_initializer_list(init)
-                if inits is None:
-                    return None
-                if len(inits) > n:
+            if elem_base in {"int", "unsigned int"}:
+                if len(flat) > total:
+                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
+                vals: list[int] = []
+                for e in flat[:total]:
+                    imm = self._const_expr_to_int(e)
+                    if imm is None:
+                        return None
+                    v = imm & 0xFFFFFFFF
+                    vals.extend([(v >> (8 * i)) & 0xFF for i in range(4)])
+                vals += [0] * (4 * (total - len(flat)))
+                return "blob:" + "".join(f"{b:02x}" for b in vals)
+
+            if elem_base in {"short", "unsigned short"}:
+                if len(flat) > total:
                     raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
                 blob = bytearray()
-                for e in inits[:n]:
+                for e in flat[:total]:
+                    imm = self._const_expr_to_int(e)
+                    if imm is None:
+                        return None
+                    blob.extend(_struct.pack("<H", imm & 0xFFFF))
+                blob += b'\x00' * (2 * (total - len(flat)))
+                return "blob:" + blob.hex()
+
+            if elem_base in {"long", "unsigned long"}:
+                if len(flat) > total:
+                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
+                blob = bytearray()
+                for e in flat[:total]:
+                    imm = self._const_expr_to_int(e)
+                    if imm is None:
+                        return None
+                    blob.extend(_struct.pack("<q", imm))
+                blob += b'\x00' * (8 * (total - len(flat)))
+                return "blob:" + blob.hex()
+
+            if elem_base == "float":
+                if len(flat) > total:
+                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
+                blob = bytearray()
+                for e in flat[:total]:
                     fv = self._const_expr_to_float(e)
                     if fv is None:
                         return None
                     blob.extend(_struct.pack("<f", fv))
-                blob.extend(b'\x00' * (4 * (n - len(inits))))
+                blob += b'\x00' * (4 * (total - len(flat)))
                 return "blob:" + blob.hex()
 
             if elem_base == "double":
-                inits = self._const_initializer_list(init)
-                if inits is None:
-                    return None
-                if len(inits) > n:
+                if len(flat) > total:
                     raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
                 blob = bytearray()
-                for e in inits[:n]:
+                for e in flat[:total]:
                     fv = self._const_expr_to_float(e)
                     if fv is None:
                         return None
                     blob.extend(_struct.pack("<d", fv))
-                blob.extend(b'\x00' * (8 * (n - len(inits))))
+                blob += b'\x00' * (8 * (total - len(flat)))
                 return "blob:" + blob.hex()
 
             if elem_base == "long double":
-                inits = self._const_initializer_list(init)
-                if inits is None:
-                    return None
-                if len(inits) > n:
+                if len(flat) > total:
                     raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
                 blob = bytearray()
-                for e in inits[:n]:
+                for e in flat[:total]:
                     fv = self._const_expr_to_float(e)
                     if fv is None:
                         return None
-                    # x86-64 long double: 80-bit extended stored in 16 bytes
                     raw = _struct.pack("<d", fv)
                     blob.extend(raw + b'\x00' * 8)
-                blob.extend(b'\x00' * (16 * (n - len(inits))))
+                blob += b'\x00' * (16 * (total - len(flat)))
                 return "blob:" + blob.hex()
 
             # Array of struct/union (subset): nested brace lists where each element
