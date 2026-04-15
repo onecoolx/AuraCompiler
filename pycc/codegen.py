@@ -2870,7 +2870,12 @@ class CodeGenerator:
             # loading it as a scalar is almost always wrong. Prefer returning
             # its address so member/index operations can proceed correctly.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-            if isinstance(ty, str) and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")):
+            ga = getattr(self._sema_ctx, "global_arrays", {}) if self._sema_ctx is not None else {}
+            is_aggregate = (
+                (isinstance(ty, str) and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")))
+                or sym in ga
+            )
+            if is_aggregate:
                 self._emit(f"  leaq {sym}(%rip), {reg}")
             elif isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
                 self._emit(f"  movq {sym}(%rip), {reg}")
