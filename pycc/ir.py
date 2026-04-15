@@ -15,6 +15,7 @@ like $5, and labels like .L1). The code generator will interpret them.
 
 from __future__ import annotations
 
+import struct as _struct
 from dataclasses import dataclass
 from typing import List, Optional, Union, Any
 
@@ -558,7 +559,7 @@ class IRGenerator:
                     # Only treat a struct/union as an unsized array if the
                     # initializer is nested (i.e., looks like {{...},{...}}).
                     (self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])))
-                    or str(base).strip() in {"char", "unsigned char", "int", "unsigned int"}
+                    or str(base).strip() in {"char", "unsigned char", "int", "unsigned int", "float", "double", "long double"}
                 )
             )
         )
@@ -645,6 +646,53 @@ class IRGenerator:
                 if rem > 0:
                     vals.extend([0] * (4 * rem))
                 return "blob:" + "".join(f"{b:02x}" for b in vals)
+
+            if elem_base == "float":
+                inits = self._const_initializer_list(init)
+                if inits is None:
+                    return None
+                if len(inits) > n:
+                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
+                blob = bytearray()
+                for e in inits[:n]:
+                    fv = self._const_expr_to_float(e)
+                    if fv is None:
+                        return None
+                    blob.extend(_struct.pack("<f", fv))
+                blob.extend(b'\x00' * (4 * (n - len(inits))))
+                return "blob:" + blob.hex()
+
+            if elem_base == "double":
+                inits = self._const_initializer_list(init)
+                if inits is None:
+                    return None
+                if len(inits) > n:
+                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
+                blob = bytearray()
+                for e in inits[:n]:
+                    fv = self._const_expr_to_float(e)
+                    if fv is None:
+                        return None
+                    blob.extend(_struct.pack("<d", fv))
+                blob.extend(b'\x00' * (8 * (n - len(inits))))
+                return "blob:" + blob.hex()
+
+            if elem_base == "long double":
+                inits = self._const_initializer_list(init)
+                if inits is None:
+                    return None
+                if len(inits) > n:
+                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
+                blob = bytearray()
+                for e in inits[:n]:
+                    fv = self._const_expr_to_float(e)
+                    if fv is None:
+                        return None
+                    # x86-64 long double: 80-bit extended stored in 16 bytes
+                    raw = _struct.pack("<d", fv)
+                    blob.extend(raw + b'\x00' * 8)
+                blob.extend(b'\x00' * (16 * (n - len(inits))))
+                return "blob:" + blob.hex()
 
             # Array of struct/union (subset): nested brace lists where each element
             # is a constant aggregate initializer.
@@ -1113,6 +1161,28 @@ class IRGenerator:
                 return int(v)
             if expr.name in getattr(self, "_enum_constants", {}):
                 return self._enum_constants[expr.name]
+        return None
+
+    def _const_expr_to_float(self, expr: Any) -> Optional[float]:
+        """Best-effort const float evaluator for global initializers."""
+        if expr is None:
+            return None
+        if isinstance(expr, FloatLiteral):
+            return float(expr.value)
+        if isinstance(expr, IntLiteral):
+            return float(expr.value)
+        if isinstance(expr, UnaryOp) and expr.operator == "-":
+            v = self._const_expr_to_float(expr.operand)
+            return -v if v is not None else None
+        if isinstance(expr, UnaryOp) and expr.operator == "+":
+            return self._const_expr_to_float(expr.operand)
+        if isinstance(expr, Cast):
+            return self._const_expr_to_float(expr.expression)
+        if isinstance(expr, BinaryOp) and expr.operator == "*":
+            l = self._const_expr_to_float(expr.left)
+            r = self._const_expr_to_float(expr.right)
+            if l is not None and r is not None:
+                return l * r
         return None
 
     def _is_volatile_sym(self, sym: str) -> bool:
