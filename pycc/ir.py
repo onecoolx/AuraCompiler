@@ -1517,6 +1517,10 @@ class IRGenerator:
         for scope in reversed(self._scope_stack):
             if name in scope:
                 return scope[name]
+        # Check function-local static variables.
+        m = getattr(self, "_local_static_syms", {})
+        if name in m:
+            return f"@{m[name]}"
         return f"@{name}"
 
     def _is_struct_or_union_type(self, base: object) -> bool:
