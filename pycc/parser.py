@@ -1201,7 +1201,19 @@ class Parser:
                 if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
                     name_tok = self.current_token
                     self.advance()
-                    params.append(Declaration(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column))
+                    param_ty = base_type
+                    # C89 §6.7.1: array parameters are adjusted to pointers.
+                    # Handle `type name[]` and `type name[N]` in parameter lists.
+                    if self._match(TokenType.LBRACKET):
+                        # Skip optional size expression
+                        while not self._at(TokenType.RBRACKET) and not self._at(TokenType.EOF):
+                            self.advance()
+                        self._expect(TokenType.RBRACKET, "Expected ']'")
+                        param_ty = Type(base=param_ty.base, is_pointer=True,
+                                        is_unsigned=getattr(param_ty, 'is_unsigned', False),
+                                        is_signed=getattr(param_ty, 'is_signed', False),
+                                        line=param_ty.line, column=param_ty.column)
+                    params.append(Declaration(name=name_tok.value, type=param_ty, line=name_tok.line, column=name_tok.column))
                 else:
                     params.append(Declaration(name=None, type=base_type, line=base_type.line, column=base_type.column))
 

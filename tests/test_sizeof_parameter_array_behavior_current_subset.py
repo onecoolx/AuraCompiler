@@ -16,13 +16,12 @@ def _compile_and_run(tmp_path, code: str) -> int:
     return int(p.returncode)
 
 
-def test_sizeof_array_parameter_is_array_size_in_current_subset(tmp_path):
-    # NOTE: In real C, `int a[]` in a parameter list adjusts to `int *a`, so sizeof(a) is pointer size.
-    # This compiler subset currently preserves the array-ness for such parameters.
+def test_sizeof_array_parameter_is_pointer_size(tmp_path):
+    # C89 §6.7.1: `int a[]` in a parameter list adjusts to `int *a`,
+    # so sizeof(a) should be pointer size (8 on x86-64).
     code = r"""
 int f(int a[]) {
-    /* Current subset behavior: sizeof(a) currently lowers to 4 for this case */
-    return (sizeof(a) == 4) ? 0 : 1;
+    return (sizeof(a) == 8) ? 0 : 1;
 }
 
 int main(void) {
