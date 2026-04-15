@@ -1112,14 +1112,22 @@ class Parser:
 
             base_type = self._parse_type_specifier()
             while self._match(TokenType.STAR):
-                base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+                new_level = int(getattr(base_type, "pointer_level", 0) or 0) + 1
+                base_type = Type(base=base_type.base, is_pointer=True,
+                                 pointer_level=new_level,
+                                 is_unsigned=getattr(base_type, 'is_unsigned', False),
+                                 is_signed=getattr(base_type, 'is_signed', False),
+                                 line=base_type.line, column=base_type.column)
 
             # Support parenthesized pointer declarators in parameters:
             #   int (*fp)(int)
             if self._match(TokenType.LPAREN):
                 ptr_ty = base_type
                 while self._match(TokenType.STAR):
-                    ptr_ty = Type(base=ptr_ty.base, is_pointer=True, line=ptr_ty.line, column=ptr_ty.column)
+                    new_level = int(getattr(ptr_ty, "pointer_level", 0) or 0) + 1
+                    ptr_ty = Type(base=ptr_ty.base, is_pointer=True,
+                                  pointer_level=new_level,
+                                  line=ptr_ty.line, column=ptr_ty.column)
 
                 # Check whether this is an unnamed function pointer: int (*)(int, int)
                 # vs a named one: int (*fp)(int, int)

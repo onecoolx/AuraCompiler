@@ -2125,14 +2125,15 @@ class IRGenerator:
         def _ty_str(t) -> str:
             # Encode pointer-ness in the type string so codegen doesn't
             # accidentally spill pointer args using 8/16/32-bit stores.
-            # (Our type system is still stringly-typed in later stages.)
             base = str(getattr(t, "base", ""))
-            # Preserve full struct/union tag spelling.
             try:
                 if isinstance(base, str) and (base.strip().startswith("struct ") or base.strip().startswith("union ")):
                     base = base.strip()
             except Exception:
                 pass
+            plevel = getattr(t, "pointer_level", 0) or 0
+            if plevel > 0:
+                return base + "*" * plevel
             if getattr(t, "is_pointer", False):
                 return f"{base}*"
             return base
