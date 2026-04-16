@@ -549,6 +549,17 @@ class SemanticAnalyzer:
         for m in members:
             bw = getattr(m, 'bit_width', None)
             sz, al = size_align(m.type)
+            # Array members: multiply element size by array dimension(s).
+            arr_size = getattr(m, 'array_size', None)
+            if arr_size is not None:
+                total = int(arr_size)
+                arr_dims = getattr(m, 'array_dims', None)
+                if isinstance(arr_dims, list) and len(arr_dims) >= 2:
+                    total = 1
+                    for dim in arr_dims:
+                        if isinstance(dim, int) and dim > 0:
+                            total *= dim
+                sz = sz * total
             try:
                 if getattr(m.type, "is_pointer", False):
                     mtypes[m.name] = f"{m.type.base}*"

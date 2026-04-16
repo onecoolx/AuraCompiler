@@ -1002,18 +1002,26 @@ class Parser:
                     mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
 
                     # Support fixed-size array members (incl. multi-dimensional):
+                    mem_array_dims = []
                     while self._match(TokenType.LBRACKET):
-                        depth = 1
-                        while self.current_token and depth > 0:
-                            if self._match(TokenType.RBRACKET):
-                                depth -= 1
-                                break
-                            if self._match(TokenType.LBRACKET):
-                                depth += 1
-                                continue
-                            self.advance()
-                        if depth != 0:
-                            raise ParserError("Expected ']' after array declarator", self.current_token)
+                        # Parse the size expression inside [...]
+                        if self._at(TokenType.RBRACKET):
+                            mem_array_dims.append(None)
+                        else:
+                            size_expr = self._parse_expression()
+                            if isinstance(size_expr, IntLiteral):
+                                mem_array_dims.append(int(size_expr.value))
+                            elif isinstance(size_expr, BinaryOp):
+                                # Constant fold simple expressions like 8*8
+                                try:
+                                    from pycc.ir import _eval_const_int_expr
+                                    val = _eval_const_int_expr(size_expr)
+                                    mem_array_dims.append(int(val) if val is not None else None)
+                                except Exception:
+                                    mem_array_dims.append(None)
+                            else:
+                                mem_array_dims.append(None)
+                        self._expect(TokenType.RBRACKET, "Expected ']' after array declarator")
 
                     # Bit-field: member_name : width
                     bit_width = None
@@ -1025,6 +1033,9 @@ class Parser:
                             bit_width = 0
 
                     d = Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column)
+                    if mem_array_dims:
+                        d.array_size = mem_array_dims[0]
+                        d.array_dims = mem_array_dims
                     if bit_width is not None:
                         d.bit_width = bit_width
                     members.append(d)

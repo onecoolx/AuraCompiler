@@ -644,14 +644,22 @@ class CodeGenerator:
             else:
                 # Struct/union locals: allocate actual size, at least 8 bytes for alignment.
                 ty_str = str(d.operand1) if d.operand1 else ""
-                if ty_str.startswith("struct ") or ty_str.startswith("union "):
-                    size_bytes = self._type_size_bytes(ty_str)
+                # Resolve typedef to underlying type for correct stack allocation.
+                resolved_ty = ty_str
+                if self._sema_ctx is not None and ty_str and not ty_str.startswith("struct ") and not ty_str.startswith("union "):
+                    td = getattr(self._sema_ctx, "typedefs", {}).get(ty_str.strip())
+                    if td is not None:
+                        rb = str(getattr(td, "base", "")).strip()
+                        if rb.startswith("struct ") or rb.startswith("union "):
+                            resolved_ty = rb
+                if resolved_ty.startswith("struct ") or resolved_ty.startswith("union "):
+                    size_bytes = self._type_size_bytes(resolved_ty)
                     # Round up to multiple of 8 so register-chunk stores don't overflow.
                     size_bytes = ((size_bytes + 7) // 8) * 8
                     size_bytes = max(size_bytes, 8)
                     offset += size_bytes
                     self._locals[sym] = offset
-                    self._var_types[sym] = ty_str
+                    self._var_types[sym] = resolved_ty
                 elif ty_str.strip() == "long double":
                     # long double needs 16-byte aligned slot (x86-64 ABI)
                     # Align offset to 16-byte boundary first

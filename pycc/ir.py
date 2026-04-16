@@ -147,6 +147,11 @@ def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
         b = " ".join(ty.strip().split())
         if "*" in b:
             return 8
+        # Resolve typedef to underlying type.
+        if sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and not b.startswith("enum "):
+            td = getattr(sema_ctx, "typedefs", {}).get(b)
+            if td is not None:
+                return _type_size(td, sema_ctx)
         if b in {"char", "unsigned char", "signed char"}:
             return 1
         if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
@@ -171,6 +176,11 @@ def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
         if getattr(ty, "is_pointer", False):
             return 8
         b = " ".join(base.strip().split())
+        # Resolve typedef to underlying type.
+        if sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and not b.startswith("enum "):
+            td = getattr(sema_ctx, "typedefs", {}).get(b)
+            if td is not None:
+                return _type_size(td, sema_ctx)
         if "(" in b and ")" in b and "*" not in b:
             raise IRGenError("invalid application of sizeof to function type")
         if b.startswith("struct ") or b.startswith("union "):
@@ -2834,7 +2844,7 @@ class IRGenerator:
             try:
                 op_ty = getattr(op, "type", None)
                 if op_ty is not None:
-                    return f"${_type_size(op_ty)}"
+                    return f"${_type_size(op_ty, self._sema_ctx)}"
             except Exception:
                 pass
             from pycc.ast_nodes import (
@@ -2941,7 +2951,7 @@ class IRGenerator:
                 # Use declared local/global type when available.
                 ty_s = self._operand_type_string(f"@{op.name}")
                 if isinstance(ty_s, str) and ty_s:
-                    return f"${_type_size(ty_s)}"
+                    return f"${_type_size(ty_s, self._sema_ctx)}"
                 # fallback
                 return "$4"
             if isinstance(op, ASTUnaryOp) and op.operator == "*":
