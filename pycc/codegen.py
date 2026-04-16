@@ -528,6 +528,13 @@ class CodeGenerator:
 
         if isinstance(ty, str) and self._sema_ctx is not None:
             layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
+            # Resolve typedef if direct lookup fails.
+            if layout is None:
+                td = getattr(self._sema_ctx, "typedefs", {}).get(ty)
+                if td is not None:
+                    resolved = str(getattr(td, "base", "")).strip()
+                    if resolved:
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved)
             if layout is not None:
                 off = layout.member_offsets.get(member)
                 if isinstance(off, int):
@@ -569,6 +576,12 @@ class CodeGenerator:
             return None
 
         layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
+        if layout is None:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(ty)
+            if td is not None:
+                resolved = str(getattr(td, "base", "")).strip()
+                if resolved:
+                    layout = getattr(self._sema_ctx, "layouts", {}).get(resolved)
         if layout is None:
             return None
 
@@ -3184,6 +3197,13 @@ class CodeGenerator:
         if self._sema_ctx is not None and decl_ty and hasattr(self._sema_ctx, "layouts"):
             layouts = getattr(self._sema_ctx, "layouts")
             layout = layouts.get(decl_ty)
+            # Resolve typedef if direct lookup fails.
+            if layout is None:
+                td = getattr(self._sema_ctx, "typedefs", {}).get(decl_ty)
+                if td is not None:
+                    resolved = str(getattr(td, "base", "")).strip()
+                    if resolved:
+                        layout = layouts.get(resolved)
             if layout is not None:
                 off = layout.member_offsets.get(member)
                 sz = layout.member_sizes.get(member)
@@ -3204,6 +3224,13 @@ class CodeGenerator:
             decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
         if self._sema_ctx is not None and decl_ty:
             layout = getattr(self._sema_ctx, "layouts", {}).get(decl_ty)
+            # Resolve typedef if direct lookup fails.
+            if layout is None:
+                td = getattr(self._sema_ctx, "typedefs", {}).get(decl_ty)
+                if td is not None:
+                    resolved = str(getattr(td, "base", "")).strip()
+                    if resolved:
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved)
             if layout and getattr(layout, 'bit_fields', None) and member in layout.bit_fields:
                 # Find bit_offset and bit_width from the Declaration objects
                 # stored during layout computation
