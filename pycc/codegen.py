@@ -2000,7 +2000,7 @@ class CodeGenerator:
                 elif isinstance(a_ty, str) and a_ty in ("float", "double"):
                     _arg_descs.append((a, a_ty, "float", None))
                     _pre_xmm += 1
-                elif isinstance(a_ty, str) and (a_ty.strip().startswith("struct ") or a_ty.strip().startswith("union ")):
+                elif isinstance(a_ty, str) and (a_ty.strip().startswith("struct ") or a_ty.strip().startswith("union ")) and "*" not in a_ty:
                     sty = a_ty.strip()
                     sz = self._type_size_bytes(sty)
                     layout = getattr(self._sema_ctx, "layouts", {}).get(sty) if self._sema_ctx else None
@@ -2893,6 +2893,16 @@ class CodeGenerator:
             # loading it as a scalar is almost always wrong. Prefer returning
             # its address so member/index operations can proceed correctly.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+            # Resolve typedef to underlying type for correct load width.
+            if isinstance(ty, str) and self._sema_ctx is not None:
+                td = getattr(self._sema_ctx, "typedefs", {}).get(ty.strip())
+                if td is not None:
+                    resolved_base = str(getattr(td, "base", "")).strip()
+                    is_ptr = getattr(td, "is_pointer", False)
+                    if is_ptr or "*" in resolved_base:
+                        ty = resolved_base + ("*" if not resolved_base.endswith("*") else "")
+                    elif resolved_base:
+                        ty = resolved_base
             ga = getattr(self._sema_ctx, "global_arrays", {}) if self._sema_ctx is not None else {}
             is_aggregate = (
                 (isinstance(ty, str) and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")))
@@ -3058,6 +3068,16 @@ class CodeGenerator:
                 return
             sym = result[1:]
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+            # Resolve typedef for correct store width.
+            if isinstance(ty, str) and self._sema_ctx is not None:
+                td = getattr(self._sema_ctx, "typedefs", {}).get(ty.strip())
+                if td is not None:
+                    resolved_base = str(getattr(td, "base", "")).strip()
+                    is_ptr = getattr(td, "is_pointer", False)
+                    if is_ptr or "*" in resolved_base:
+                        ty = resolved_base + ("*" if not resolved_base.endswith("*") else "")
+                    elif resolved_base:
+                        ty = resolved_base
             if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
                 self._emit(f"  movq {reg}, {sym}(%rip)")
             else:
