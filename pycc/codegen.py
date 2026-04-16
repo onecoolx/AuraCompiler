@@ -1495,6 +1495,10 @@ class CodeGenerator:
             # result = operand1->member
             base = ins.operand1 or ""
             member = ins.operand2 or ""
+            # If IR carries struct type metadata from a cast, seed _var_types
+            # so _resolve_member_offset can find the layout.
+            if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
+                self._var_types[base] = f"{ins.meta['struct_type']}*"
             # Load pointer value into %rax then add member offset, then load value.
             self._load_operand(base, "%rax")
             off = self._resolve_member_offset(base, member)
@@ -2463,6 +2467,8 @@ class CodeGenerator:
             # operand1 holds pointer value; load it as address then add member offset
             base = ins.operand1 or ""
             member = ins.operand2 or ""
+            if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
+                self._var_types[base] = f"{ins.meta['struct_type']}*"
             self._load_operand(base, "%rax")
             off, sz = self._resolve_member(base, member)
             if off:
@@ -2537,6 +2543,8 @@ class CodeGenerator:
             base = ins.operand1 or ""
             member = ins.operand2 or ""
             val = ins.result
+            if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
+                self._var_types[base] = f"{ins.meta['struct_type']}*"
             self._load_operand(base, "%rax")
             off, sz = self._resolve_member(base, member)
             if off:
@@ -2554,6 +2562,8 @@ class CodeGenerator:
             base = ins.operand1 or ""
             member = ins.operand2 or ""
             val = ins.result
+            if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
+                self._var_types[base] = f"{ins.meta['struct_type']}*"
             # load pointer value into %rax
             self._load_operand(base, "%rax")
             off, sz = self._resolve_member(base, member)

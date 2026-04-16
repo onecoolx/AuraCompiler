@@ -2974,6 +2974,13 @@ class IRGenerator:
             _FP_TYPES = {"float", "double", "long double"}
             try:
                 dst_ty = getattr(expr, "type", None)
+                # Resolve typedef in cast target type so downstream code sees
+                # the real type (e.g. PrivPtr -> struct Priv *).
+                if dst_ty is not None and self._sema_ctx is not None:
+                    _resolved_base = getattr(dst_ty, "base", "")
+                    _td = getattr(self._sema_ctx, "typedefs", {}).get(_resolved_base)
+                    if _td is not None:
+                        dst_ty = _td
                 dst_base = str(getattr(dst_ty, "base", "")).strip() if dst_ty else ""
                 src_fp = self._var_types.get(v, "") if isinstance(v, str) else ""
                 if dst_base in _FP_TYPES and src_fp not in _FP_TYPES:
@@ -3024,7 +3031,12 @@ class IRGenerator:
                 dst_ty = None
                 dst_str = None
             if isinstance(dst_str, str):
-                dst_norm = " ".join(dst_str.strip().lower().split())
+                dst_norm = " ".join(dst_str.strip().split())
+                # Only lowercase for primitive types; preserve case for
+                # struct/union/enum tags (layout keys are case-sensitive).
+                _base_check = dst_norm.replace("*", "").strip()
+                if not (_base_check.startswith("struct ") or _base_check.startswith("union ") or _base_check.startswith("enum ")):
+                    dst_norm = dst_norm.lower()
                 # Parser encodes explicit signedness via Type flags while keeping
                 # base == "char".
                 if dst_norm == "char" and dst_ty is not None:
@@ -3388,7 +3400,14 @@ class IRGenerator:
         if isinstance(expr, PointerMemberAccess):
             base = self._gen_expr(expr.pointer)
             t = self._new_temp()
-            self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member))
+            # Propagate struct type info so codegen can resolve member offsets.
+            meta = {}
+            base_ty = self._var_types.get(base, "")
+            if isinstance(base_ty, str) and base_ty.strip().endswith("*"):
+                struct_ty = base_ty.strip()[:-1].strip()
+                if struct_ty:
+                    meta["struct_type"] = struct_ty
+            self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None))
             return t
         if isinstance(expr, Assignment):
             rhs = self._gen_expr(expr.value)
@@ -3608,7 +3627,13 @@ class IRGenerator:
 
             if isinstance(expr.target, PointerMemberAccess):
                 base = self._gen_expr(expr.target.pointer)
-                self.instructions.append(IRInstruction(op="store_member_ptr", result=rhs, operand1=base, operand2=expr.target.member))
+                meta = {}
+                base_ty = self._var_types.get(base, "")
+                if isinstance(base_ty, str) and base_ty.strip().endswith("*"):
+                    struct_ty = base_ty.strip()[:-1].strip()
+                    if struct_ty:
+                        meta["struct_type"] = struct_ty
+                self.instructions.append(IRInstruction(op="store_member_ptr", result=rhs, operand1=base, operand2=expr.target.member, meta=meta if meta else None))
                 return rhs
 
             t = self._new_temp()
