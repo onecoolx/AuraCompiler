@@ -2196,7 +2196,12 @@ class IRGenerator:
         try:
             rt0 = getattr(fn, "return_type", "")
             rt_base = getattr(rt0, "base", rt0)
-            self._fn_ret_type = self._canon_int_type(str(rt_base))
+            if getattr(rt0, "is_pointer", False):
+                # Pointer return type: record as "base*" so codegen doesn't
+                # apply narrow-type return value extension (e.g. char -> movsbl).
+                self._fn_ret_type = str(rt_base) + "*"
+            else:
+                self._fn_ret_type = self._canon_int_type(str(rt_base))
         except Exception:
             self._fn_ret_type = ""
         # Preserve internal linkage for `static` functions: do not emit them as

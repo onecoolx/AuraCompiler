@@ -461,6 +461,8 @@ class CodeGenerator:
                 while prologue_end < len(instructions) and instructions[prologue_end].op in {"decl", "param", "func_ret"}:
                     if instructions[prologue_end].op in {"decl", "param"}:
                         decls.append(instructions[prologue_end])
+                    elif instructions[prologue_end].op == "func_ret":
+                        self._fn_ret_ty = instructions[prologue_end].operand1 or ""
                     prologue_end += 1
                 # Now scan the rest of the function body for additional decls.
                 scan = prologue_end
@@ -2751,18 +2753,20 @@ class CodeGenerator:
                     rty = ""
 
             rty_n = rty.strip().lower() if isinstance(rty, str) else ""
-            if rty_n in {"short", "signed short"}:
-                self._emit("  movswl %ax, %eax")
-                self._emit("  movslq %eax, %rax")
-            elif rty_n == "unsigned short":
-                self._emit("  movzwl %ax, %eax")
-                self._emit("  movl %eax, %eax")
-            elif rty_n in {"char", "signed char"}:
-                self._emit("  movsbl %al, %eax")
-                self._emit("  movslq %eax, %rax")
-            elif rty_n == "unsigned char":
-                self._emit("  movzbl %al, %eax")
-                self._emit("  movl %eax, %eax")
+            # Never apply narrow-type extension for pointer return types.
+            if "*" not in rty_n:
+                if rty_n in {"short", "signed short"}:
+                    self._emit("  movswl %ax, %eax")
+                    self._emit("  movslq %eax, %rax")
+                elif rty_n == "unsigned short":
+                    self._emit("  movzwl %ax, %eax")
+                    self._emit("  movl %eax, %eax")
+                elif rty_n in {"char", "signed char"}:
+                    self._emit("  movsbl %al, %eax")
+                    self._emit("  movslq %eax, %rax")
+                elif rty_n == "unsigned char":
+                    self._emit("  movzbl %al, %eax")
+                    self._emit("  movl %eax, %eax")
             self._emit("  leave")
             self._emit("  ret")
             return
