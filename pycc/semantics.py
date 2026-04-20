@@ -2071,9 +2071,15 @@ class SemanticAnalyzer:
             # If function is identifier and unknown: allow implicit decl.
             if isinstance(expr.function, Identifier):
                 if expr.function.name not in self._functions and not self._is_declared(expr.function.name):
-                    self._functions.add(expr.function.name)
-                    self._declare_global(expr.function.name, "function")
-                    self._warn(f"implicit declaration of function '{expr.function.name}'", expr, always=True)
+                    # Known GCC builtins: accept silently (no warning).
+                    from pycc.builtins import is_builtin
+                    if is_builtin(expr.function.name):
+                        self._functions.add(expr.function.name)
+                        self._declare_global(expr.function.name, "function")
+                    else:
+                        self._functions.add(expr.function.name)
+                        self._declare_global(expr.function.name, "function")
+                        self._warn(f"implicit declaration of function '{expr.function.name}'", expr, always=True)
             else:
                 self._analyze_expr(expr.function)
 

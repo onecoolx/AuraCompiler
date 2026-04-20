@@ -3977,6 +3977,13 @@ class IRGenerator:
                         return q
             return t
         if isinstance(expr, FunctionCall):
+            # Rewrite __builtin_foo(args) to c_library_equivalent(args).
+            if isinstance(expr.function, Identifier):
+                from pycc.builtins import get_c_library_name
+                c_name = get_c_library_name(expr.function.name)
+                if c_name is not None:
+                    expr.function.name = c_name
+
             fn = self._gen_expr(expr.function)
             args = [self._gen_expr(a) for a in expr.arguments]
             t = self._new_temp()
