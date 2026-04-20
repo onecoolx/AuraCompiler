@@ -1233,7 +1233,10 @@ class IRGenerator:
                   "short", "unsigned short", "int", "unsigned int",
                   "long", "unsigned long", "float", "double", "long double",
                   "void"}
-        if name in _KNOWN or self._is_struct_or_union_type(name):
+        if name in _KNOWN:
+            return name
+        # Already a struct/union literal name — no further resolution needed.
+        if name.startswith("struct ") or name.startswith("union "):
             return name
         if self._sema_ctx is not None:
             td = getattr(self._sema_ctx, "typedefs", {}).get(name)
@@ -1669,7 +1672,31 @@ class IRGenerator:
         if not isinstance(base, str):
             return False
         b = base.strip()
-        return b.startswith("struct ") or b.startswith("union ")
+        if b.startswith("struct ") or b.startswith("union "):
+            return True
+        # Resolve typedef: a typedef name may refer to a struct/union.
+        if self._sema_ctx is not None:
+            seen = set()
+            name = b
+            while name and name not in seen:
+                seen.add(name)
+                td = getattr(self._sema_ctx, "typedefs", {}).get(name)
+                if td is None:
+                    break
+                tb = getattr(td, "base", None)
+                if isinstance(tb, str):
+                    tb = tb.strip()
+                    if tb.startswith("struct ") or tb.startswith("union "):
+                        return True
+                    name = tb
+                else:
+                    break
+            # Also check if the name exists as a layout key (e.g. registered
+            # via _register_struct with the typedef name itself).
+            layouts = getattr(self._sema_ctx, "layouts", None) or getattr(self._sema_ctx, "_layouts", {})
+            if b in layouts:
+                return True
+        return False
 
     def _lower_local_struct_initializer(self, decl: Declaration) -> bool:
         """Lower `struct/union T x = { ... }` for local variables (subset).
@@ -3366,7 +3393,24 @@ class IRGenerator:
                     if isinstance(bty, str) and bty.strip().endswith("*"):
                         bty = bty.strip()[:-1].strip()
                     if isinstance(bty, str):
-                        layout = getattr(self._sema_ctx, "layouts", {}).get(bty)
+                        # Resolve typedef to find the layout key.
+                        resolved_bty = bty
+                        seen_td = set()
+                        while resolved_bty and resolved_bty not in seen_td:
+                            if resolved_bty.startswith("struct ") or resolved_bty.startswith("union "):
+                                break
+                            seen_td.add(resolved_bty)
+                            td = getattr(self._sema_ctx, "typedefs", {}).get(resolved_bty)
+                            if td is None:
+                                break
+                            tb = getattr(td, "base", None)
+                            if isinstance(tb, str):
+                                resolved_bty = tb.strip()
+                            else:
+                                break
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_bty)
+                        if layout is None:
+                            layout = getattr(self._sema_ctx, "layouts", {}).get(bty)
                         if layout is not None:
                             mtypes = getattr(layout, "member_types", {}) or {}
                             mty = mtypes.get(expr.member)
@@ -3778,18 +3822,82 @@ class IRGenerator:
             # handle struct member store: target is MemberAccess
             if isinstance(expr.target, MemberAccess):
                 base = self._gen_expr(expr.target.object)
-                self.instructions.append(IRInstruction(op="store_member", result=rhs, operand1=base, operand2=expr.target.member))
+                member = expr.target.member
+                # Detect struct-to-struct member copy: if the member is a struct
+                # type and the RHS is a dereference (*ptr), pass the pointer
+                # address directly so codegen can use memcpy.
+                meta_sm = {}
+                rhs_val = rhs
+                try:
+                    if self._sema_ctx is not None:
+                        bty = self._var_types.get(base, "")
+                        if isinstance(bty, str) and bty.strip().endswith("*"):
+                            bty = bty.strip()[:-1].strip()
+                        resolved_bty = bty
+                        seen_r = set()
+                        while resolved_bty and resolved_bty not in seen_r:
+                            if resolved_bty.startswith("struct ") or resolved_bty.startswith("union "):
+                                break
+                            seen_r.add(resolved_bty)
+                            td = getattr(self._sema_ctx, "typedefs", {}).get(resolved_bty)
+                            if td is None:
+                                break
+                            tb = getattr(td, "base", None)
+                            if isinstance(tb, str):
+                                resolved_bty = tb.strip()
+                            else:
+                                break
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_bty)
+                        if layout is None:
+                            layout = getattr(self._sema_ctx, "layouts", {}).get(bty)
+                        if layout is not None:
+                            mtypes = getattr(layout, "member_types", {}) or {}
+                            mty = mtypes.get(member)
+                            if isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                                meta_sm["struct_copy"] = True
+                                # If the RHS was generated from *ptr (dereference),
+                                # the last instruction is a load. Replace it with
+                                # just the address.
+                                if (self.instructions and
+                                    self.instructions[-1].op == "load" and
+                                    self.instructions[-1].result == rhs):
+                                    src_addr = self.instructions[-1].operand1
+                                    self.instructions.pop()
+                                    rhs_val = src_addr
+                except Exception:
+                    pass
+                self.instructions.append(IRInstruction(op="store_member", result=rhs_val, operand1=base, operand2=member, meta=meta_sm if meta_sm else None))
                 return rhs
 
             if isinstance(expr.target, PointerMemberAccess):
                 base = self._gen_expr(expr.target.pointer)
+                member = expr.target.member
                 meta = {}
                 base_ty = self._var_types.get(base, "")
                 if isinstance(base_ty, str) and base_ty.strip().endswith("*"):
                     struct_ty = base_ty.strip()[:-1].strip()
                     if struct_ty:
                         meta["struct_type"] = struct_ty
-                self.instructions.append(IRInstruction(op="store_member_ptr", result=rhs, operand1=base, operand2=expr.target.member, meta=meta if meta else None))
+                # Detect struct-to-struct member copy via pointer
+                rhs_val = rhs
+                try:
+                    if self._sema_ctx is not None and struct_ty:
+                        resolved_sty = self._resolve_elem_type(struct_ty)
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_sty)
+                        if layout is not None:
+                            mtypes = getattr(layout, "member_types", {}) or {}
+                            mty = mtypes.get(member)
+                            if isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                                meta["struct_copy"] = True
+                                if (self.instructions and
+                                    self.instructions[-1].op == "load" and
+                                    self.instructions[-1].result == rhs):
+                                    src_addr = self.instructions[-1].operand1
+                                    self.instructions.pop()
+                                    rhs_val = src_addr
+                except Exception:
+                    pass
+                self.instructions.append(IRInstruction(op="store_member_ptr", result=rhs_val, operand1=base, operand2=member, meta=meta if meta else None))
                 return rhs
 
             t = self._new_temp()

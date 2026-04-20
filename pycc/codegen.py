@@ -2602,6 +2602,13 @@ class CodeGenerator:
                 self._emit("  orl %ecx, %eax")  # set new bits
                 self._emit("  movl %eax, (%rdx)")  # store back
                 return
+            # Struct/union member: block copy via memcpy.
+            if sz > 8:
+                self._emit("  movq %rax, %rdi")  # dest = &base.member
+                self._load_operand(val, "%rsi")   # src = value (address of source struct)
+                self._emit(f"  movq ${sz}, %rdx")
+                self._emit("  call memcpy")
+                return
             self._load_operand(val, "%rcx")
             if sz == 1:
                 self._emit("  movb %cl, (%rax)")
@@ -2622,6 +2629,12 @@ class CodeGenerator:
             off, sz = self._resolve_member(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
+            if sz > 8:
+                self._emit("  movq %rax, %rdi")
+                self._load_operand(val, "%rsi")
+                self._emit(f"  movq ${sz}, %rdx")
+                self._emit("  call memcpy")
+                return
             self._load_operand(val, "%rcx")
             if sz == 1:
                 self._emit("  movb %cl, (%rax)")
@@ -2642,6 +2655,12 @@ class CodeGenerator:
             off, sz = self._resolve_member(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
+            if sz > 8:
+                self._emit("  movq %rax, %rdi")
+                self._load_operand(val, "%rsi")
+                self._emit(f"  movq ${sz}, %rdx")
+                self._emit("  call memcpy")
+                return
             self._load_operand(val, "%rdx")
             if sz == 1:
                 self._emit("  movb %dl, (%rax)")
