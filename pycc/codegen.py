@@ -3098,6 +3098,16 @@ class CodeGenerator:
             b = base.strip() if isinstance(base, str) else ""
         if not b:
             return 8
+        # Resolve typedef to underlying type.
+        if self._sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and "*" not in b:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(b)
+            if td is not None:
+                resolved = str(getattr(td, "base", "")).strip()
+                is_ptr = getattr(td, "is_pointer", False)
+                if is_ptr:
+                    return 8
+                if resolved:
+                    return self._type_size_bytes(resolved)
         # pointers
         if "*" in b:
             return 8
@@ -3334,6 +3344,16 @@ class CodeGenerator:
     def _type_size_bytes(self, ty: str) -> int:
         """Best-effort size (bytes) for a type string."""
         b = ty.strip()
+        # Resolve typedef to underlying type.
+        if self._sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and "*" not in b:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(b)
+            if td is not None:
+                resolved = str(getattr(td, "base", "")).strip()
+                is_ptr = getattr(td, "is_pointer", False)
+                if is_ptr:
+                    return 8
+                if resolved:
+                    return self._type_size_bytes(resolved)
         if b.startswith("struct ") or b.startswith("union "):
             layout = getattr(self._sema_ctx, "layouts", {}).get(b)
             return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
