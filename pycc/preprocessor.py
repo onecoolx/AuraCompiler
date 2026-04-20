@@ -1137,6 +1137,13 @@ class Preprocessor:
         out_lines: List[str] = []
         base_dir = os.path.dirname(abspath)
 
+        # Emit line marker at the start of included files so the lexer
+        # knows which source file subsequent tokens belong to.
+        # Skip for the top-level file (stack depth 1) since its lines
+        # are already correct.
+        if len(stack) > 1:
+            out_lines.append(f'# 1 "{os.path.basename(abspath)}"\n')
+
         # Logical line/file are affected by `#line` directives.
         logical_filename = os.path.basename(abspath)
         logical_line_base: Optional[int] = None
@@ -1501,6 +1508,7 @@ class Preprocessor:
                     includer_line=logical_line_no,
                 )
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                out_lines.append(f'# {logical_line_no + 1} "{os.path.basename(abspath)}"\n')
                 continue
 
             mia = self._include_angle_re.match(line)
@@ -1515,6 +1523,7 @@ class Preprocessor:
                     includer_line=logical_line_no,
                 )
                 out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                out_lines.append(f'# {logical_line_no + 1} "{os.path.basename(abspath)}"\n')
                 continue
 
             # Include header-name line splices (subset):
@@ -1560,6 +1569,7 @@ class Preprocessor:
                         includer_line=logical_line_no,
                     )
                     out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                    out_lines.append(f'# {logical_line_no + 1} "{os.path.basename(abspath)}"\n')
                     continue
                 mia2 = self._include_angle_re.match(joined)
                 if mia2:
@@ -1573,6 +1583,7 @@ class Preprocessor:
                         includer_line=logical_line_no,
                     )
                     out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                    out_lines.append(f'# {logical_line_no + 1} "{os.path.basename(abspath)}"\n')
                     continue
 
             # Macro-expanded include operand (subset):
@@ -1600,6 +1611,7 @@ class Preprocessor:
                         includer_line=logical_line_no,
                     )
                     out_lines.append(self._preprocess_file(inc_path, stack, macros))
+                    out_lines.append(f'# {logical_line_no + 1} "{os.path.basename(abspath)}"\n')
                     continue
                 _raise_diag(
                     f"unsupported #include operand after macro expansion: {expanded.strip()!r}",

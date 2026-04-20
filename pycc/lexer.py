@@ -127,6 +127,7 @@ class Lexer:
         self.column = 1
         self.tokens: List[Token] = []
         self.errors: List[LexerError] = []
+        self._source_file = filename
     
     def current_char(self) -> Optional[str]:
         """Get current character without consuming"""
@@ -330,11 +331,30 @@ class Lexer:
             token_column = self.column
             
             char = self.current_char()
-            # Preprocessor directive (#...) — skip the rest of the line
+            # Preprocessor line marker: # <line> "file" — update source location
             if char == '#':
-                # consume until newline or EOF
+                # Collect the rest of the line
+                marker = ''
+                save_pos = self.position
+                save_line = self.line
+                save_col = self.column
+                self.advance()  # skip '#'
                 while self.current_char() and self.current_char() != '\n':
+                    marker += self.current_char()
                     self.advance()
+                marker = marker.strip()
+                # Parse: <line_number> "filename"
+                import re
+                m = re.match(r'^(\d+)\s+"([^"]*)"', marker)
+                if m:
+                    self.line = int(m.group(1))
+                    self.column = 1
+                    self._source_file = m.group(2)
+                # Also handle bare: <line_number>
+                elif re.match(r'^\d+$', marker):
+                    self.line = int(marker)
+                    self.column = 1
+                # else: unknown directive, just skip
                 continue
             
             # Comments

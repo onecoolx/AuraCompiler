@@ -1077,6 +1077,10 @@ class SemanticAnalyzer:
             return False
         if isinstance(body, ReturnStmt):
             return True
+        if isinstance(body, IfStmt):
+            has_then = self._body_has_return(body.then_stmt)
+            has_else = self._body_has_return(body.else_stmt) if body.else_stmt else False
+            return has_then and has_else
         return False
 
     def _analyze_stmt(self, stmt: Statement) -> None:
