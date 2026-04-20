@@ -586,14 +586,8 @@ class CodeGenerator:
                 ty = ty.strip()[:-1].strip()
 
         if isinstance(ty, str) and self._sema_ctx is not None:
-            layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
-            # Resolve typedef if direct lookup fails.
-            if layout is None:
-                td = getattr(self._sema_ctx, "typedefs", {}).get(ty)
-                if td is not None:
-                    resolved = str(getattr(td, "base", "")).strip()
-                    if resolved:
-                        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved)
+            resolved_ty = self._resolve_type(ty)
+            layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_ty)
             if layout is not None:
                 off = layout.member_offsets.get(member)
                 if isinstance(off, int):
@@ -634,13 +628,8 @@ class CodeGenerator:
         if not isinstance(ty, str) or not ty:
             return None
 
-        layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
-        if layout is None:
-            td = getattr(self._sema_ctx, "typedefs", {}).get(ty)
-            if td is not None:
-                resolved = str(getattr(td, "base", "")).strip()
-                if resolved:
-                    layout = getattr(self._sema_ctx, "layouts", {}).get(resolved)
+        resolved_ty = self._resolve_type(ty)
+        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_ty)
         if layout is None:
             return None
 
@@ -703,14 +692,7 @@ class CodeGenerator:
             else:
                 # Struct/union locals: allocate actual size, at least 8 bytes for alignment.
                 ty_str = str(d.operand1) if d.operand1 else ""
-                # Resolve typedef to underlying type for correct stack allocation.
-                resolved_ty = ty_str
-                if self._sema_ctx is not None and ty_str and not ty_str.startswith("struct ") and not ty_str.startswith("union "):
-                    td = getattr(self._sema_ctx, "typedefs", {}).get(ty_str.strip())
-                    if td is not None:
-                        rb = str(getattr(td, "base", "")).strip()
-                        if rb.startswith("struct ") or rb.startswith("union "):
-                            resolved_ty = rb
+                resolved_ty = self._resolve_type(ty_str)
                 if resolved_ty.startswith("struct ") or resolved_ty.startswith("union "):
                     size_bytes = self._type_size_bytes(resolved_ty)
                     # Round up to multiple of 8 so register-chunk stores don't overflow.
@@ -2822,6 +2804,48 @@ class CodeGenerator:
 
     # Operand helpers
 
+    # --- Unified type resolution ---
+    # Single entry point for resolving typedef names to their underlying
+    # primitive or struct/union type. All type-dependent decisions in codegen
+    # should go through this method instead of inline typedef lookups.
+
+    def _resolve_type(self, ty: str) -> str:
+        """Resolve a type string through all typedef layers.
+
+        Returns the final type string (e.g. "struct Foo", "int", "char*").
+        If the type is a pointer typedef, returns "base*".
+        If resolution fails, returns the input unchanged.
+        """
+        if not isinstance(ty, str) or not ty.strip():
+            return ty
+        b = ty.strip()
+        # Already a known type — no resolution needed.
+        if (b.startswith("struct ") or b.startswith("union ") or b.startswith("enum ")
+                or "*" in b or b.startswith("array(")):
+            return b
+        _PRIMITIVES = {
+            "void", "char", "unsigned char", "signed char",
+            "short", "short int", "unsigned short", "unsigned short int",
+            "signed short", "signed short int",
+            "int", "unsigned int", "signed int",
+            "long", "long int", "unsigned long", "unsigned long int",
+            "signed long", "signed long int",
+            "float", "double", "long double",
+        }
+        if b in _PRIMITIVES:
+            return b
+        # Try typedef resolution.
+        if self._sema_ctx is not None:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(b)
+            if td is not None:
+                resolved = str(getattr(td, "base", "")).strip()
+                is_ptr = getattr(td, "is_pointer", False)
+                if is_ptr:
+                    return resolved + ("*" if not resolved.endswith("*") else "")
+                if resolved:
+                    return self._resolve_type(resolved)
+        return b
+
     # --- PIC-aware global symbol access ---
     # These methods centralize all global variable addressing so that
     # -fPIC support only needs to change these three methods.
@@ -3045,15 +3069,8 @@ class CodeGenerator:
             if ty is None:
                 ty = self._var_types.get(operand)
             # Resolve typedef to underlying type for correct load width.
-            if isinstance(ty, str) and self._sema_ctx is not None:
-                td = getattr(self._sema_ctx, "typedefs", {}).get(ty.strip())
-                if td is not None:
-                    resolved_base = str(getattr(td, "base", "")).strip()
-                    is_ptr = getattr(td, "is_pointer", False)
-                    if is_ptr or "*" in resolved_base:
-                        ty = resolved_base + ("*" if not resolved_base.endswith("*") else "")
-                    elif resolved_base:
-                        ty = resolved_base
+            if isinstance(ty, str):
+                ty = self._resolve_type(ty)
             ga = getattr(self._sema_ctx, "global_arrays", {}) if self._sema_ctx is not None else {}
             is_aggregate = (
                 (isinstance(ty, str) and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")))
@@ -3092,22 +3109,14 @@ class CodeGenerator:
         if ty is None:
             return 8
         if isinstance(ty, str):
-            b = ty.strip()
+            b = self._resolve_type(ty)
         else:
             base = getattr(ty, "base", None)
-            b = base.strip() if isinstance(base, str) else ""
+            b = self._resolve_type(base.strip()) if isinstance(base, str) else ""
+            if getattr(ty, "is_pointer", False):
+                return 8
         if not b:
             return 8
-        # Resolve typedef to underlying type.
-        if self._sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and "*" not in b:
-            td = getattr(self._sema_ctx, "typedefs", {}).get(b)
-            if td is not None:
-                resolved = str(getattr(td, "base", "")).strip()
-                is_ptr = getattr(td, "is_pointer", False)
-                if is_ptr:
-                    return 8
-                if resolved:
-                    return self._type_size_bytes(resolved)
         # pointers
         if "*" in b:
             return 8
@@ -3229,16 +3238,8 @@ class CodeGenerator:
                 return
             sym = result[1:]
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-            # Resolve typedef for correct store width.
-            if isinstance(ty, str) and self._sema_ctx is not None:
-                td = getattr(self._sema_ctx, "typedefs", {}).get(ty.strip())
-                if td is not None:
-                    resolved_base = str(getattr(td, "base", "")).strip()
-                    is_ptr = getattr(td, "is_pointer", False)
-                    if is_ptr or "*" in resolved_base:
-                        ty = resolved_base + ("*" if not resolved_base.endswith("*") else "")
-                    elif resolved_base:
-                        ty = resolved_base
+            if isinstance(ty, str):
+                ty = self._resolve_type(ty)
             if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
                 self._store_global_value(sym, reg, 8)
             else:
@@ -3343,17 +3344,7 @@ class CodeGenerator:
 
     def _type_size_bytes(self, ty: str) -> int:
         """Best-effort size (bytes) for a type string."""
-        b = ty.strip()
-        # Resolve typedef to underlying type.
-        if self._sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and "*" not in b:
-            td = getattr(self._sema_ctx, "typedefs", {}).get(b)
-            if td is not None:
-                resolved = str(getattr(td, "base", "")).strip()
-                is_ptr = getattr(td, "is_pointer", False)
-                if is_ptr:
-                    return 8
-                if resolved:
-                    return self._type_size_bytes(resolved)
+        b = self._resolve_type(ty)
         if b.startswith("struct ") or b.startswith("union "):
             layout = getattr(self._sema_ctx, "layouts", {}).get(b)
             return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
@@ -3386,14 +3377,8 @@ class CodeGenerator:
             decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
         if self._sema_ctx is not None and decl_ty and hasattr(self._sema_ctx, "layouts"):
             layouts = getattr(self._sema_ctx, "layouts")
-            layout = layouts.get(decl_ty)
-            # Resolve typedef if direct lookup fails.
-            if layout is None:
-                td = getattr(self._sema_ctx, "typedefs", {}).get(decl_ty)
-                if td is not None:
-                    resolved = str(getattr(td, "base", "")).strip()
-                    if resolved:
-                        layout = layouts.get(resolved)
+            resolved_ty = self._resolve_type(decl_ty)
+            layout = layouts.get(resolved_ty)
             if layout is not None:
                 off = layout.member_offsets.get(member)
                 sz = layout.member_sizes.get(member)
@@ -3413,14 +3398,8 @@ class CodeGenerator:
         if not decl_ty and isinstance(base_sym, str) and base_sym.startswith("@") and self._sema_ctx is not None:
             decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
         if self._sema_ctx is not None and decl_ty:
-            layout = getattr(self._sema_ctx, "layouts", {}).get(decl_ty)
-            # Resolve typedef if direct lookup fails.
-            if layout is None:
-                td = getattr(self._sema_ctx, "typedefs", {}).get(decl_ty)
-                if td is not None:
-                    resolved = str(getattr(td, "base", "")).strip()
-                    if resolved:
-                        layout = getattr(self._sema_ctx, "layouts", {}).get(resolved)
+            resolved_ty = self._resolve_type(decl_ty)
+            layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_ty)
             if layout and getattr(layout, 'bit_fields', None) and member in layout.bit_fields:
                 # Find bit_offset and bit_width from the Declaration objects
                 # stored during layout computation
