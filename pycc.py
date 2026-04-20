@@ -202,7 +202,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Misc
     ap.add_argument("-pipe", action="store_true", help="Use pipes (ignored)")
     ap.add_argument("-w", action="store_true", dest="suppress_warnings", help="Suppress all warnings")
-    ap.add_argument("-Wl", dest="wl_args", action="append", default=[], help="Pass option to linker (ignored)")
+    ap.add_argument("-Wl", dest="wl_args", action="append", default=[], help="Pass option to linker")
+    ap.add_argument("-shared", action="store_true", dest="shared", help="Generate shared library (.so)")
 
     args, _unknown = ap.parse_known_args(argv)
 
@@ -683,7 +684,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     # Single input: preserve previous behavior.
-    if len(args.source) == 1:
+    # When -shared is set, use the multi-file link path which handles gcc -shared.
+    if len(args.source) == 1 and not getattr(args, "shared", False):
         # gcc-style: '-' means read source from stdin.
         # But allow `-- -` to refer to a literal file named '-'.
         if stdin_dash_allowed and args.source[0] == "-":
@@ -738,9 +740,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # Multi-input subset: compile each source to a temporary .o and then link.
-    # Supports only producing an executable output.
+    # Supports producing an executable or shared library output.
     if args.output.endswith(".s") or args.output.endswith(".o"):
-        print("Error: multi-input mode only supports linking to an executable (-o a.out)")
+        print("Error: multi-input mode only supports linking to an executable or shared library")
         return 1
 
     obj_paths: List[str] = []
@@ -767,8 +769,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             link_extra += ["-L", d]
         for lib in args.link_libs:
             link_extra.append(f"-l{lib}")
+        # Pass -Wl, options to linker
+        for wl in getattr(args, "wl_args", []):
+            link_extra.append(f"-Wl,{wl}")
 
-        link_cmd = ["gcc", "-no-pie", "-o", args.output] + obj_paths + link_extra
+        if getattr(args, "shared", False):
+            link_cmd = ["gcc", "-shared", "-o", args.output] + obj_paths + link_extra
+        else:
+            link_cmd = ["gcc", "-no-pie", "-o", args.output] + obj_paths + link_extra
         # Link using system gcc.
         if args.verbose:
             print(f"[pycc] link: {' '.join(link_cmd)}")
