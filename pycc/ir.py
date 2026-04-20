@@ -2322,9 +2322,16 @@ class IRGenerator:
                                         IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2=imm if imm is not None else ptr, label="static")
                                     )
                                 else:
-                                    raise IRGenError(
-                                        f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
-                                    )
+                                    # Try struct member-by-member init (handles function pointers, symbols).
+                                    _saved_name = item.name
+                                    item.name = gname  # _try_struct_member_init uses decl.name
+                                    if self._try_struct_member_init(item, "static"):
+                                        item.name = _saved_name
+                                    else:
+                                        item.name = _saved_name
+                                        raise IRGenError(
+                                            f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
+                                        )
 
                         # Record type for the lowered global symbol.
                         self._var_types[f"@{gname}"] = str(item.type.base)
