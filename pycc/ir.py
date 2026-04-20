@@ -2299,7 +2299,19 @@ class IRGenerator:
 
                         # Define storage once, with constant initializer if present.
                         if getattr(item, "initializer", None) is None:
-                            self.instructions.append(IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2="$0", label="static"))
+                            arr_sz = getattr(item, "array_size", None)
+                            if arr_sz is not None:
+                                # Local static array: emit as BSS with correct total size.
+                                elem_sz = _type_size(item.type, self._sema_ctx)
+                                total = int(arr_sz) * elem_sz
+                                self.instructions.append(IRInstruction(
+                                    op="gdecl", result=f"@{gname}",
+                                    operand1=f"array({item.type.base},${arr_sz})",
+                                    label="static",
+                                    meta={"size": total},
+                                ))
+                            else:
+                                self.instructions.append(IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2="$0", label="static"))
                         else:
                             # Try aggregate blob first (arrays, structs).
                             blob = self._const_initializer_blob(item)
@@ -2334,7 +2346,12 @@ class IRGenerator:
                                         )
 
                         # Record type for the lowered global symbol.
-                        self._var_types[f"@{gname}"] = str(item.type.base)
+                        arr_sz = getattr(item, "array_size", None)
+                        if arr_sz is not None:
+                            # Array: record as array type so codegen emits leaq (address) not movslq (value).
+                            self._var_types[f"@{gname}"] = f"array({item.type.base},${arr_sz})"
+                        else:
+                            self._var_types[f"@{gname}"] = str(item.type.base)
                         # Track volatile for local statics.
                         if getattr(item.type, "is_volatile", False):
                             self._var_volatile.add(f"@{gname}")

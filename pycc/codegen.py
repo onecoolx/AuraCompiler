@@ -219,11 +219,24 @@ class CodeGenerator:
                 # extern declaration: no storage emitted in this TU
                 if gd.label == "extern":
                     continue
-                # Only emit tentative definitions as common symbols.
-                # (Other labels are ignored for now.)
-                if gd.label not in {None, "", "tentative"}:
+                # Only emit tentative definitions and local statics as common/bss symbols.
+                if gd.label not in {None, "", "tentative", "static"}:
                     continue
-                if isinstance(ty, str) and (ty.startswith("struct ") or ty.startswith("union ")) and self._sema_ctx is not None:
+                meta = gd.meta or {}
+                if "size" in meta:
+                    sz = int(meta["size"])
+                elif isinstance(ty, str) and ty.startswith("array("):
+                    # Parse array(T,$N) to compute size
+                    inner = ty[len("array("):]
+                    if inner.endswith(")"):
+                        inner = inner[:-1]
+                    parts = inner.split(",", 1)
+                    base_part = parts[0].strip()
+                    cnt_part = parts[1].strip() if len(parts) > 1 else "$1"
+                    n = int(cnt_part.lstrip("$")) if cnt_part.startswith("$") else 1
+                    elem_sz = self._type_size_bytes(base_part)
+                    sz = n * elem_sz
+                elif isinstance(ty, str) and (ty.startswith("struct ") or ty.startswith("union ")) and self._sema_ctx is not None:
                     layout = getattr(self._sema_ctx, "layouts", {}).get(ty)
                     sz = int(getattr(layout, "size", 8)) if layout is not None else 8
                 elif isinstance(ty, str) and (ty == "char" or ty.startswith("char ")):
@@ -364,6 +377,14 @@ class CodeGenerator:
                             self._emit(f"  .quad {val}")
                         else:
                             self._emit(f"  .zero {sz}")
+
+        # Seed _var_types for local static array symbols so codegen knows to
+        # emit leaq (address) instead of movslq (value load).
+        for ins in instructions:
+            if ins.op == "gdecl" and ins.result and ins.operand1:
+                ty = str(ins.operand1)
+                if ty.startswith("array(") and ins.result not in self._var_types:
+                    self._var_types[ins.result] = ty
 
         self._emit(".text")
         i = 0
@@ -3016,6 +3037,9 @@ class CodeGenerator:
             # loading it as a scalar is almost always wrong. Prefer returning
             # its address so member/index operations can proceed correctly.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+            # Also check _var_types (seeded from gdecl/gdef for local statics).
+            if ty is None:
+                ty = self._var_types.get(operand)
             # Resolve typedef to underlying type for correct load width.
             if isinstance(ty, str) and self._sema_ctx is not None:
                 td = getattr(self._sema_ctx, "typedefs", {}).get(ty.strip())
