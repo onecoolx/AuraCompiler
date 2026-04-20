@@ -221,6 +221,7 @@ class Parser:
                     base_type._normalize_pointer_state()
                 else:
                     base_type = Type(base=getattr(base_type, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(base_type, "line", 1), column=getattr(base_type, "column", 1))
+            self._skip_pointer_qualifiers()
 
             # Function pointer typedef: typedef int (*name)(params);
             if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
@@ -964,6 +965,7 @@ class Parser:
                     #   struct S { void *p; };
                     while self._match(TokenType.STAR):
                         mem_ty = Type(base=mem_ty.base, is_pointer=True, line=mem_ty.line, column=mem_ty.column)
+                    self._skip_pointer_qualifiers()
 
                     # C11 anonymous struct/union members: `union { ... };` with
                     # no member name.  Skip them gracefully (treat as padding).
@@ -1129,6 +1131,7 @@ class Parser:
                                  is_unsigned=getattr(base_type, 'is_unsigned', False),
                                  is_signed=getattr(base_type, 'is_signed', False),
                                  line=base_type.line, column=base_type.column)
+            self._skip_pointer_qualifiers()
 
             # Support parenthesized pointer declarators in parameters:
             #   int (*fp)(int)
@@ -1139,6 +1142,7 @@ class Parser:
                     ptr_ty = Type(base=ptr_ty.base, is_pointer=True,
                                   pointer_level=new_level,
                                   line=ptr_ty.line, column=ptr_ty.column)
+                self._skip_pointer_qualifiers()
 
                 # Check whether this is an unnamed function pointer: int (*)(int, int)
                 # vs a named one: int (*fp)(int, int)
@@ -1253,6 +1257,18 @@ class Parser:
             and self.current_token.value == kw
         )
 
+    def _skip_pointer_qualifiers(self) -> None:
+        """Consume pointer-level qualifiers (const, volatile, restrict) after '*'.
+
+        In C89, `int * const p` declares p as a const pointer to int.
+        These qualifiers appear between '*' and the declarator name.
+        """
+        _QUALS = {"const", "volatile", "restrict", "__restrict", "__restrict__"}
+        while (self.current_token
+               and self.current_token.type == TokenType.KEYWORD
+               and self.current_token.value in _QUALS):
+            self.advance()
+
     # Statements
 
     def _parse_compound_statement(self) -> CompoundStmt:
@@ -1290,6 +1306,7 @@ class Parser:
             base_type = self._parse_type_specifier()
             while self._match(TokenType.STAR):
                 base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
+            self._skip_pointer_qualifiers()
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
@@ -1303,14 +1320,11 @@ class Parser:
                 base_type.pointer_quals = []
             base_type.pointer_quals.insert(0, set())
             base_type._normalize_pointer_state()
-
-            # Capture pointer-level qualifiers immediately after this '*', e.g.
-            #   int * const p;
-            #   int * volatile p;
-            while self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
+            # Capture pointer-level qualifiers: int * const p;
+            while (self.current_token
+                   and self.current_token.type == TokenType.KEYWORD
+                   and self.current_token.value in {"const", "volatile", "restrict"}):
                 try:
-                    if not getattr(base_type, "pointer_quals", None):
-                        base_type.pointer_quals = [set()]
                     base_type.pointer_quals[0].add(self.current_token.value)
                     base_type._normalize_pointer_state()
                 except Exception:
@@ -2001,6 +2015,7 @@ class Parser:
                             ty.pointer_quals = []
                         ty.pointer_quals.insert(0, set())
                         ty._normalize_pointer_state()
+                    self._skip_pointer_qualifiers()
                     self._expect(TokenType.RPAREN, "Expected ')' after sizeof(type)")
                     return SizeOf(operand=None, type=ty, line=tok.line, column=tok.column)
                 expr = self._parse_expression()
@@ -2128,6 +2143,7 @@ class Parser:
                         ty.pointer_quals = []
                     ty.pointer_quals.insert(0, set())
                     ty._normalize_pointer_state()
+                self._skip_pointer_qualifiers()
                 self._expect(TokenType.RPAREN, "Expected ')' after cast type")
                 expr = self._parse_unary()
                 return Cast(type=ty, expression=expr, line=tok.line, column=tok.column)
