@@ -1711,6 +1711,8 @@ class IRGenerator:
 
         if decl.initializer is None:
             return False
+        if getattr(decl.type, "is_pointer", False):
+            return False
         if not self._is_struct_or_union_type(decl.type.base):
             return False
         if not isinstance(decl.initializer, Initializer):
@@ -2491,7 +2493,7 @@ class IRGenerator:
                                 self._local_array_dims[item.name] = ad
                         except Exception:
                             pass
-                    elif self._is_struct_or_union_type(item.type.base):
+                    elif not getattr(item.type, "is_pointer", False) and self._is_struct_or_union_type(item.type.base):
                         decl_op1 = str(item.type.base)
                         self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
                         self._var_types[self._resolve_name(item.name)] = decl_op1
@@ -3159,11 +3161,30 @@ class IRGenerator:
                 dst_ty = getattr(expr, "type", None)
                 # Resolve typedef in cast target type so downstream code sees
                 # the real type (e.g. PrivPtr -> struct Priv *).
+                _orig_is_pointer = getattr(dst_ty, "is_pointer", False)
                 if dst_ty is not None and self._sema_ctx is not None:
                     _resolved_base = getattr(dst_ty, "base", "")
                     _td = getattr(self._sema_ctx, "typedefs", {}).get(_resolved_base)
                     if _td is not None:
-                        dst_ty = _td
+                        # Only resolve if the original cast is NOT a pointer cast.
+                        # For `(cJSON*)expr`, base="cJSON" is_pointer=True — the
+                        # typedef resolves the base but the pointer level comes
+                        # from the cast syntax, not the typedef.
+                        if not _orig_is_pointer:
+                            dst_ty = _td
+                        else:
+                            # Preserve pointer: resolve base but keep is_pointer.
+                            from pycc.ast_nodes import Type as ASTType
+                            _td_base = getattr(_td, "base", _resolved_base)
+                            dst_ty = ASTType(
+                                base=_td_base,
+                                is_pointer=True,
+                                pointer_level=getattr(dst_ty, "pointer_level", 1),
+                                is_const=getattr(dst_ty, "is_const", False),
+                                is_volatile=getattr(dst_ty, "is_volatile", False),
+                                is_unsigned=getattr(_td, "is_unsigned", False),
+                                is_signed=getattr(_td, "is_signed", False),
+                            )
                 dst_base = str(getattr(dst_ty, "base", "")).strip() if dst_ty else ""
                 src_fp = self._var_types.get(v, "") if isinstance(v, str) else ""
                 if dst_base in _FP_TYPES and src_fp not in _FP_TYPES:
