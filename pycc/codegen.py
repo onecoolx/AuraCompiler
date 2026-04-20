@@ -740,10 +740,11 @@ class CodeGenerator:
         # Fixed spill area reserved for temporaries lives below declared locals.
         offset += self._spill_capacity
 
-        # align stack to 16 bytes at call sites (after push %rbp)
+        # Align stack to 16 bytes (SysV ABI requirement for call sites).
+        # After push %rbp, %rsp is 16-aligned. subq $N must keep it aligned.
         stack = offset
         if stack % 16 != 0:
-            stack += 8
+            stack += 16 - (stack % 16)
         self._stack_size = stack
 
         # IR may tag internal-linkage functions as "name@static".
