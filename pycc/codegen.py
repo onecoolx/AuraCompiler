@@ -202,10 +202,11 @@ class CodeGenerator:
         gblobs = [ins for ins in instructions if ins.op == "gdef_blob"]
         gfloats = [ins for ins in instructions if ins.op == "gdef_float"]
         gptrarrs = [ins for ins in instructions if ins.op == "gdef_ptr_array"]
+        gstructs = [ins for ins in instructions if ins.op == "gdef_struct"]
         gdecls = [ins for ins in instructions if ins.op == "gdecl"]
 
         # Symbols with definitions should not also get .bss tentative entries
-        defined_syms = {(ins.result or "").lstrip("@") for ins in instructions if ins.op in ("gdef", "gdef_blob", "gdef_float", "gdef_ptr_array")}
+        defined_syms = {(ins.result or "").lstrip("@") for ins in instructions if ins.op in ("gdef", "gdef_blob", "gdef_float", "gdef_ptr_array", "gdef_struct")}
 
         if gdecls:
             self._emit(".bss")
@@ -232,7 +233,7 @@ class CodeGenerator:
                     sz = 8
                 self._emit(f"  .comm {name},{sz},{sz}")
 
-        if gdefs or gblobs or gfloats or gptrarrs:
+        if gdefs or gblobs or gfloats or gptrarrs or gstructs:
             self._emit(".data")
             for gd in gblobs:
                 name = (gd.result or "").lstrip("@")
@@ -329,11 +330,45 @@ class CodeGenerator:
                     for sym in meta["symbols"]:
                         self._emit(f"  .quad {sym}")
 
+            # Struct/union member-by-member initialization
+            for gs in gstructs:
+                name = (gs.result or "").lstrip("@")
+                meta = gs.meta or {}
+                if gs.label != "static":
+                    self._emit(f".globl {name}")
+                self._emit(f"  .align 8")
+                self._emit(f"{name}:")
+                for kind, sz, val in meta.get("members", []):
+                    if kind == "zero":
+                        self._emit(f"  .zero {sz}")
+                    elif kind == "symbol":
+                        self._emit(f"  .quad {val}")
+                    elif kind == "float":
+                        if sz == 4:
+                            self._emit(f"  .long {_struct.pack('<f', val).hex()}")
+                        elif sz == 8:
+                            lo, hi = _struct.unpack('<II', _struct.pack('<d', val))
+                            self._emit(f"  .long 0x{lo:08x}")
+                            self._emit(f"  .long 0x{hi:08x}")
+                        else:
+                            self._emit(f"  .zero {sz}")
+                    elif kind == "int":
+                        if sz == 1:
+                            self._emit(f"  .byte {val & 0xFF}")
+                        elif sz == 2:
+                            self._emit(f"  .short {val & 0xFFFF}")
+                        elif sz == 4:
+                            self._emit(f"  .long {val & 0xFFFFFFFF}")
+                        elif sz == 8:
+                            self._emit(f"  .quad {val}")
+                        else:
+                            self._emit(f"  .zero {sz}")
+
         self._emit(".text")
         i = 0
         while i < len(instructions):
             ins = instructions[i]
-            if ins.op in {"gdecl", "gdef", "gdef_blob", "gdef_float", "gdef_ptr_array"}:
+            if ins.op in {"gdecl", "gdef", "gdef_blob", "gdef_float", "gdef_ptr_array", "gdef_struct"}:
                 i += 1
                 continue
             if ins.op == "func_begin":

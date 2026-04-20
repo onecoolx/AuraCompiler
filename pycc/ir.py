@@ -417,6 +417,12 @@ class IRGenerator:
                             )
                             continue
                         elif imm is None and ptr is None:
+                            # Try struct/union member-by-member initialization.
+                            # This handles structs with function pointer members,
+                            # symbol references, and mixed types that blob can't encode.
+                            struct_init = self._try_struct_member_init(decl, sc)
+                            if struct_init:
+                                continue
                             # Try: array of string-literal pointers
                             # e.g. char *arr[] = {"str1", "str2"};
                             # or   void (*fn_arr[])(T*) = {f, g};  (function pointer array)
@@ -1460,6 +1466,108 @@ class IRGenerator:
         self._var_types[t] = "unsigned long"
         self.instructions.append(IRInstruction(op="mov", result=t, operand1=op))
         return t
+
+    def _try_struct_member_init(self, decl: Declaration, sc: str) -> bool:
+        """Try to emit a gdef_struct IR instruction for a struct/union initializer.
+
+        Handles structs with mixed member types including function pointers
+        and symbol references that the blob path cannot encode.
+
+        Returns True if successful (instruction emitted), False otherwise.
+        """
+        init = getattr(decl, "initializer", None)
+        if not isinstance(init, Initializer):
+            return False
+        if self._sema_ctx is None:
+            return False
+
+        base = getattr(decl.type, "base", "")
+        if isinstance(base, str):
+            base = self._resolve_elem_type(base.strip())
+        if not self._is_struct_or_union_type(base):
+            return False
+
+        layout = getattr(self._sema_ctx, "layouts", {}).get(str(base))
+        if layout is None:
+            return False
+
+        inits0 = self._const_initializer_list(init)
+        if inits0 is None:
+            return False
+
+        members = list(getattr(layout, "member_offsets", {}).keys())
+        offsets = getattr(layout, "member_offsets", {})
+        sizes = getattr(layout, "member_sizes", {})
+        mtypes = getattr(layout, "member_types", {})
+        struct_size = int(getattr(layout, "size", 0))
+
+        # Build member descriptors: list of (kind, size, value)
+        # kind: "int", "symbol", "float", "zero"
+        member_descs = []
+        prev_end = 0
+
+        for midx, m in enumerate(members):
+            off = int(offsets.get(m, 0))
+            sz = int(sizes.get(m, 8))
+            mty = mtypes.get(m, "")
+
+            # Emit padding before this member
+            if off > prev_end:
+                member_descs.append(("zero", off - prev_end, 0))
+
+            if midx >= len(inits0):
+                # Remaining members zero-filled
+                member_descs.append(("zero", sz, 0))
+                prev_end = off + sz
+                continue
+
+            elem = inits0[midx]
+
+            # Try integer constant
+            imm = self._const_expr_to_int(elem)
+            if imm is not None:
+                member_descs.append(("int", sz, int(imm)))
+                prev_end = off + sz
+                continue
+
+            # Try float constant
+            fv = self._const_expr_to_float(elem)
+            if fv is not None:
+                member_descs.append(("float", sz, float(fv)))
+                prev_end = off + sz
+                continue
+
+            # Try symbol reference (function name, global variable)
+            if isinstance(elem, Identifier):
+                member_descs.append(("symbol", sz, elem.name))
+                prev_end = off + sz
+                continue
+
+            # Try cast of 0 to pointer (NULL)
+            if isinstance(elem, Cast):
+                inner = self._const_expr_to_int(elem.expression)
+                if inner is not None:
+                    member_descs.append(("int", sz, int(inner)))
+                    prev_end = off + sz
+                    continue
+
+            # Unsupported member initializer
+            return False
+
+        # Trailing padding
+        if prev_end < struct_size:
+            member_descs.append(("zero", struct_size - prev_end, 0))
+
+        self.instructions.append(
+            IRInstruction(
+                op="gdef_struct",
+                result=f"@{decl.name}",
+                operand1=str(base),
+                label=sc,
+                meta={"members": member_descs, "size": struct_size},
+            )
+        )
+        return True
 
     def _const_initializer_imm(self, init: Any) -> Optional[str]:
         """Return an immediate like "$42" for supported constant initializers."""
