@@ -1093,6 +1093,26 @@ class Preprocessor:
     def preprocess(self, path: str, *, initial_macros: Optional[Dict[str, str]] = None) -> PreprocessResult:
         try:
             macros = dict(initial_macros or {})
+            # Predefined GCC builtin function-like macros.
+            # System headers (math.h, float.h) expand to these; provide
+            # C89-compatible fallbacks so pycc can compile the result.
+            for name, params, body in [
+                ("__builtin_nanf",       ["x"],  "(0.0/0.0)"),
+                ("__builtin_nan",        ["x"],  "(0.0/0.0)"),
+                ("__builtin_huge_val",   [],     "(1.0/0.0)"),
+                ("__builtin_huge_valf",  [],     "(1.0/0.0)"),
+                ("__builtin_inff",       [],     "(1.0/0.0)"),
+                ("__builtin_inf",        [],     "(1.0/0.0)"),
+                ("__builtin_isnan",      ["x"],  "((x)!=(x))"),
+                ("__builtin_isinf",      ["x"],  "((x)-(x)!=(x)-(x))"),
+                ("__builtin_isinf_sign", ["x"],  "((x)-(x)!=(x)-(x))"),
+                ("__builtin_isfinite",   ["x"],  "((x)==(x)&&(x)-(x)==0.0)"),
+                ("__builtin_signbit",    ["x"],  "((x)<0)"),
+                ("__builtin_signbitf",   ["x"],  "((x)<0)"),
+                ("__builtin_signbitl",   ["x"],  "((x)<0)"),
+            ]:
+                if name not in self._fn_macros:
+                    self._fn_macros[name] = (params, body, False)
             text = self._preprocess_file(path, stack=[], macros=macros)
             return PreprocessResult(success=True, text=text)
         except RuntimeError as e:

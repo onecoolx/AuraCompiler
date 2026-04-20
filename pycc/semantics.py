@@ -51,6 +51,8 @@ from pycc.ast_nodes import (
         Expression,
         Type,
         SwitchStmt,
+        CaseStmt,
+        DefaultStmt,
         MemberAccess,
         PointerMemberAccess,
     Cast,
@@ -1095,6 +1097,9 @@ class SemanticAnalyzer:
                     has_else = self._body_has_return(stmt.else_stmt) if stmt.else_stmt else False
                     if has_then and has_else:
                         return True
+                if isinstance(stmt, SwitchStmt):
+                    if self._switch_has_return(stmt):
+                        return True
             return False
         if isinstance(body, ReturnStmt):
             return True
@@ -1102,7 +1107,42 @@ class SemanticAnalyzer:
             has_then = self._body_has_return(body.then_stmt)
             has_else = self._body_has_return(body.else_stmt) if body.else_stmt else False
             return has_then and has_else
+        if isinstance(body, SwitchStmt):
+            return self._switch_has_return(body)
         return False
+
+    def _switch_has_return(self, switch: SwitchStmt) -> bool:
+        """Check if a switch statement returns on all paths.
+
+        Returns True if the switch has a default case and every case group
+        (including default) contains a return statement.
+        """
+        if not isinstance(switch.body, CompoundStmt):
+            return False
+        stmts = switch.body.statements or []
+        has_default = False
+        # Walk through statements; track whether the current case group has a return.
+        # A "case group" starts at a CaseStmt/DefaultStmt and ends at the next one
+        # or at the end of the switch body.
+        current_group_has_return = True  # no group started yet
+        all_groups_return = True
+        for s in stmts:
+            if isinstance(s, (CaseStmt, DefaultStmt)):
+                if isinstance(s, DefaultStmt):
+                    has_default = True
+                # Check the statement inside the case/default label
+                if self._body_has_return(s.statement):
+                    current_group_has_return = True
+                else:
+                    current_group_has_return = False
+            elif isinstance(s, ReturnStmt):
+                current_group_has_return = True
+            elif self._body_has_return(s):
+                current_group_has_return = True
+        # The last group must also return
+        if not current_group_has_return:
+            all_groups_return = False
+        return has_default and all_groups_return
 
     def _analyze_stmt(self, stmt: Statement) -> None:
         if isinstance(stmt, CompoundStmt):
