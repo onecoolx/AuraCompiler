@@ -152,9 +152,10 @@ def get_struct_pass_mode(classification: list) -> str:
 class CodeGenerator:
     """Generates x86-64 assembly code"""
     
-    def __init__(self, optimize: bool = True, sema_ctx: Any = None):
+    def __init__(self, optimize: bool = True, sema_ctx: Any = None, pic: bool = False):
         self.optimize = optimize
         self._sema_ctx = sema_ctx
+        self._pic = pic
         self.assembly_lines: List[str] = []
         self._string_pool: Dict[str, str] = {}
         self._string_counter = 0
@@ -2796,6 +2797,75 @@ class CodeGenerator:
 
     # Operand helpers
 
+    # --- PIC-aware global symbol access ---
+    # These methods centralize all global variable addressing so that
+    # -fPIC support only needs to change these three methods.
+    # Non-PIC: direct RIP-relative (symbol(%rip))
+    # PIC: GOT-indirect (symbol@GOTPCREL(%rip) -> load through GOT)
+
+    def _load_global_value(self, sym: str, reg: str, size: int = 8) -> None:
+        """Load a global variable's value into reg, respecting PIC mode."""
+        if self._pic:
+            self._emit(f"  movq {sym}@GOTPCREL(%rip), %r11")
+            if size == 1:
+                self._emit(f"  movsbq (%r11), {reg}")
+            elif size == 2:
+                self._emit(f"  movswq (%r11), {reg}")
+            elif size == 4:
+                self._emit(f"  movslq (%r11), {reg}")
+            else:
+                self._emit(f"  movq (%r11), {reg}")
+        else:
+            if size == 1:
+                self._emit(f"  movsbq {sym}(%rip), {reg}")
+            elif size == 2:
+                self._emit(f"  movswq {sym}(%rip), {reg}")
+            elif size == 4:
+                self._emit(f"  movslq {sym}(%rip), {reg}")
+            else:
+                self._emit(f"  movq {sym}(%rip), {reg}")
+
+    def _store_global_value(self, sym: str, reg: str, size: int = 8) -> None:
+        """Store reg into a global variable, respecting PIC mode."""
+        # Map 64-bit register names to sub-register names for narrow stores.
+        _sub = {
+            "%rax": {1: "%al", 2: "%ax", 4: "%eax"},
+            "%rcx": {1: "%cl", 2: "%cx", 4: "%ecx"},
+            "%rdx": {1: "%dl", 2: "%dx", 4: "%edx"},
+        }
+        if self._pic:
+            self._emit(f"  movq {sym}@GOTPCREL(%rip), %r11")
+            if size == 1:
+                sr = _sub.get(reg, {}).get(1, "%al")
+                self._emit(f"  movb {sr}, (%r11)")
+            elif size == 2:
+                sr = _sub.get(reg, {}).get(2, "%ax")
+                self._emit(f"  movw {sr}, (%r11)")
+            elif size == 4:
+                sr = _sub.get(reg, {}).get(4, "%eax")
+                self._emit(f"  movl {sr}, (%r11)")
+            else:
+                self._emit(f"  movq {reg}, (%r11)")
+        else:
+            if size == 1:
+                sr = _sub.get(reg, {}).get(1, "%al")
+                self._emit(f"  movb {sr}, {sym}(%rip)")
+            elif size == 2:
+                sr = _sub.get(reg, {}).get(2, "%ax")
+                self._emit(f"  movw {sr}, {sym}(%rip)")
+            elif size == 4:
+                sr = _sub.get(reg, {}).get(4, "%eax")
+                self._emit(f"  movl {sr}, {sym}(%rip)")
+            else:
+                self._emit(f"  movq {reg}, {sym}(%rip)")
+
+    def _load_global_addr(self, sym: str, reg: str) -> None:
+        """Load the address of a global symbol into reg, respecting PIC mode."""
+        if self._pic:
+            self._emit(f"  movq {sym}@GOTPCREL(%rip), {reg}")
+        else:
+            self._emit(f"  leaq {sym}(%rip), {reg}")
+
     def _load_operand(self, operand: Optional[str], reg: str) -> None:
         if operand is None:
             self._emit(f"  movq $0, {reg}")
@@ -2933,14 +3003,14 @@ class CodeGenerator:
             sym = operand[1:]
             # If operand refers to a known function symbol, load its address.
             if sym in getattr(self, "_functions", set()):
-                self._emit(f"  leaq {sym}(%rip), {reg}")
+                self._load_global_addr(sym, reg)
                 return
             # If semantic analysis says this symbol is a function, load its
             # address (not its contents).
             if self._sema_ctx is not None:
                 gty = getattr(self._sema_ctx, "global_types", {}).get(sym)
                 if isinstance(gty, str) and gty.strip().startswith("function"):
-                    self._emit(f"  leaq {sym}(%rip), {reg}")
+                    self._load_global_addr(sym, reg)
                     return
             # Global objects: if this is an aggregate (struct/union/array), then
             # loading it as a scalar is almost always wrong. Prefer returning
@@ -2962,12 +3032,12 @@ class CodeGenerator:
                 or sym in ga
             )
             if is_aggregate:
-                self._emit(f"  leaq {sym}(%rip), {reg}")
+                self._load_global_addr(sym, reg)
             elif isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
-                self._emit(f"  movq {sym}(%rip), {reg}")
+                self._load_global_value(sym, reg, 8)
             else:
                 # default scalar global: 32-bit signed int
-                self._emit(f"  movslq {sym}(%rip), {reg}")
+                self._load_global_value(sym, reg, 4)
             return
         # label address?
         if operand.startswith(".L"):
@@ -3132,10 +3202,9 @@ class CodeGenerator:
                     elif resolved_base:
                         ty = resolved_base
             if isinstance(ty, str) and (ty.endswith("*") or "*" in ty):
-                self._emit(f"  movq {reg}, {sym}(%rip)")
+                self._store_global_value(sym, reg, 8)
             else:
-                # store 32-bit int
-                self._emit(f"  movl %eax, {sym}(%rip)")
+                self._store_global_value(sym, reg, 4)
             return
 
     def _new_spill_name(self) -> str:
@@ -3221,13 +3290,13 @@ class CodeGenerator:
                     return
                 self._emit(f"  leaq -{off}(%rbp), {reg}")
                 return
-            self._emit(f"  leaq {sym[1:]}(%rip), {reg}")
+            self._load_global_addr(sym[1:], reg)
             return
         if sym.startswith("%t"):
             off = self._ensure_local(sym)
             self._emit(f"  leaq -{off}(%rbp), {reg}")
             return
-        self._emit(f"  leaq {sym}(%rip), {reg}")
+        self._load_global_addr(sym, reg)
 
     def _resolve_member_offset(self, base_sym: str, member: str) -> int:
         """Return offset for `base_sym.member` using semantic layouts when available."""

@@ -50,10 +50,12 @@ class Compiler:
         use_system_cpp: bool = False,
         wall: bool = False,
         werror: bool = False,
+        pic: bool = False,
     ):
         self.optimize = optimize
         self.wall = wall
         self.werror = werror
+        self.pic = pic
 
         # Preprocessor options (very small subset).
         self._pp_include_paths = list(include_paths or [])
@@ -782,7 +784,7 @@ class Compiler:
     
     def get_assembly(self, ir, sema_ctx=None):
         """Generate assembly from IR"""
-        generator = CodeGenerator(self.optimize, sema_ctx=sema_ctx)
+        generator = CodeGenerator(self.optimize, sema_ctx=sema_ctx, pic=getattr(self, 'pic', False))
         asm = generator.generate(ir)
         return asm
 

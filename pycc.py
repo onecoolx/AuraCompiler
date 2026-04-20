@@ -681,6 +681,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         use_system_cpp=True,
         wall=getattr(args, "wall", False),
         werror=getattr(args, "werror", False),
+        pic=getattr(args, "fpic", False),
     )
 
     # Single input: preserve previous behavior.
