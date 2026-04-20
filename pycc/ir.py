@@ -780,7 +780,7 @@ class IRGenerator:
                     if self._is_struct_or_union_type(mty) or mty.startswith("array("):
                         return None
                     align = _type_align(mty)
-                    sz = _type_size(mty)
+                    sz = _type_size(mty, self._sema_ctx)
                     if align > 1:
                         pad = (-cur) % align
                         if pad:

@@ -1487,8 +1487,13 @@ class CodeGenerator:
                 return
             _, sz = self._resolve_member(base, member)
             if sz == 1:
-                self._emit("  movb (%rax), %al")
-                self._emit("  movsbq %al, %rax")
+                mem_ty = self._resolve_member_type(base, member)
+                if isinstance(mem_ty, str) and "unsigned" in mem_ty:
+                    self._emit("  movb (%rax), %al")
+                    self._emit("  movzbq %al, %rax")
+                else:
+                    self._emit("  movb (%rax), %al")
+                    self._emit("  movsbq %al, %rax")
             elif sz == 2:
                 self._emit("  movw (%rax), %ax")
                 self._emit("  movswq %ax, %rax")
@@ -1528,8 +1533,13 @@ class CodeGenerator:
             # Load the member value based on its size.
             _, sz = self._resolve_member(base, member)
             if sz == 1:
-                self._emit("  movb (%rax), %al")
-                self._emit("  movsbq %al, %rax")
+                mem_ty = self._resolve_member_type(base, member)
+                if isinstance(mem_ty, str) and "unsigned" in mem_ty:
+                    self._emit("  movb (%rax), %al")
+                    self._emit("  movzbq %al, %rax")
+                else:
+                    self._emit("  movb (%rax), %al")
+                    self._emit("  movsbq %al, %rax")
             elif sz == 2:
                 self._emit("  movw (%rax), %ax")
                 self._emit("  movswq %ax, %rax")

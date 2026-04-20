@@ -524,19 +524,37 @@ class SemanticAnalyzer:
             if ty.is_pointer:
                 return 8, 8
             # Nested aggregates.
-            if isinstance(ty.base, str) and (ty.base.startswith("struct ") or ty.base.startswith("union ")):
-                key = ty.base.strip()
-                lay = self._layouts.get(key)
+            base = ty.base if isinstance(ty.base, str) else ""
+            # Resolve typedef to underlying type.
+            resolved = base.strip()
+            td = self._resolve_typedef(resolved)
+            if td is not None:
+                return size_align(td)
+            if resolved.startswith("struct ") or resolved.startswith("union "):
+                lay = self._layouts.get(resolved)
                 if lay is not None and getattr(lay, "size", 0):
                     try:
                         return int(lay.size), int(lay.align or 1)
                     except Exception:
                         return int(lay.size), 1
-            if ty.base == "int":
-                return 4, 4
-            if ty.base == "char":
+            b = resolved
+            if b in {"char", "unsigned char", "signed char"}:
                 return 1, 1
-            # unknown types treated as 8-byte aligned scalar
+            if b in {"short", "short int", "unsigned short", "unsigned short int",
+                      "signed short", "signed short int"}:
+                return 2, 2
+            if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
+                return 4, 4
+            if b in {"long", "long int", "unsigned long", "unsigned long int",
+                      "signed long", "signed long int"}:
+                return 8, 8
+            if b == "float":
+                return 4, 4
+            if b == "double":
+                return 8, 8
+            if b == "long double":
+                return 16, 16
+            # unknown types: default to pointer-sized
             return 8, 8
 
         off = 0
