@@ -1131,7 +1131,7 @@ class Parser:
                                  is_unsigned=getattr(base_type, 'is_unsigned', False),
                                  is_signed=getattr(base_type, 'is_signed', False),
                                  line=base_type.line, column=base_type.column)
-            self._skip_pointer_qualifiers()
+                self._skip_pointer_qualifiers()
 
             # Support parenthesized pointer declarators in parameters:
             #   int (*fp)(int)
@@ -1142,7 +1142,7 @@ class Parser:
                     ptr_ty = Type(base=ptr_ty.base, is_pointer=True,
                                   pointer_level=new_level,
                                   line=ptr_ty.line, column=ptr_ty.column)
-                self._skip_pointer_qualifiers()
+                    self._skip_pointer_qualifiers()
 
                 # Check whether this is an unnamed function pointer: int (*)(int, int)
                 # vs a named one: int (*fp)(int, int)
@@ -1306,7 +1306,7 @@ class Parser:
             base_type = self._parse_type_specifier()
             while self._match(TokenType.STAR):
                 base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
-            self._skip_pointer_qualifiers()
+                self._skip_pointer_qualifiers()
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)

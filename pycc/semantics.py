@@ -980,6 +980,7 @@ class SemanticAnalyzer:
             self._decl_types[p.name] = p.type
         # track register locals so we can reject `&register_var` (C89 rule)
         self._register_locals: Set[str] = set()
+        self._local_array_names: Set[str] = set()
         # Analyze the function body *without* introducing an extra nested
         # scope for the outermost compound statement, so locals declared in the
         # body stay visible across all statements.
@@ -988,6 +989,8 @@ class SemanticAnalyzer:
                 if isinstance(item, Declaration):
                     self._declare_local(item.name, "variable")
                     self._decl_types[item.name] = item.type
+                    if getattr(item, "array_size", None) is not None or getattr(item, "array_dims", None) is not None:
+                        self._local_array_names.add(item.name)
                     # If this is a local `extern` declaration of a function prototype,
                     # record it in global tables so codegen can treat calls as
                     # direct calls and apply variadic ABI rules.
@@ -1108,6 +1111,8 @@ class SemanticAnalyzer:
                 if isinstance(item, Declaration):
                     self._declare_local(item.name, "variable")
                     self._decl_types[item.name] = item.type
+                    if getattr(item, "array_size", None) is not None or getattr(item, "array_dims", None) is not None:
+                        self._local_array_names.add(item.name)
                     if getattr(item, "storage_class", None) == "register":
                         self._register_locals.add(item.name)
                     # local `static` is supported (subset); handled by IR/codegen as a global-like symbol.
@@ -1687,8 +1692,10 @@ class SemanticAnalyzer:
                     if ty is not None and not getattr(ty, "is_pointer", False) and getattr(ty, "is_const", False):
                         self._err(f"increment/decrement of const-qualified variable '{expr.operand.name}'", expr)
                 elif not isinstance(expr.operand, (ArrayAccess,)):
-                    from pycc.ast_nodes import MemberAccess as _MA, PointerMemberAccess as _PMA
-                    if not isinstance(expr.operand, (_MA, _PMA)):
+                    from pycc.ast_nodes import MemberAccess as _MA, PointerMemberAccess as _PMA, UnaryOp as _UO
+                    # *ptr is a valid lvalue (dereference)
+                    is_deref = isinstance(expr.operand, _UO) and expr.operand.operator == "*"
+                    if not isinstance(expr.operand, (_MA, _PMA)) and not is_deref:
                         self._err("increment/decrement requires a modifiable lvalue", expr)
                 self._analyze_expr(expr.operand)
                 return
@@ -2004,14 +2011,18 @@ class SemanticAnalyzer:
             if isinstance(expr.pointer, Identifier):
                 base_ty = self._lookup_decl_type(expr.pointer.name)
                 if base_ty is not None:
-                    # '->' expects a pointer to struct/union.
-                    if not base_ty.is_pointer:
-                        self.errors.append(f"'->' used on non-pointer: {expr.pointer.name}")
-                    else:
-                        # We don't track pointed-to type separately; in this compiler, pointer keeps base_ty.base
-                        # and sets is_pointer=True, so base identifies the pointee.
+                    # '->' expects a pointer or array (which decays to pointer).
+                    is_ptr_like = getattr(base_ty, "is_pointer", False)
+                    # Arrays decay to pointers: T buf[N] used with -> is valid.
+                    if not is_ptr_like and expr.pointer.name in getattr(self, "_local_array_names", set()):
+                        is_ptr_like = True
+                    if not is_ptr_like and expr.pointer.name in getattr(self, "_global_arrays", {}):
+                        is_ptr_like = True
+                    if is_ptr_like:
                         pointee = Type(base=base_ty.base, line=base_ty.line, column=base_ty.column)
                         self._validate_member(pointee, expr.member, expr.pointer.name)
+                    else:
+                        self.errors.append(f"'->' used on non-pointer: {expr.pointer.name}")
             else:
                 self._analyze_expr(expr.pointer)
             return
