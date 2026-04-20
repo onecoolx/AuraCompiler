@@ -552,6 +552,15 @@ class IRGenerator:
             base = decl.type
         if isinstance(decl.type, ArrayType):
             base = str(getattr(decl.type.element_type, "base", base))
+
+        # Resolve typedef to underlying type once at the entry point.
+        # This ensures all downstream checks (_is_struct_or_union_type,
+        # layouts.get, _scalar_pack_info) work with the real type name
+        # regardless of how many typedef layers wrap it.
+        if isinstance(base, str) and self._sema_ctx is not None:
+            resolved = self._resolve_elem_type(base.strip())
+            if resolved != base.strip():
+                base = resolved
         # Arrays: represented by decl.array_size (parser doesn't always wrap type).
         # Also handle unsized arrays (`T a[] = {...}`) by inferring element count
         # from the initializer list.
