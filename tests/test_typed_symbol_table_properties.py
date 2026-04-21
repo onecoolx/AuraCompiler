@@ -273,3 +273,154 @@ class TestProperty2TypedefResolution:
             f"Direct resolve kind={direct.kind} != "
             f"insert+lookup kind={via_insert.kind}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Strategies for Property 3
+# ---------------------------------------------------------------------------
+
+# Strategy for generating IR symbol names (locals @name, temps %tN)
+_symbol_name = st.one_of(
+    st.text(alphabet="abcdefghijklmnopqrstuvwxyz_", min_size=1, max_size=8)
+    .map(lambda s: "@" + s),
+    st.integers(min_value=0, max_value=9999).map(lambda n: f"%t{n}"),
+)
+
+# Strategy for generating distinct CType instances
+_ctype_strategy = st.sampled_from([
+    IntegerType(kind=TypeKind.INT, is_unsigned=False),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=False),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=True),
+    IntegerType(kind=TypeKind.SHORT, is_unsigned=False),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=False),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+    FloatType(kind=TypeKind.FLOAT),
+    FloatType(kind=TypeKind.DOUBLE),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT)),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR)),
+    PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)),
+    StructType(kind=TypeKind.STRUCT, tag="my_struct"),
+    StructType(kind=TypeKind.STRUCT, tag="other_struct"),
+    ArrayType(kind=TypeKind.ARRAY, element=IntegerType(kind=TypeKind.INT), size=10),
+    EnumType(kind=TypeKind.ENUM, tag="my_enum"),
+])
+
+
+@st.composite
+def global_and_local_types(draw):
+    """Generate a symbol name with two distinct CTypes for global and local scope.
+
+    Returns (symbol_name, global_ctype, local_ctype) where global_ctype != local_ctype.
+    """
+    name = draw(_symbol_name)
+    global_ct = draw(_ctype_strategy)
+    local_ct = draw(_ctype_strategy)
+    # Ensure the two types are distinguishable
+    assume(global_ct.kind != local_ct.kind
+           or type(global_ct) != type(local_ct)
+           or getattr(global_ct, 'is_unsigned', None) != getattr(local_ct, 'is_unsigned', None)
+           or getattr(global_ct, 'tag', None) != getattr(local_ct, 'tag', None)
+           or getattr(global_ct, 'pointee', None) != getattr(local_ct, 'pointee', None))
+    return name, global_ct, local_ct
+
+
+# ---------------------------------------------------------------------------
+# Property 3 tests
+# ---------------------------------------------------------------------------
+
+class TestProperty3ScopeLookupPriority:
+    """Property 3: 作用域查找优先返回局部符号
+
+    **Feature: ir-type-annotations, Property 3: 作用域查找优先返回局部符号**
+    **Validates: Requirements 2.4**
+
+    For any symbol name, if that name exists in both the global scope and the
+    current function local scope, TypedSymbolTable.lookup should return the
+    CType from the local scope, not the global scope.
+    """
+
+    @given(data=global_and_local_types())
+    @settings(max_examples=150)
+    def test_local_shadows_global(self, data):
+        """lookup returns local CType when same name exists in both scopes."""
+        name, global_ct, local_ct = data
+        table = TypedSymbolTable()
+
+        # Insert into global scope (no scope pushed)
+        table.insert(name, global_ct)
+        # Push a function scope and insert the same name with a different type
+        table.push_scope()
+        table.insert(name, local_ct)
+
+        result = table.lookup(name)
+        assert result is not None, "Symbol should be found"
+        assert result is local_ct, (
+            f"lookup should return local CType {local_ct} "
+            f"but got {result} (global was {global_ct})"
+        )
+
+        table.pop_scope()
+
+    @given(data=global_and_local_types())
+    @settings(max_examples=150)
+    def test_global_visible_after_scope_pop(self, data):
+        """After popping local scope, lookup returns the global CType."""
+        name, global_ct, local_ct = data
+        table = TypedSymbolTable()
+
+        table.insert(name, global_ct)
+        table.push_scope()
+        table.insert(name, local_ct)
+
+        # While in scope, local shadows global
+        assert table.lookup(name) is local_ct
+
+        # After pop, global is visible again
+        table.pop_scope()
+        result = table.lookup(name)
+        assert result is not None, "Global symbol should still exist after pop"
+        assert result is global_ct, (
+            f"After pop_scope, lookup should return global CType {global_ct} "
+            f"but got {result}"
+        )
+
+    @given(name=_symbol_name, ct=_ctype_strategy)
+    @settings(max_examples=100)
+    def test_global_only_when_no_local(self, name, ct):
+        """lookup returns global CType when no local scope shadows it."""
+        table = TypedSymbolTable()
+        table.insert(name, ct)
+
+        # No scope pushed — lookup should find global
+        assert table.lookup(name) is ct
+
+        # Push an empty scope — global still visible
+        table.push_scope()
+        assert table.lookup(name) is ct
+        table.pop_scope()
+
+    @given(name=_symbol_name, ct=_ctype_strategy)
+    @settings(max_examples=100)
+    def test_local_only_no_global(self, name, ct):
+        """lookup returns local CType even when no global entry exists."""
+        table = TypedSymbolTable()
+        table.push_scope()
+        table.insert(name, ct)
+
+        result = table.lookup(name)
+        assert result is ct, (
+            f"lookup should return local CType {ct} but got {result}"
+        )
+        table.pop_scope()
+
+    @given(name=_symbol_name)
+    @settings(max_examples=100)
+    def test_lookup_returns_none_when_absent(self, name):
+        """lookup returns None for a symbol that was never inserted."""
+        table = TypedSymbolTable()
+        assert table.lookup(name) is None
+
+        table.push_scope()
+        assert table.lookup(name) is None
+        table.pop_scope()
