@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 
 from pycc.ir import IRInstruction
+from pycc.types import CType, _str_to_ctype
 
 
 # ---------------------------------------------------------------------------
@@ -152,10 +153,12 @@ def get_struct_pass_mode(classification: list) -> str:
 class CodeGenerator:
     """Generates x86-64 assembly code"""
     
-    def __init__(self, optimize: bool = True, sema_ctx: Any = None, pic: bool = False):
+    def __init__(self, optimize: bool = True, sema_ctx: Any = None, pic: bool = False,
+                 sym_table=None):
         self.optimize = optimize
         self._sema_ctx = sema_ctx
         self._pic = pic
+        self._sym_table = sym_table
         self.assembly_lines: List[str] = []
         self._string_pool: Dict[str, str] = {}
         self._string_counter = 0
@@ -182,7 +185,23 @@ class CodeGenerator:
         # struct layout: per-function member offset map
         # (until full semantic layout is implemented).
         self._member_offsets: Dict[tuple[str, str], int] = {}
-    
+
+    # ------------------------------------------------------------------
+    # Type lookup helper (incremental migration)
+    # ------------------------------------------------------------------
+
+    def _get_type(self, name: str) -> Optional[CType]:
+        """Get operand CType, prefer symbol table, fall back to string."""
+        if self._sym_table:
+            ct = self._sym_table.lookup(name)
+            if ct is not None:
+                return ct
+        # Fallback: from _var_types string
+        ty_str = self._var_types.get(name)
+        if ty_str:
+            return _str_to_ctype(ty_str)
+        return None
+
     def generate(self, instructions: List[IRInstruction]) -> str:
         """Generate x86-64 assembly from IR"""
         self.assembly_lines = []

@@ -228,7 +228,7 @@ int main(void) {
     tokens = comp.get_tokens(code)
     ast = comp.get_ast(tokens)
     sema_ctx, _ = comp.analyze_semantics(ast)
-    ir = comp.get_ir(ast, sema_ctx=sema_ctx)
+    ir, _sym_table = comp.get_ir(ast, sema_ctx=sema_ctx)
     # Find the struct_copy instruction for @b
     found_struct_copy = False
     for ins in ir:
@@ -255,7 +255,7 @@ int main(void) {
     tokens = comp.get_tokens(code)
     ast = comp.get_ast(tokens)
     sema_ctx, _ = comp.analyze_semantics(ast)
-    ir = comp.get_ir(ast, sema_ctx=sema_ctx)
+    ir, _sym_table = comp.get_ir(ast, sema_ctx=sema_ctx)
     found_struct_copy = False
     for ins in ir:
         if ins.op == "struct_copy" and ins.result == "@b":

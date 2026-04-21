@@ -30,7 +30,7 @@ def _get_asm(code: str) -> str:
     tokens = comp.get_tokens(code)
     ast = comp.get_ast(tokens)
     sema_ctx, _analyzer = comp.analyze_semantics(ast)
-    ir = comp.get_ir(ast, sema_ctx=sema_ctx)
+    ir, _sym_table = comp.get_ir(ast, sema_ctx=sema_ctx)
     return comp.get_assembly(ir, sema_ctx=sema_ctx)
 
 

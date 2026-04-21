@@ -486,7 +486,7 @@ class Compiler:
         
         # Phase 4: IR Generation
         try:
-            ir = self.get_ir(ast, sema_ctx=sema_ctx)
+            ir, sym_table = self.get_ir(ast, sema_ctx=sema_ctx)
         except Exception as e:
             return CompilationResult(success=False, errors=[f"IR generation failed: {e}"])
         
@@ -499,7 +499,8 @@ class Compiler:
         
         # Phase 6: Code Generation
         try:
-            assembly = self.get_assembly(ir, sema_ctx=sema_ctx)
+            assembly = self.get_assembly(ir, sema_ctx=sema_ctx,
+                                          sym_table=sym_table)
         except Exception as e:
             return CompilationResult(success=False, errors=[f"Code generation failed: {e}"])
         
@@ -775,16 +776,19 @@ class Compiler:
         # (e.g. signed/unsigned comparisons).
         if sema_ctx is not None:
             setattr(generator, "_sema_ctx", sema_ctx)
-        return generator.generate(ast)
+        ir = generator.generate(ast)
+        return ir, getattr(generator, "_sym_table", None)
     
     def optimize_ir(self, ir):
         """Optimize IR"""
         optimizer = Optimizer()
         return optimizer.optimize(ir)
     
-    def get_assembly(self, ir, sema_ctx=None):
+    def get_assembly(self, ir, sema_ctx=None, sym_table=None):
         """Generate assembly from IR"""
-        generator = CodeGenerator(self.optimize, sema_ctx=sema_ctx, pic=getattr(self, 'pic', False))
+        generator = CodeGenerator(self.optimize, sema_ctx=sema_ctx,
+                                   pic=getattr(self, 'pic', False),
+                                   sym_table=sym_table)
         asm = generator.generate(ir)
         return asm
 

@@ -545,7 +545,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             tokens = c.get_tokens(text)
             ast = c.get_ast(tokens)
             sema_ctx, _ = c.analyze_semantics(ast)
-            ir_list = c.get_ir(ast, sema_ctx=sema_ctx)
+            ir_list, _sym_table = c.get_ir(ast, sema_ctx=sema_ctx)
 
             with open(args.dump_ir_only_to, "w", encoding="utf-8") as f:
                 for ins in ir_list:
@@ -581,7 +581,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             tokens = c.get_tokens(text)
             ast = c.get_ast(tokens)
             sema_ctx, _ = c.analyze_semantics(ast)
-            ir_list = c.get_ir(ast, sema_ctx=sema_ctx)
+            ir_list, _sym_table = c.get_ir(ast, sema_ctx=sema_ctx)
 
             out_ir = args.dump_ir_to or "pycc-tmp.ir"
             with open(out_ir, "w", encoding="utf-8") as f:
