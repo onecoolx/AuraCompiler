@@ -17,9 +17,9 @@ from __future__ import annotations
 
 import struct as _struct
 from dataclasses import dataclass
-from typing import List, Optional, Union, Any
+from typing import Dict, List, Optional, Set, Union, Any
 
-from pycc.types import CType
+from pycc.types import CType, TypedSymbolTable, ctype_to_ir_type
 
 from pycc.ast_nodes import (
     Program,
@@ -325,6 +325,7 @@ class IRGenerator:
         self._sema_ctx = None
         self._scope_stack: List[Dict[str, str]] = []  # name -> IR symbol mapping
         self._shadow_counter = 0
+        self._sym_table: Optional[TypedSymbolTable] = None
     
     def generate(self, ast: Program) -> List[IRInstruction]:
         """Generate IR from AST"""
@@ -348,6 +349,11 @@ class IRGenerator:
         self._enum_constants: dict[str, int] = {}
         # Track local array symbols per function to implement array-to-pointer decay.
         self._local_arrays: set[str] = set()
+        # Initialize typed symbol table for CType tracking (incremental migration).
+        if self._sema_ctx is not None:
+            self._sym_table = TypedSymbolTable(self._sema_ctx)
+        else:
+            self._sym_table = None
         for decl in ast.declarations:
             from pycc.ast_nodes import EnumDecl
             if isinstance(decl, EnumDecl):
@@ -1631,6 +1637,19 @@ class IRGenerator:
         self.temp_counter += 1
         return t
 
+    def _new_temp_typed(self, ctype: CType) -> str:
+        """Create a new temp variable and register its CType.
+
+        Dual-populates both _sym_table (CType) and _var_types (string)
+        for backward compatibility during incremental migration.
+        """
+        name = self._new_temp()
+        if self._sym_table:
+            self._sym_table.insert(name, ctype)
+        # Compat: also update old _var_types
+        self._var_types[name] = ctype_to_ir_type(ctype)
+        return name
+
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"
         self.label_counter += 1
@@ -2283,6 +2302,8 @@ class IRGenerator:
         # params are treated as locals; codegen will map them from ABI regs
         self._scope_stack = []
         self._push_scope()  # function-level scope
+        if self._sym_table:
+            self._sym_table.push_scope()
         for p in fn.parameters:
             ty_s = _ty_str(p.type)
             self._var_types[f"@{p.name}"] = ty_s
@@ -2293,6 +2314,8 @@ class IRGenerator:
                 self._var_volatile.add(f"@{p.name}")
         self._gen_stmt(fn.body)
         self._pop_scope()
+        if self._sym_table:
+            self._sym_table.pop_scope()
         # Ensure a return exists
         self.instructions.append(IRInstruction(op="ret", operand1="$0"))
         self.instructions.append(IRInstruction(op="func_end", label=fn.name))
