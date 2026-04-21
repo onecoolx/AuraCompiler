@@ -3315,14 +3315,35 @@ class IRGenerator:
                     self._var_types[t2] = self._canon_int_type(dst_str)
                     v = t2
                 # Preserve pointer-ness in casted values.
+                # IMPORTANT: do not clobber _var_types of named variables when
+                # the cast would lose struct/union type information needed for
+                # member offset resolution. For example, `(void*)root` should
+                # NOT change root's type from "cJSON*" to "void*".
+                cast_ty = None
                 if getattr(dst_ty, "is_pointer", False):
-                    # Keep pointer type spelling stable for downstream codegen.
-                    if "*" in dst_str:
-                        self._var_types[v] = dst_str
-                    else:
-                        self._var_types[v] = f"{dst_str}*"
+                    cast_ty = dst_str if "*" in dst_str else f"{dst_str}*"
                 else:
-                    self._var_types[v] = dst_str
+                    cast_ty = dst_str
+                if isinstance(v, str) and v.startswith("@"):
+                    # Named variable: only update if the new type doesn't lose
+                    # struct/union pointer info that member access needs.
+                    old_ty = self._var_types.get(v, "")
+                    if isinstance(old_ty, str) and "*" in old_ty:
+                        old_base = old_ty.replace("*", "").strip()
+                        new_base = cast_ty.replace("*", "").strip() if isinstance(cast_ty, str) else ""
+                        # Don't clobber if old type has a struct/union base
+                        # and new type is void or a different struct.
+                        if old_base and self._is_struct_or_union_type(old_base):
+                            if new_base in ("void", "") or new_base != old_base:
+                                pass  # keep old type
+                            else:
+                                self._var_types[v] = cast_ty
+                        else:
+                            self._var_types[v] = cast_ty
+                    else:
+                        self._var_types[v] = cast_ty
+                else:
+                    self._var_types[v] = cast_ty
             # If casting to pointer, allow integer literal 0 to stay 0; otherwise passthrough.
             return v
         if isinstance(expr, Identifier):
