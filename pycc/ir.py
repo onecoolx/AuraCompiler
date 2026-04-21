@@ -523,12 +523,19 @@ class IRGenerator:
         if ty is None:
             return ""
         if isinstance(ty, str):
-            s = " ".join(ty.strip().lower().split())
+            raw = ty.strip()
         else:
             try:
-                s = " ".join(str(ty).strip().lower().split())
+                raw = str(ty).strip()
             except Exception:
                 return ""
+
+        # Struct/union names are case-sensitive (layout keys preserve
+        # original case).  Return them without lowercasing.
+        if raw.startswith("struct ") or raw.startswith("union "):
+            return raw
+
+        s = " ".join(raw.lower().split())
 
         # normalize common spellings
         if s in {"short int", "short"}:
@@ -3863,7 +3870,7 @@ class IRGenerator:
                         mty = mtypes.get(expr.member)
                         if isinstance(mty, str):
                             load_meta["member_type"] = mty
-                            if "*" in mty:
+                            if "*" in mty or mty.strip() in ("float", "double", "long double"):
                                 self._var_types[t] = mty
             except Exception:
                 pass
@@ -4107,7 +4114,7 @@ class IRGenerator:
                         mty = mtypes.get(expr.member)
                         if isinstance(mty, str):
                             meta["member_type"] = mty
-                            if "*" in mty:
+                            if "*" in mty or mty.strip() in ("float", "double", "long double"):
                                 self._var_types[t] = mty
             except Exception:
                 pass

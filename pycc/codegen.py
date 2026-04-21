@@ -1671,9 +1671,13 @@ class CodeGenerator:
                 return
             # CType-based path: use result_type to determine member size
             rt = getattr(ins, "result_type", None)
+            is_float_member = False
+            is_double_member = False
             if rt is not None:
                 sz = self._ctype_sizeof(rt)
                 is_unsigned_char = self._ctype_is_unsigned_char(rt)
+                is_float_member = (rt.kind == TypeKind.FLOAT)
+                is_double_member = (rt.kind == TypeKind.DOUBLE)
             else:
                 # String-based fallback
                 _, sz = self._resolve_member(base, member)
@@ -1681,6 +1685,25 @@ class CodeGenerator:
                 mem_ty = self._resolve_member_type(base, member)
                 if isinstance(mem_ty, str) and "unsigned" in mem_ty:
                     is_unsigned_char = True
+                mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
+                if mem_ty_s == "float":
+                    is_float_member = True
+                elif mem_ty_s == "double":
+                    is_double_member = True
+
+            # Float/double members: use SSE load instructions.
+            if is_float_member or is_double_member:
+                fp_ty = "float" if is_float_member else "double"
+                s = "s" if is_float_member else "d"
+                self._emit(f"  movs{s} (%rax), %xmm0")
+                if ins.result:
+                    off_r = self._ensure_local(ins.result, size=8)
+                    self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
+                    self._var_types[ins.result] = fp_ty
+                if isinstance(ins.meta, dict) and "member_type" in ins.meta:
+                    self._var_types[ins.result] = ins.meta["member_type"]
+                return
+
             if sz == 1:
                 if is_unsigned_char:
                     self._emit("  movb (%rax), %al")
@@ -1729,9 +1752,13 @@ class CodeGenerator:
                 self._emit(f"  addq ${off}, %rax")
             # CType-based path: use result_type to determine member size
             rt = getattr(ins, "result_type", None)
+            is_float_member = False
+            is_double_member = False
             if rt is not None:
                 sz = self._ctype_sizeof(rt)
                 is_unsigned_char = self._ctype_is_unsigned_char(rt)
+                is_float_member = (rt.kind == TypeKind.FLOAT)
+                is_double_member = (rt.kind == TypeKind.DOUBLE)
             else:
                 # String-based fallback
                 _, sz = self._resolve_member(base, member)
@@ -1739,6 +1766,25 @@ class CodeGenerator:
                 mem_ty = self._resolve_member_type(base, member)
                 if isinstance(mem_ty, str) and "unsigned" in mem_ty:
                     is_unsigned_char = True
+                mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
+                if mem_ty_s == "float":
+                    is_float_member = True
+                elif mem_ty_s == "double":
+                    is_double_member = True
+
+            # Float/double members: use SSE load instructions.
+            if is_float_member or is_double_member:
+                fp_ty = "float" if is_float_member else "double"
+                s = "s" if is_float_member else "d"
+                self._emit(f"  movs{s} (%rax), %xmm0")
+                if ins.result:
+                    off_r = self._ensure_local(ins.result, size=8)
+                    self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
+                    self._var_types[ins.result] = fp_ty
+                if isinstance(ins.meta, dict) and "member_type" in ins.meta:
+                    self._var_types[ins.result] = ins.meta["member_type"]
+                return
+
             # Load the member value based on its size.
             if sz == 1:
                 if is_unsigned_char:
@@ -2754,13 +2800,32 @@ class CodeGenerator:
                 return
 
             # Determine load width from CType or string fallback
+            is_float_member = False
+            is_double_member = False
             if rt is not None:
                 sz = self._ctype_sizeof(rt)
                 is_unsigned_char = self._ctype_is_unsigned_char(rt)
+                is_float_member = (rt.kind == TypeKind.FLOAT)
+                is_double_member = (rt.kind == TypeKind.DOUBLE)
             else:
                 is_unsigned_char = False
                 mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
                 is_unsigned_char = mem_ty_s.startswith("unsigned char")
+                if mem_ty_s == "float":
+                    is_float_member = True
+                elif mem_ty_s == "double":
+                    is_double_member = True
+
+            # Float/double members: use SSE load instructions.
+            if is_float_member or is_double_member:
+                fp_ty = "float" if is_float_member else "double"
+                s = "s" if is_float_member else "d"
+                self._emit(f"  movs{s} (%rax), %xmm0")
+                if ins.result:
+                    off_r = self._ensure_local(ins.result, size=8)
+                    self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
+                    self._var_types[ins.result] = fp_ty
+                return
 
             # load based on member size
             if sz == 1:
@@ -2795,10 +2860,14 @@ class CodeGenerator:
             self._load_operand(base, "%rax")
             # CType-based path: use result_type to determine member size
             rt = getattr(ins, "result_type", None)
+            is_float_member = False
+            is_double_member = False
             if rt is not None:
                 off_only, _ = self._resolve_member(base, member)
                 sz = self._ctype_sizeof(rt)
                 is_unsigned_char = self._ctype_is_unsigned_char(rt)
+                is_float_member = (rt.kind == TypeKind.FLOAT)
+                is_double_member = (rt.kind == TypeKind.DOUBLE)
             else:
                 # String-based fallback
                 off_only, sz = self._resolve_member(base, member)
@@ -2809,8 +2878,24 @@ class CodeGenerator:
                     mem_ty = None
                 mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
                 is_unsigned_char = mem_ty_s.startswith("unsigned char")
+                if mem_ty_s == "float":
+                    is_float_member = True
+                elif mem_ty_s == "double":
+                    is_double_member = True
             if off_only:
                 self._emit(f"  addq ${off_only}, %rax")
+
+            # Float/double members: use SSE load instructions.
+            if is_float_member or is_double_member:
+                fp_ty = "float" if is_float_member else "double"
+                s = "s" if is_float_member else "d"
+                self._emit(f"  movs{s} (%rax), %xmm0")
+                if ins.result:
+                    off_r = self._ensure_local(ins.result, size=8)
+                    self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
+                    self._var_types[ins.result] = fp_ty
+                return
+
             if sz == 1:
                 if is_unsigned_char:
                     self._emit("  movzbl (%rax), %eax")
@@ -2867,6 +2952,50 @@ class CodeGenerator:
             member_ct = (ins.meta or {}).get("member_ctype") if isinstance(ins.meta, dict) else None
             if member_ct is not None:
                 sz = self._ctype_sizeof(member_ct)
+
+            # Float/double member store: convert value via SSE and store.
+            is_float_mem = (member_ct is not None and member_ct.kind == TypeKind.FLOAT)
+            is_double_mem = (member_ct is not None and member_ct.kind == TypeKind.DOUBLE)
+            if not is_float_mem and not is_double_mem:
+                # String-based fallback for member type detection
+                try:
+                    _mt = self._resolve_member_type(base, member)
+                    _mts = str(_mt).strip().lower() if _mt else ""
+                    if _mts == "float":
+                        is_float_mem = True
+                    elif _mts == "double":
+                        is_double_mem = True
+                except Exception:
+                    pass
+            if is_float_mem or is_double_mem:
+                self._emit("  movq %rax, %rdx")  # save dest address
+                val_ty = self._var_types.get(val, "") if isinstance(val, str) else ""
+                val_off = self._ensure_local(val) if isinstance(val, str) else 0
+                if is_float_mem:
+                    if val_ty == "float":
+                        self._emit(f"  movss -{val_off}(%rbp), %xmm0")
+                    elif val_ty == "double":
+                        self._emit(f"  movsd -{val_off}(%rbp), %xmm0")
+                        self._emit("  cvtsd2ss %xmm0, %xmm0")
+                    else:
+                        # Source is integer; convert int -> float.
+                        self._load_operand(val, "%rax")
+                        self._emit("  cvtsi2ssq %rax, %xmm0")
+                    self._emit("  movss %xmm0, (%rdx)")
+                else:
+                    # double member
+                    if val_ty == "double":
+                        self._emit(f"  movsd -{val_off}(%rbp), %xmm0")
+                    elif val_ty == "float":
+                        self._emit(f"  movss -{val_off}(%rbp), %xmm0")
+                        self._emit("  cvtss2sd %xmm0, %xmm0")
+                    else:
+                        # Source is integer; convert int -> double.
+                        self._load_operand(val, "%rax")
+                        self._emit("  cvtsi2sdq %rax, %xmm0")
+                    self._emit("  movsd %xmm0, (%rdx)")
+                return
+
             # Struct/union member: block copy via memcpy.
             if sz > 8:
                 self._emit("  movq %rax, %rdi")  # dest = &base.member
