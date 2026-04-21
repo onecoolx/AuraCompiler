@@ -19,7 +19,12 @@ import struct as _struct
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union, Any
 
-from pycc.types import CType, TypedSymbolTable, ctype_to_ir_type
+from pycc.types import (
+    CType, TypedSymbolTable, ctype_to_ir_type, ast_type_to_ctype_resolved,
+    TypeKind, IntegerType, FloatType, PointerType,
+    ArrayType as CArrayType, StructType as CStructType,
+)
+
 
 from pycc.ast_nodes import (
     Program,
@@ -1650,6 +1655,44 @@ class IRGenerator:
         self._var_types[name] = ctype_to_ir_type(ctype)
         return name
 
+    def _insert_decl_ctype(self, ir_sym: str, decl) -> None:
+        """Insert a local variable or parameter CType into the symbol table.
+
+        Handles arrays (creating ArrayType), struct/union, pointers, and
+        scalar types. Always uses ast_type_to_ctype_resolved for typedef
+        resolution.
+        """
+        if not self._sym_table:
+            return
+        arr_sz = getattr(decl, "array_size", None)
+        ast_type = getattr(decl, "type", None)
+        if ast_type is None:
+            return
+        base_ctype = ast_type_to_ctype_resolved(ast_type, self._sema_ctx)
+        if arr_sz is not None:
+            # Array declaration: wrap element CType in ArrayType.
+            # For multi-dim arrays, compute total element count.
+            total = int(arr_sz)
+            ad = getattr(decl, "array_dims", None)
+            if isinstance(ad, list) and len(ad) >= 2:
+                prod = 1
+                for d in ad:
+                    if isinstance(d, int):
+                        prod *= d
+                if prod > total:
+                    total = prod
+            # base_ctype may already be a PointerType if the element is a
+            # pointer (e.g. char *arr[N]). For arrays, the element type is
+            # the full base_ctype (including pointer levels).
+            arr_ctype = CArrayType(
+                kind=TypeKind.ARRAY,
+                element=base_ctype,
+                size=total,
+            )
+            self._sym_table.insert(ir_sym, arr_ctype)
+        else:
+            self._sym_table.insert(ir_sym, base_ctype)
+
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"
         self.label_counter += 1
@@ -2309,6 +2352,10 @@ class IRGenerator:
             self._var_types[f"@{p.name}"] = ty_s
             self._scope_stack[-1][p.name] = f"@{p.name}"
             self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=ty_s))
+            # Insert parameter CType into symbol table (dual-populate).
+            if self._sym_table:
+                ctype = ast_type_to_ctype_resolved(p.type, self._sema_ctx)
+                self._sym_table.insert(f"@{p.name}", ctype)
             # Track volatile-qualified parameters.
             if getattr(p.type, "is_volatile", False):
                 self._var_volatile.add(f"@{p.name}")
@@ -2416,6 +2463,8 @@ class IRGenerator:
                             self._var_types[f"@{gname}"] = f"array({item.type.base},${arr_sz})"
                         else:
                             self._var_types[f"@{gname}"] = str(item.type.base)
+                        # Insert local static CType into symbol table (dual-populate).
+                        self._insert_decl_ctype(f"@{gname}", item)
                         # Track volatile for local statics.
                         if getattr(item.type, "is_volatile", False):
                             self._var_volatile.add(f"@{gname}")
@@ -2515,6 +2564,8 @@ class IRGenerator:
                         self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=op1))
                         self._local_arrays.add(item.name)
                         self._var_types[self._resolve_name(item.name)] = str(op1)
+                        # Insert array CType into symbol table (dual-populate).
+                        self._insert_decl_ctype(self._resolve_name(item.name), item)
                         # Record multi-dimensional array dims for upcoming
                         # pointer-to-row decay/scaling support.
                         try:
@@ -2527,6 +2578,8 @@ class IRGenerator:
                         decl_op1 = str(item.type.base)
                         self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
                         self._var_types[self._resolve_name(item.name)] = decl_op1
+                        # Insert struct/union CType into symbol table (dual-populate).
+                        self._insert_decl_ctype(self._resolve_name(item.name), item)
                     else:
                         # Infer `T[]` element count from brace initializer.
                         # e.g. `int a[] = {1,2,3};`
@@ -2553,8 +2606,8 @@ class IRGenerator:
                                     decl_op1 = f"{decl_op1}{stars}"
                             self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
                             self._var_types[self._resolve_name(item.name)] = str(decl_op1)
-
-                    # Local struct/union brace init (subset)
+                            # Insert scalar CType into symbol table (dual-populate).
+                            self._insert_decl_ctype(self._resolve_name(item.name), item)
                     # If this is a pointer variable, record its declared pointee
                     # type so pointer arithmetic can scale correctly.
                     try:
