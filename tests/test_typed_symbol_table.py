@@ -339,17 +339,10 @@ class TestAstTypeToCTypeResolved:
 
     def test_simple_typedef_resolved(self):
         sema = _make_sema_ctx(typedefs={"GLfloat": _ty("float")})
-        # ast_type_to_ctype for an unknown base falls back to INT,
-        # but the typedef resolution should catch it if the base matches a typedef.
-        # However, ast_type_to_ctype converts the AST Type first, so we need
-        # the AST Type's base to be the typedef name.
+        # ast_type_to_ctype_resolved should resolve the typedef name "GLfloat"
+        # to its underlying type "float" -> FloatType(FLOAT).
         result = ast_type_to_ctype_resolved(_ty("GLfloat"), sema_ctx=sema)
-        # ast_type_to_ctype("GLfloat") -> IntegerType(INT) (unknown base fallback)
-        # resolve_typedefs won't resolve IntegerType since it's not StructType/EnumType
-        # This is expected: ast_type_to_ctype_resolved resolves typedefs in the
-        # *resulting CType*, not in the AST base name. The AST base name resolution
-        # happens when the AST Type is a typedef name that maps to a StructType tag.
-        assert result.kind == TypeKind.INT
+        assert result.kind == TypeKind.FLOAT
 
     def test_pointer_to_typedef_struct(self):
         """Pointer to typedef struct should resolve the pointee."""

@@ -391,11 +391,55 @@ def ast_type_to_ctype_resolved(ast_type, sema_ctx=None) -> CType:
     """Convert an AST Type node to a fully resolved CType.
 
     Unlike ast_type_to_ctype, this recursively resolves typedef names.
+    When the base name is a typedef (e.g. MyType -> long), the typedef
+    is resolved before CType construction so that pointer/array wrappers
+    are built around the correct underlying type.
     """
+    if sema_ctx is not None and ast_type is not None and not isinstance(ast_type, str):
+        base = getattr(ast_type, 'base', '') or ''
+        typedefs = getattr(sema_ctx, 'typedefs', None)
+        if (typedefs and base
+                and base not in _KNOWN_BASE_NAMES
+                and not base.startswith('struct ')
+                and not base.startswith('union ')
+                and not base.startswith('enum ')):
+            td = typedefs.get(base)
+            if td is not None:
+                # Resolve the typedef base, preserving pointer/array wrapping
+                # from the original AST type node.
+                resolved_base = ast_type_to_ctype_resolved(td, sema_ctx)
+                # Re-apply pointer levels from the original declaration.
+                is_ptr = getattr(ast_type, 'is_pointer', False)
+                ptr_level = getattr(ast_type, 'pointer_level', 0)
+                if ptr_level <= 0 and is_ptr:
+                    ptr_level = 1
+                pointer_quals_list = getattr(ast_type, 'pointer_quals', []) or []
+                for i in range(ptr_level):
+                    pq = Qualifiers()
+                    if i < len(pointer_quals_list):
+                        qs = pointer_quals_list[i]
+                        pq = Qualifiers(const='const' in qs,
+                                        volatile='volatile' in qs)
+                    resolved_base = PointerType(kind=TypeKind.POINTER,
+                                                quals=pq,
+                                                pointee=resolved_base)
+                return resolved_base
     ct = ast_type_to_ctype(ast_type)
     if sema_ctx is not None:
         ct = resolve_typedefs(ct, sema_ctx)
     return ct
+
+
+# Set of known base type names that should NOT be treated as typedefs.
+_KNOWN_BASE_NAMES = frozenset({
+    'void', 'char', 'signed char', 'unsigned char',
+    'short', 'short int', 'signed short', 'signed short int',
+    'unsigned short', 'unsigned short int',
+    'int', 'signed int', 'unsigned int', 'signed',
+    'long', 'long int', 'signed long', 'signed long int',
+    'unsigned long', 'unsigned long int',
+    'float', 'double', 'long double',
+})
 
 
 # -- TypedSymbolTable --------------------------------------------------------

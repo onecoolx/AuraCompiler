@@ -4644,8 +4644,11 @@ class IRGenerator:
                     # String path gave 1 (char*) or failed; try CType.
                     ct_sz = self._pointee_size_from_ctype(operand)
                     if ct_sz is not None and ct_sz > 0:
-                        # Only override if string path had no pointer info at all.
-                        if not isinstance(str_ty, str) or "*" not in str_ty:
+                        # When string path returned 0 (failed completely, e.g.
+                        # typedef or float/double pointee), always use CType.
+                        # When string path returned 1 (char*), only override
+                        # if string path had no pointer info at all.
+                        if str_sz <= 0 or not isinstance(str_ty, str) or "*" not in str_ty:
                             return ct_sz
                     return str_sz
 
