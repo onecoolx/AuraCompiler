@@ -2560,6 +2560,19 @@ class IRGenerator:
         # reset per-function array set
         self._local_arrays = set()
         # Track declared types of locals/params for signedness decisions.
+        #
+        # NOTE: _var_types CANNOT be removed yet (task 7.2 deferred).
+        # Codegen's _var_types (task 7.1, also deferred) is populated by
+        # pre-scanning IR decl/param instructions, which carry the type
+        # strings that this dictionary produces.  Since codegen still
+        # depends on _var_types for all function-local type lookups
+        # (TypedSymbolTable scopes are popped after IR generation, leaving
+        # only global-scope entries), the IR generator must continue to
+        # dual-populate both _sym_table and _var_types.
+        #
+        # To remove this dictionary, the architecture must first change so
+        # that TypedSymbolTable preserves per-function scopes across the
+        # IR-gen -> codegen boundary (see codegen.py task 7.1 comment).
         self._var_types: dict[str, str] = {}
         # Track volatile-qualified variables (IR symbols like @x).
         self._var_volatile: set[str] = set()
