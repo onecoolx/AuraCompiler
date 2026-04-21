@@ -274,6 +274,20 @@ class CodeGenerator:
         # Best-effort type table across the whole function. This is needed for
         # temps like `%t0` produced by `addr_index` so later ops (load_member)
         # know it is a pointer value.
+        #
+        # NOTE: _var_types CANNOT be removed yet (task 7.1 deferred).
+        # TypedSymbolTable scopes are popped at the end of IR generation
+        # (IRGenerator._gen_function calls _sym_table.pop_scope()), so by the
+        # time codegen runs, only global-scope entries remain in the symbol
+        # table.  All function-local symbols (%tN temps, @local_var locals,
+        # function parameters) are NOT resolvable via _sym_table.lookup()
+        # during codegen.  _var_types is the only source of type information
+        # for these symbols.
+        #
+        # To remove _var_types, the architecture must change so that
+        # TypedSymbolTable preserves per-function scopes across the IR-gen ->
+        # codegen boundary (e.g. by not popping scopes, or by snapshotting
+        # them into a per-function map before popping).
         self._var_types: Dict[str, str] = {}
         # Optional per-temp pointer arithmetic step overrides (bytes).
         # Populated from IRInstruction.meta (e.g. for pointer-to-array decay).
