@@ -23,6 +23,7 @@ from pycc.types import (
     CType, TypedSymbolTable, ctype_to_ir_type, ast_type_to_ctype_resolved,
     TypeKind, IntegerType, FloatType, PointerType,
     ArrayType as CArrayType, StructType as CStructType,
+    type_sizeof,
 )
 
 
@@ -1654,6 +1655,41 @@ class IRGenerator:
         # Compat: also update old _var_types
         self._var_types[name] = ctype_to_ir_type(ctype)
         return name
+
+    def _pointee_size_from_ctype(self, operand: str) -> Optional[int]:
+        """Extract pointee element size from a pointer CType via the symbol table.
+
+        Returns the byte size of the pointee type, or None if the operand
+        is not a pointer or the symbol table is unavailable.
+        Used for pointer arithmetic scaling and array indexing.
+        """
+        if not self._sym_table:
+            return None
+        ct = self._sym_table.lookup(operand)
+        if ct is None:
+            return None
+        # PointerType: extract pointee size directly.
+        if isinstance(ct, PointerType) and ct.pointee is not None:
+            return type_sizeof(ct.pointee)
+        # ArrayType: extract element size (array decays to pointer).
+        if isinstance(ct, CArrayType) and ct.element is not None:
+            return type_sizeof(ct.element)
+        return None
+
+    def _lookup_pointer_ctype(self, operand: str) -> Optional[CType]:
+        """Look up the CType for an operand and return it if it is a pointer or array.
+
+        Returns the CType if it is a PointerType or ArrayType, None otherwise.
+        Used for propagating pointer types through arithmetic results.
+        """
+        if not self._sym_table:
+            return None
+        ct = self._sym_table.lookup(operand)
+        if ct is None:
+            return None
+        if isinstance(ct, (PointerType, CArrayType)):
+            return ct
+        return None
 
     def _insert_decl_ctype(self, ir_sym: str, decl) -> None:
         """Insert a local variable or parameter CType into the symbol table.
@@ -3638,6 +3674,15 @@ class IRGenerator:
                 except Exception:
                     pass
 
+                # Register decayed pointer in symbol table: array -> pointer to element.
+                if self._sym_table:
+                    arr_ct = self._sym_table.lookup(sym)
+                    if isinstance(arr_ct, CArrayType) and arr_ct.element is not None:
+                        decay_ct = PointerType(kind=TypeKind.POINTER, pointee=arr_ct.element)
+                        self._sym_table.insert(t, decay_ct)
+                    elif isinstance(arr_ct, PointerType):
+                        self._sym_table.insert(t, arr_ct)
+
                 # If this is a multi-dimensional local array with known inner
                 # dimension, record pointer step bytes for (p + 1) scaling.
                 # We rely on a generator-level map populated during decl lowering.
@@ -3846,6 +3891,17 @@ class IRGenerator:
                             # make sure it is attached to the address temp.
                 except Exception:
                     pass
+                # Register nested indexing temps in symbol table.
+                if self._sym_table:
+                    base_row_ct = self._sym_table.lookup(base_row)
+                    nested_elem_ct = None
+                    if isinstance(base_row_ct, CArrayType) and base_row_ct.element is not None:
+                        nested_elem_ct = base_row_ct.element
+                    elif isinstance(base_row_ct, PointerType) and base_row_ct.pointee is not None:
+                        nested_elem_ct = base_row_ct.pointee
+                    if nested_elem_ct is not None:
+                        self._sym_table.insert(addr, PointerType(kind=TypeKind.POINTER, pointee=nested_elem_ct))
+                        self._sym_table.insert(t2, nested_elem_ct)
                 self.instructions.append(ins_load)
                 return t2
 
@@ -3926,6 +3982,16 @@ class IRGenerator:
                         self.instructions.append(IRInstruction(op="addr_index", result=taddr, operand1=base, operand2=idx))
                         # Preserve pointer type for later member access.
                         self._var_types[taddr] = f"{elem_ty}*"
+                        # Register in symbol table: pointer to the struct element.
+                        if self._sym_table:
+                            base_ct = self._sym_table.lookup(base)
+                            elem_ct = None
+                            if isinstance(base_ct, CArrayType) and base_ct.element is not None:
+                                elem_ct = base_ct.element
+                            elif isinstance(base_ct, PointerType) and base_ct.pointee is not None:
+                                elem_ct = base_ct.pointee
+                            if elem_ct is not None:
+                                self._sym_table.insert(taddr, PointerType(kind=TypeKind.POINTER, pointee=elem_ct))
                         return taddr
             except Exception:
                 pass
@@ -3943,6 +4009,16 @@ class IRGenerator:
                     self._var_types[t] = bty.strip()[:-1].strip()
             except Exception:
                 pass
+            # Register result in symbol table with element CType.
+            if self._sym_table:
+                base_ct = self._sym_table.lookup(base)
+                elem_ct = None
+                if isinstance(base_ct, PointerType) and base_ct.pointee is not None:
+                    elem_ct = base_ct.pointee
+                elif isinstance(base_ct, CArrayType) and base_ct.element is not None:
+                    elem_ct = base_ct.element
+                if elem_ct is not None:
+                    self._sym_table.insert(t, elem_ct)
             return t
         if isinstance(expr, PointerMemberAccess):
             base = self._gen_expr(expr.pointer)
@@ -4049,8 +4125,16 @@ class IRGenerator:
                 # If `cur` is a pointer and rhs is integer, scale rhs by pointee size.
                 cty = getattr(self, "_var_types", {}).get(cur)
                 rty = getattr(self, "_var_types", {}).get(rhs)
-                if bop in {"+", "-"} and isinstance(cty, str) and "*" in cty and not (isinstance(rty, str) and "*" in rty):
-                    sz = _type_size(cty.split("*", 1)[0].strip())
+                cur_is_ptr = (isinstance(cty, str) and "*" in cty) or self._lookup_pointer_ctype(cur) is not None
+                rhs_is_ptr = isinstance(rty, str) and "*" in rty
+                if bop in {"+", "-"} and cur_is_ptr and not rhs_is_ptr:
+                    # String primary, CType fallback (casts update _var_types
+                    # but not _sym_table for named vars).
+                    sz = _type_size(cty.split("*", 1)[0].strip()) if isinstance(cty, str) and "*" in cty else 0
+                    if sz <= 0:
+                        ct_sz = self._pointee_size_from_ctype(cur)
+                        if ct_sz is not None and ct_sz > 0:
+                            sz = ct_sz
                     if sz != 1:
                         s = self._new_temp()
                         self.instructions.append(IRInstruction(op="binop", result=s, operand1=rhs, operand2=f"${sz}", label="*"))
@@ -4062,6 +4146,11 @@ class IRGenerator:
                 if isinstance(cty, str) and "*" in cty:
                     self._var_types[t] = cty
                     self._var_types[dst] = cty
+                    # Also register in symbol table.
+                    cur_ct = self._lookup_pointer_ctype(cur)
+                    if cur_ct is not None and self._sym_table:
+                        self._sym_table.insert(t, cur_ct)
+                        self._sym_table.insert(dst, cur_ct)
                 # For narrow integer lvalues (char/short), compound assignment
                 # must convert the computed int result back to the lvalue type.
                 # Best-effort: truncate to 16 bits for short.
@@ -4131,10 +4220,15 @@ class IRGenerator:
                 rty = getattr(self, "_var_types", {}).get(rhs)
 
                 # Best-effort pointer compound arithmetic scaling.
-                if bop in {"+", "-"} and isinstance(cty, str) and "*" in cty and not (
-                    isinstance(rty, str) and "*" in rty
-                ):
-                    sz = _type_size(cty.split("*", 1)[0].strip())
+                cur_is_ptr2 = (isinstance(cty, str) and "*" in cty) or self._lookup_pointer_ctype(cur) is not None
+                rhs_is_ptr2 = isinstance(rty, str) and "*" in rty
+                if bop in {"+", "-"} and cur_is_ptr2 and not rhs_is_ptr2:
+                    # String primary, CType fallback.
+                    sz = _type_size(cty.split("*", 1)[0].strip()) if isinstance(cty, str) and "*" in cty else 0
+                    if sz <= 0:
+                        ct_sz = self._pointee_size_from_ctype(cur)
+                        if ct_sz is not None and ct_sz > 0:
+                            sz = ct_sz
                     if sz != 1:
                         s = self._new_temp()
                         self.instructions.append(
@@ -4525,6 +4619,7 @@ class IRGenerator:
                 rty0 = getattr(self, "_var_types", {}).get(r)
 
                 def _pointee_sz(ptr_ty: object) -> int:
+                    """String-based fallback for pointee size."""
                     if not isinstance(ptr_ty, str) or "*" not in ptr_ty:
                         return 1
                     base = ptr_ty.split("*", 1)[0].strip()
@@ -4536,14 +4631,36 @@ class IRGenerator:
                             pass
                     return _type_size(base)
 
-                if isinstance(lty0, str) and "*" in lty0 and not (isinstance(rty0, str) and "*" in rty0):
-                    sz = _pointee_sz(lty0)
+                def _resolve_ptr_scale(operand: str, str_ty: object) -> int:
+                    """Resolve pointee element size: string primary, CType fallback.
+
+                    During migration, casts update _var_types but not _sym_table
+                    for named variables, so _var_types is more accurate after casts.
+                    Use CType only when string path gives no useful result.
+                    """
+                    str_sz = _pointee_sz(str_ty)
+                    if str_sz > 0 and str_sz != 1:
+                        return str_sz
+                    # String path gave 1 (char*) or failed; try CType.
+                    ct_sz = self._pointee_size_from_ctype(operand)
+                    if ct_sz is not None and ct_sz > 0:
+                        # Only override if string path had no pointer info at all.
+                        if not isinstance(str_ty, str) or "*" not in str_ty:
+                            return ct_sz
+                    return str_sz
+
+                # Detect which side is the pointer operand.
+                l_is_ptr = (isinstance(lty0, str) and "*" in lty0) or self._lookup_pointer_ctype(l) is not None
+                r_is_ptr = (isinstance(rty0, str) and "*" in rty0) or self._lookup_pointer_ctype(r) is not None
+
+                if l_is_ptr and not r_is_ptr:
+                    sz = _resolve_ptr_scale(l, lty0)
                     if sz != 1:
                         s = self._new_temp()
                         self.instructions.append(IRInstruction(op="binop", result=s, operand1=r, operand2=f"${sz}", label="*"))
                         r = s
-                elif isinstance(rty0, str) and "*" in rty0 and not (isinstance(lty0, str) and "*" in lty0):
-                    sz = _pointee_sz(rty0)
+                elif r_is_ptr and not l_is_ptr:
+                    sz = _resolve_ptr_scale(r, rty0)
                     if sz != 1:
                         s = self._new_temp()
                         self.instructions.append(IRInstruction(op="binop", result=s, operand1=l, operand2=f"${sz}", label="*"))
@@ -4593,20 +4710,53 @@ class IRGenerator:
                 rty = getattr(self, "_var_types", {}).get(r)
                 if isinstance(lty, str) and "*" in lty and not (isinstance(rty, str) and "*" in rty):
                     self._var_types[t] = lty
+                    # Also register in symbol table with the pointer CType.
+                    lct = self._lookup_pointer_ctype(l)
+                    if lct is not None and self._sym_table:
+                        self._sym_table.insert(t, lct)
                 elif isinstance(rty, str) and "*" in rty and not (isinstance(lty, str) and "*" in lty):
                     self._var_types[t] = rty
+                    rct = self._lookup_pointer_ctype(r)
+                    if rct is not None and self._sym_table:
+                        self._sym_table.insert(t, rct)
+                else:
+                    # Neither side matched via string; try CType-only detection.
+                    lct = self._lookup_pointer_ctype(l)
+                    rct = self._lookup_pointer_ctype(r)
+                    if lct is not None and rct is None and self._sym_table:
+                        self._sym_table.insert(t, lct)
+                    elif rct is not None and lct is None and self._sym_table:
+                        self._sym_table.insert(t, rct)
 
             # Pointer difference (ptr - ptr) yields element count, not bytes.
             if expr.operator == "-":
                 lty2 = getattr(self, "_var_types", {}).get(l)
                 rty2 = getattr(self, "_var_types", {}).get(r)
                 if isinstance(lty2, str) and "*" in lty2 and isinstance(rty2, str) and "*" in rty2:
-                    # assume compatible pointee types; semantic layer may further restrict
+                    # String-based path is primary (casts update _var_types
+                    # but not _sym_table for named vars, so _var_types is
+                    # more accurate after casts).
                     sz = _type_size(lty2.split("*", 1)[0].strip())
+                    # Only use CType as fallback when string path gives 0.
+                    if sz <= 0:
+                        ct_sz = self._pointee_size_from_ctype(l)
+                        if ct_sz is not None and ct_sz > 0:
+                            sz = ct_sz
                     if sz > 1:
                         q = self._new_temp()
                         self.instructions.append(IRInstruction(op="binop", result=q, operand1=t, operand2=f"${sz}", label="/"))
                         return q
+                else:
+                    # CType-only path: both operands are pointers in symbol table
+                    # but not recognized as pointers via _var_types strings.
+                    lct2 = self._lookup_pointer_ctype(l)
+                    rct2 = self._lookup_pointer_ctype(r)
+                    if lct2 is not None and rct2 is not None:
+                        ct_sz = self._pointee_size_from_ctype(l)
+                        if ct_sz is not None and ct_sz > 1:
+                            q = self._new_temp()
+                            self.instructions.append(IRInstruction(op="binop", result=q, operand1=t, operand2=f"${ct_sz}", label="/"))
+                            return q
             return t
         if isinstance(expr, FunctionCall):
             # Rewrite __builtin_foo(args) to c_library_equivalent(args).
