@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import List, Optional
+from typing import Dict, List, Optional, Set
 
 
 class TypeKind(Enum):
@@ -292,3 +292,146 @@ def ctype_to_ir_type(ct: CType) -> str:
     if ct.kind == TypeKind.ARRAY and isinstance(ct, ArrayType) and ct.element:
         return ctype_to_ir_type(ct.element)
     return 'int'
+
+
+# -- TypedSymbolTable --------------------------------------------------------
+
+class TypedSymbolTable:
+    """集中式符号到 CType 的映射，支持作用域。
+
+    替代 IRGenerator._var_types 和 CodeGenerator._var_types。
+    所有 typedef 在插入时即解析到底层具体类型。
+    """
+
+    def __init__(self, sema_ctx=None):
+        self._sema_ctx = sema_ctx
+        self._globals: Dict[str, CType] = {}
+        self._scope_stack: List[Dict[str, CType]] = []
+
+    def push_scope(self) -> None:
+        """进入新的函数作用域。"""
+        self._scope_stack.append({})
+
+    def pop_scope(self) -> None:
+        """离开当前函数作用域。"""
+        self._scope_stack.pop()
+
+    def insert(self, name: str, ctype: CType) -> None:
+        """插入符号及其已解析的 CType。
+
+        如果在函数作用域内，插入到当前作用域；
+        否则插入到全局作用域。
+        Typedef 在插入时即解析到底层具体类型。
+        """
+        resolved = self._resolve_typedef(ctype)
+        if self._scope_stack:
+            self._scope_stack[-1][name] = resolved
+        else:
+            self._globals[name] = resolved
+
+    def lookup(self, name: str) -> Optional[CType]:
+        """查找符号的 CType。
+
+        先查当前函数作用域（从内到外），再查全局作用域。
+        未找到返回 None。
+        """
+        for scope in reversed(self._scope_stack):
+            if name in scope:
+                return scope[name]
+        return self._globals.get(name)
+
+    def _resolve_typedef(self, ctype: CType, _seen: Optional[Set[str]] = None) -> CType:
+        """递归解析 CType 中的 typedef 引用到底层具体类型。
+
+        处理策略：
+        - StructType/EnumType: 检查 tag 是否是 typedef 名称，解析到底层类型
+        - PointerType: 递归解析 pointee
+        - ArrayType: 递归解析 element
+        - 其他: 原样返回
+        使用 seen 集合防止循环 typedef 引用。
+        """
+        if self._sema_ctx is None:
+            return ctype
+        if _seen is None:
+            _seen = set()
+
+        # StructType whose tag might be a typedef name
+        if isinstance(ctype, StructType) and ctype.tag is not None:
+            resolved = self._resolve_typedef_name(ctype.tag, _seen)
+            if resolved is not None:
+                # Preserve qualifiers from the original ctype
+                if ctype.quals.const or ctype.quals.volatile:
+                    resolved = self._with_quals(resolved, ctype.quals)
+                return resolved
+
+        # EnumType whose tag might be a typedef name
+        if isinstance(ctype, EnumType) and ctype.tag is not None:
+            resolved = self._resolve_typedef_name(ctype.tag, _seen)
+            if resolved is not None:
+                if ctype.quals.const or ctype.quals.volatile:
+                    resolved = self._with_quals(resolved, ctype.quals)
+                return resolved
+
+        # PointerType: recursively resolve pointee
+        if isinstance(ctype, PointerType) and ctype.pointee is not None:
+            resolved_pointee = self._resolve_typedef(ctype.pointee, _seen)
+            if resolved_pointee is not ctype.pointee:
+                return PointerType(
+                    kind=TypeKind.POINTER,
+                    quals=ctype.quals,
+                    pointee=resolved_pointee,
+                )
+            return ctype
+
+        # ArrayType: recursively resolve element
+        if isinstance(ctype, ArrayType) and ctype.element is not None:
+            resolved_elem = self._resolve_typedef(ctype.element, _seen)
+            if resolved_elem is not ctype.element:
+                return ArrayType(
+                    kind=TypeKind.ARRAY,
+                    quals=ctype.quals,
+                    element=resolved_elem,
+                    size=ctype.size,
+                )
+            return ctype
+
+        return ctype
+
+    def _resolve_typedef_name(self, name: str, seen: Set[str]) -> Optional[CType]:
+        """通过 SemanticContext.typedefs 递归解析 typedef 名称到 CType。
+
+        返回 None 表示 name 不是 typedef 名称。
+        """
+        typedefs = getattr(self._sema_ctx, 'typedefs', None)
+        if typedefs is None:
+            return None
+
+        if name in seen:
+            return None  # 循环 typedef，停止解析
+        seen.add(name)
+
+        ast_type = typedefs.get(name)
+        if ast_type is None:
+            return None
+
+        # Convert AST Type to CType via the existing bridge
+        ct = ast_type_to_ctype(ast_type)
+        # Recursively resolve the result (it might itself contain typedefs)
+        return self._resolve_typedef(ct, seen)
+
+    @staticmethod
+    def _with_quals(ctype: CType, quals: Qualifiers) -> CType:
+        """Return a copy of ctype with merged qualifiers."""
+        merged = Qualifiers(
+            const=ctype.quals.const or quals.const,
+            volatile=ctype.quals.volatile or quals.volatile,
+        )
+        if merged == ctype.quals:
+            return ctype
+        # Create a shallow copy with updated quals.
+        # We need to handle each subclass since dataclasses don't have
+        # a generic copy-with method.
+        import copy
+        result = copy.copy(ctype)
+        object.__setattr__(result, 'quals', merged)
+        return result
