@@ -3071,7 +3071,7 @@ class IRGenerator:
                             except Exception:
                                 pass
 
-                        return f"${_type_size(base_part) * max(0, n)}"
+                        return f"${_type_size(base_part, self._sema_ctx) * max(0, n)}"
                     # fallback for local arrays
                     return "$4"
 
@@ -3100,7 +3100,7 @@ class IRGenerator:
                                 n = 0
                                 break
                             n *= int(d)
-                        return f"${_type_size(base_part) * int(n)}"
+                        return f"${_type_size(base_part, self._sema_ctx) * int(n)}"
                 except Exception:
                     pass
                 # Global arrays: infer total byte size using semantic context
