@@ -1672,6 +1672,9 @@ class IRGenerator:
         if not isinstance(base, str):
             return False
         b = base.strip()
+        # Pointer types are never struct/union values themselves.
+        if "*" in b:
+            return False
         if b.startswith("struct ") or b.startswith("union "):
             return True
         # Resolve typedef: a typedef name may refer to a struct/union.
@@ -3445,6 +3448,24 @@ class IRGenerator:
 
             t = self._new_temp()
             self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member))
+            # Propagate member type to result so downstream ops (e.g.
+            # ptr->member chaining) can resolve struct layouts.
+            try:
+                if self._sema_ctx is not None and isinstance(base, str):
+                    bty = self._var_types.get(base, "")
+                    if isinstance(bty, str) and bty.strip().endswith("*"):
+                        bty = bty.strip()[:-1].strip()
+                    resolved_bty = self._resolve_elem_type(bty) if bty else bty
+                    layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_bty)
+                    if layout is None:
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(bty)
+                    if layout is not None:
+                        mtypes = getattr(layout, "member_types", {}) or {}
+                        mty = mtypes.get(expr.member)
+                        if isinstance(mty, str) and ("*" in mty):
+                            self._var_types[t] = mty
+            except Exception:
+                pass
             return t
         # Address-of a member: &obj.member
         if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, MemberAccess):
@@ -3629,6 +3650,23 @@ class IRGenerator:
                 if struct_ty:
                     meta["struct_type"] = struct_ty
             self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None))
+            # Propagate member type to result for chained access.
+            try:
+                if self._sema_ctx is not None and isinstance(base_ty, str):
+                    sty = base_ty.strip()
+                    if sty.endswith("*"):
+                        sty = sty[:-1].strip()
+                    resolved_sty = self._resolve_elem_type(sty) if sty else sty
+                    layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_sty)
+                    if layout is None:
+                        layout = getattr(self._sema_ctx, "layouts", {}).get(sty)
+                    if layout is not None:
+                        mtypes = getattr(layout, "member_types", {}) or {}
+                        mty = mtypes.get(expr.member)
+                        if isinstance(mty, str) and ("*" in mty):
+                            self._var_types[t] = mty
+            except Exception:
+                pass
             return t
         if isinstance(expr, Assignment):
             rhs = self._gen_expr(expr.value)
