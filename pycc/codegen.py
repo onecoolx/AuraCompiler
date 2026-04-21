@@ -1266,6 +1266,12 @@ class CodeGenerator:
 
         if op in ("i2f", "i2d"):
             fp_type = (ins.meta or {}).get("fp_type", "double")
+            # CType-based: use result_type to determine target fp type
+            if ins.result_type is not None:
+                if ins.result_type.kind == TypeKind.FLOAT:
+                    fp_type = "float"
+                elif ins.result_type.kind == TypeKind.DOUBLE:
+                    fp_type = "double"
             self._load_operand(ins.operand1, "%rax")
             if fp_type == "float":
                 self._emit("  cvtsi2ssl %eax, %xmm0")
@@ -1280,6 +1286,14 @@ class CodeGenerator:
 
         if op in ("f2i", "d2i"):
             fp_type = (ins.meta or {}).get("fp_type", "float" if op == "f2i" else "double")
+            # CType-based: use source operand type to determine fp width
+            if ins.operand1:
+                src_ct = self._get_type(ins.operand1)
+                if src_ct is not None:
+                    if src_ct.kind == TypeKind.FLOAT:
+                        fp_type = "float"
+                    elif src_ct.kind == TypeKind.DOUBLE:
+                        fp_type = "double"
             src = ins.operand1 or ""
             if src.startswith("@") and not self._is_local(src):
                 gname = src.lstrip("@")
@@ -1328,6 +1342,7 @@ class CodeGenerator:
             self._emit(f"  fildq -{tmp_off}(%rbp)")
             off_r = self._ensure_local(ins.result, size=16)
             self._emit(f"  fstpt -{off_r}(%rbp)")
+            # CType-based: result_type already set by IR gen; keep string fallback
             self._var_types[ins.result] = "long double"
             return
 
@@ -1516,7 +1531,23 @@ class CodeGenerator:
             base = ins.operand1 or ""
             idx = ins.operand2 or "$0"
 
-            # Prefer any existing type info for the base temp/symbol.
+            # CType-based path: use symbol table to determine element size
+            ctype_elem_sz = None
+            base_ct = self._get_type(base) if isinstance(base, str) else None
+            if base_ct is not None:
+                if self._ctype_is_pointer(base_ct):
+                    pointee = self._ctype_deref(base_ct)
+                    if pointee is not None:
+                        ctype_elem_sz = self._ctype_sizeof(pointee) if self._ctype_is_struct_or_union(pointee) else type_sizeof(pointee)
+                        if ctype_elem_sz == 0:
+                            ctype_elem_sz = None
+                elif isinstance(base_ct, ArrayType) and base_ct.element is not None:
+                    elem = base_ct.element
+                    ctype_elem_sz = self._ctype_sizeof(elem) if self._ctype_is_struct_or_union(elem) else type_sizeof(elem)
+                    if ctype_elem_sz == 0:
+                        ctype_elem_sz = None
+
+            # String-based fallback: existing type info for the base temp/symbol.
             base_ty = self._var_types.get(base, "")
             if (base_ty is None or base_ty == "") and isinstance(base, str) and base.startswith("@") and self._sema_ctx is not None:
                 base_ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], "")
@@ -1533,7 +1564,11 @@ class CodeGenerator:
                     step_override = self._ptr_step_bytes.get(str(base))
             except Exception:
                 step_override = None
-            if isinstance(base_ty, str) and "*" in base_ty:
+
+            # Prefer CType-based element size when available
+            if ctype_elem_sz is not None:
+                elem_sz = ctype_elem_sz
+            elif isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
             elif isinstance(base_ty, str) and base_ty.strip().startswith("array("):
                 inner = base_ty.strip()[len("array(") :]
@@ -1785,6 +1820,9 @@ class CodeGenerator:
             # pointer temp with an explicit step size, scale the integer operand.
             # This is used for multi-dimensional array decay where (p + 1)
             # should advance by sizeof(row).
+            # NOTE: General pointer arithmetic scaling (e.g. int* + 3 -> scale
+            # by sizeof(int)) is already done by the IR generator. The codegen
+            # only handles explicit ptr_step_bytes overrides here.
             try:
                 if bop in {"+", "-"}:
                     # 1) Temp-based overrides
@@ -1792,11 +1830,17 @@ class CodeGenerator:
                     s2 = self._ptr_step_bytes.get(str(ins.operand2 or ""))
                     # 2) Symbol-based overrides (e.g. local variable holding a
                     # decayed pointer value): use its declared type if it is
-                    # pointer-typed.
-                    if not s1 and isinstance(ins.operand1, str) and ("*" in self._var_types.get(ins.operand1, "")):
-                        s1 = self._ptr_step_bytes.get(str(ins.operand1))
-                    if not s2 and isinstance(ins.operand2, str) and ("*" in self._var_types.get(ins.operand2, "")):
-                        s2 = self._ptr_step_bytes.get(str(ins.operand2))
+                    # pointer-typed. CType-based check takes priority.
+                    if not s1 and isinstance(ins.operand1, str):
+                        ct1 = self._get_type(ins.operand1)
+                        is_ptr1 = (ct1 is not None and self._ctype_is_pointer(ct1)) or ("*" in self._var_types.get(ins.operand1, ""))
+                        if is_ptr1:
+                            s1 = self._ptr_step_bytes.get(str(ins.operand1))
+                    if not s2 and isinstance(ins.operand2, str):
+                        ct2 = self._get_type(ins.operand2)
+                        is_ptr2 = (ct2 is not None and self._ctype_is_pointer(ct2)) or ("*" in self._var_types.get(ins.operand2, ""))
+                        if is_ptr2:
+                            s2 = self._ptr_step_bytes.get(str(ins.operand2))
 
                     if s1 and not s2:
                         step = int(s1)
@@ -2476,6 +2520,33 @@ class CodeGenerator:
             # - For pointer variables, use pointee size.
             # - For arrays, use base element size.
             elem_sz = 4
+
+            # CType-based path: use symbol table to determine element size
+            ctype_elem_sz = None
+            base_ct = self._get_type(base) if isinstance(base, str) else None
+            if base_ct is not None:
+                if self._ctype_is_pointer(base_ct):
+                    pointee = self._ctype_deref(base_ct)
+                    if pointee is not None:
+                        ctype_elem_sz = self._ctype_sizeof(pointee) if self._ctype_is_struct_or_union(pointee) else type_sizeof(pointee)
+                        if ctype_elem_sz == 0:
+                            ctype_elem_sz = None
+                elif isinstance(base_ct, ArrayType) and base_ct.element is not None:
+                    elem = base_ct.element
+                    ctype_elem_sz = self._ctype_sizeof(elem) if self._ctype_is_struct_or_union(elem) else type_sizeof(elem)
+                    if ctype_elem_sz == 0:
+                        ctype_elem_sz = None
+
+            # Also check result_type for element size hint (e.g. from IR gen)
+            ctype_result_elem_sz = None
+            if ins.result_type is not None and not self._ctype_is_pointer(ins.result_type):
+                if self._ctype_is_struct_or_union(ins.result_type):
+                    ctype_result_elem_sz = self._ctype_sizeof(ins.result_type)
+                else:
+                    sz_r = type_sizeof(ins.result_type)
+                    if sz_r > 0:
+                        ctype_result_elem_sz = sz_r
+
             base_ty = None
             step_override = None
             try:
@@ -2543,15 +2614,30 @@ class CodeGenerator:
                     # Keep elem_sz as-is.
                     pass
 
+            # CType-based element size: override string-based result when
+            # CType info is available. Result type hint takes priority over
+            # base-derived size (matches the string-based result temp hint).
+            if ctype_result_elem_sz is not None:
+                elem_sz = ctype_result_elem_sz
+            elif ctype_elem_sz is not None:
+                elem_sz = ctype_elem_sz
+
             # A temp base is treated as a pointer/address value only when it is
             # pointer-typed (or explicitly tagged as ptr). Temps that represent
             # array objects (e.g. row objects in multi-dimensional indexing)
             # must be addressed, not loaded.
             is_ptr_temp = False
             if isinstance(base, str) and base.startswith("%t"):
-                if isinstance(base_ty, str) and ("*" in base_ty or base_ty.strip() == "ptr"):
+                # CType-based: check if base is a pointer type
+                if base_ct is not None and self._ctype_is_pointer(base_ct):
+                    is_ptr_temp = True
+                elif isinstance(base_ty, str) and ("*" in base_ty or base_ty.strip() == "ptr"):
                     is_ptr_temp = True
             is_ptr_base = (isinstance(base_ty, str) and "*" in base_ty) or is_ptr_temp
+            # Also check CType for pointer base (covers cases where _var_types
+            # doesn't have the info but symbol table does)
+            if not is_ptr_base and base_ct is not None and self._ctype_is_pointer(base_ct):
+                is_ptr_base = True
             # compute address: base + idx*elem_sz
             # - if base is a pointer value, load the pointer value
             # - else treat it as an array object and take its address
@@ -2572,7 +2658,13 @@ class CodeGenerator:
             if elem_sz == 1:
                 # char loads: choose sign/zero extension based on pointee type.
                 unsigned_char = False
-                if isinstance(base_ty, str) and "unsigned" in base_ty and "char" in base_ty:
+                # CType-based: check pointee for unsigned char
+                if base_ct is not None and self._ctype_is_pointer(base_ct):
+                    pointee = self._ctype_deref(base_ct)
+                    if pointee is not None:
+                        unsigned_char = self._ctype_is_unsigned_char(pointee)
+                # String-based fallback
+                if not unsigned_char and isinstance(base_ty, str) and "unsigned" in base_ty and "char" in base_ty:
                     unsigned_char = True
                 if unsigned_char:
                     self._emit("  movzbl (%rax), %eax")
