@@ -1693,6 +1693,76 @@ class IRGenerator:
         else:
             self._sym_table.insert(ir_sym, base_ctype)
 
+    def _lookup_member_ctype(self, base: str, member: str) -> Optional[CType]:
+        """Look up the CType of a struct/union member.
+
+        Resolves the struct type from the base symbol (via _sym_table or
+        _var_types), finds the StructLayout, and converts the member's
+        AST declaration type to a CType via ast_type_to_ctype_resolved.
+
+        Returns None if the layout or member type cannot be resolved.
+        """
+        if self._sema_ctx is None:
+            return None
+        layouts = getattr(self._sema_ctx, "layouts", {})
+        if not layouts:
+            return None
+
+        # Determine the struct type name from the base symbol.
+        struct_key = None
+
+        # Strategy 1: Use _sym_table CType to get the struct tag.
+        if self._sym_table:
+            ct = self._sym_table.lookup(base)
+            if ct is not None:
+                # Unwrap pointer to get the struct type.
+                inner = ct
+                if isinstance(inner, PointerType) and inner.pointee is not None:
+                    inner = inner.pointee
+                if isinstance(inner, CStructType) and inner.tag is not None:
+                    prefix = "union " if inner.kind == TypeKind.UNION else "struct "
+                    struct_key = prefix + inner.tag
+
+        # Strategy 2: Fall back to _var_types string.
+        if struct_key is None:
+            bty = self._var_types.get(base, "")
+            if isinstance(bty, str):
+                bty = bty.strip()
+                if bty.endswith("*"):
+                    bty = bty[:-1].strip()
+                # Resolve typedef to find the layout key.
+                resolved = self._resolve_elem_type(bty) if bty else bty
+                if resolved and (resolved.startswith("struct ") or resolved.startswith("union ")):
+                    struct_key = resolved
+                elif bty and (bty.startswith("struct ") or bty.startswith("union ")):
+                    struct_key = bty
+
+        if struct_key is None:
+            return None
+
+        layout = layouts.get(struct_key)
+        if layout is None:
+            return None
+
+        mdecl_types = getattr(layout, "member_decl_types", None)
+        if not mdecl_types or member not in mdecl_types:
+            return None
+
+        return ast_type_to_ctype_resolved(mdecl_types[member], self._sema_ctx)
+
+    def _member_ctype_from_layout(self, layout, member: str) -> Optional[CType]:
+        """Get member CType directly from a StructLayout object.
+
+        Used by initializer lowering paths that already have the layout.
+        Returns None if member_decl_types is unavailable or member not found.
+        """
+        if layout is None or self._sema_ctx is None:
+            return None
+        mdecl_types = getattr(layout, "member_decl_types", None)
+        if not mdecl_types or member not in mdecl_types:
+            return None
+        return ast_type_to_ctype_resolved(mdecl_types[member], self._sema_ctx)
+
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"
         self.label_counter += 1
@@ -1838,10 +1908,12 @@ class IRGenerator:
                     # No initializer elements: treat as zero-init for first member.
                     val_expr = IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
                     v = self._gen_expr(val_expr)
+                    _m0_ct = self._member_ctype_from_layout(layout_n, m0)
+                    _m0_meta = {"member_ctype": _m0_ct} if _m0_ct else None
                     if base_is_ptr:
-                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0))
+                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta))
                     else:
-                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0))
+                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta))
                     return True
 
                 elem0 = elems_n[0]
@@ -1867,22 +1939,30 @@ class IRGenerator:
                             column=getattr(decl, "column", 0),
                         )
 
-                    taddr = self._new_temp()
-                    if base_is_ptr:
-                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m0))
+                    _m0_ct2 = self._member_ctype_from_layout(layout_n, m0)
+                    if _m0_ct2 is not None:
+                        _ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=_m0_ct2)
+                        taddr = self._new_temp_typed(_ptr_ct)
                     else:
-                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m0))
-                    self._var_types[taddr] = f"{mty0}*"
+                        taddr = self._new_temp()
+                        self._var_types[taddr] = f"{mty0}*"
+                    _aom_rt = PointerType(kind=TypeKind.POINTER, pointee=_m0_ct2) if _m0_ct2 else None
+                    if base_is_ptr:
+                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m0, result_type=_aom_rt))
+                    else:
+                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m0, result_type=_aom_rt))
                     return _lower_struct_init(taddr, True, str(mty0), sub_init)
 
                 # Scalar first member.
                 if isinstance(elem0, Initializer):
                     return False
                 v = self._gen_expr(elem0)
+                _m0_ct3 = self._member_ctype_from_layout(layout_n, m0)
+                _m0_meta3 = {"member_ctype": _m0_ct3} if _m0_ct3 else None
                 if base_is_ptr:
-                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0))
+                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta3))
                 else:
-                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0))
+                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta3))
                 # Reject excess elements beyond the first subobject.
                 if len(elems_n) > 1:
                     raise IRGenError(f"excess elements in initializer for '{ty_s}'")
@@ -1898,12 +1978,14 @@ class IRGenerator:
                 # If we ran out of initializer elements, zero-fill remaining members.
                 if eidx >= len(elems_n):
                     val_expr = IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
+                    _zf_ct = self._member_ctype_from_layout(layout_n, m)
+                    _zf_meta = {"member_ctype": _zf_ct} if _zf_ct else None
                     if base_is_ptr:
                         v = self._gen_expr(val_expr)
-                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m))
+                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_zf_meta))
                     else:
                         v = self._gen_expr(val_expr)
-                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m))
+                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_zf_meta))
                     continue
 
                 elem0 = elems_n[eidx]
@@ -1931,12 +2013,18 @@ class IRGenerator:
                         )
 
                     # Compute pointer to member and recurse.
-                    taddr = self._new_temp()
-                    if base_is_ptr:
-                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m))
+                    _agg_ct = self._member_ctype_from_layout(layout_n, m)
+                    if _agg_ct is not None:
+                        _agg_ptr = PointerType(kind=TypeKind.POINTER, pointee=_agg_ct)
+                        taddr = self._new_temp_typed(_agg_ptr)
                     else:
-                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m))
-                    self._var_types[taddr] = f"{mty}*"
+                        taddr = self._new_temp()
+                        self._var_types[taddr] = f"{mty}*"
+                    _agg_rt = PointerType(kind=TypeKind.POINTER, pointee=_agg_ct) if _agg_ct else None
+                    if base_is_ptr:
+                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m, result_type=_agg_rt))
+                    else:
+                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m, result_type=_agg_rt))
                     if not _lower_struct_init(taddr, True, str(mty), sub_init):
                         return False
                     continue
@@ -1945,10 +2033,12 @@ class IRGenerator:
                 if isinstance(elem0, Initializer):
                     return False
                 v = self._gen_expr(elem0)
+                _sc_ct = self._member_ctype_from_layout(layout_n, m)
+                _sc_meta = {"member_ctype": _sc_ct} if _sc_ct else None
                 if base_is_ptr:
-                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m))
+                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_sc_meta))
                 else:
-                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m))
+                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_sc_meta))
                 eidx += 1
 
             # Reject excess initializer elements.
@@ -2068,30 +2158,41 @@ class IRGenerator:
                     self._zero_fill_struct_member(base_sym, base_is_ptr, m, mty, decl)
                 else:
                     v = self._gen_expr(zero_expr)
+                    _dzf_ct = self._member_ctype_from_layout(layout, m)
+                    _dzf_meta = {"member_ctype": _dzf_ct} if _dzf_ct else None
                     if base_is_ptr:
                         self.instructions.append(
-                            IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m)
+                            IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_dzf_meta)
                         )
                     else:
                         self.instructions.append(
-                            IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m)
+                            IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_dzf_meta)
                         )
             elif isinstance(val, list):
                 # Multiple chained designators for the same outer member
                 # (e.g. .inner.a = 10, .inner.b = 20).
                 # Build a synthetic Initializer with designated elements and recurse.
-                taddr = self._new_temp()
+                _dl_ct = self._member_ctype_from_layout(layout, m)
+                if _dl_ct is not None:
+                    _dl_ptr = PointerType(kind=TypeKind.POINTER, pointee=_dl_ct)
+                    taddr = self._new_temp_typed(_dl_ptr)
+                else:
+                    taddr = self._new_temp()
+                    self._var_types[taddr] = f"{mty}*"
+                _dl_rt = PointerType(kind=TypeKind.POINTER, pointee=_dl_ct) if _dl_ct else None
+                _dl_meta = {"member_type": mty}
+                if _dl_ct is not None:
+                    _dl_meta["member_ctype"] = _dl_ct
                 if base_is_ptr:
                     self.instructions.append(
                         IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m,
-                                      meta={"member_type": mty})
+                                      meta=_dl_meta, result_type=_dl_rt)
                     )
                 else:
                     self.instructions.append(
                         IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m,
-                                      meta={"member_type": mty})
+                                      meta=_dl_meta, result_type=_dl_rt)
                     )
-                self._var_types[taddr] = f"{mty}*"
                 synth_elements = [(sub_desig, sub_val) for sub_desig, sub_val in val]
                 synth_init = Initializer(
                     elements=synth_elements,
@@ -2102,18 +2203,27 @@ class IRGenerator:
             elif isinstance(val, tuple):
                 # Chained designator: (next_designator, value_expr)
                 next_desig, inner_val = val
-                taddr = self._new_temp()
+                _dt_ct = self._member_ctype_from_layout(layout, m)
+                if _dt_ct is not None:
+                    _dt_ptr = PointerType(kind=TypeKind.POINTER, pointee=_dt_ct)
+                    taddr = self._new_temp_typed(_dt_ptr)
+                else:
+                    taddr = self._new_temp()
+                    self._var_types[taddr] = f"{mty}*"
+                _dt_rt = PointerType(kind=TypeKind.POINTER, pointee=_dt_ct) if _dt_ct else None
+                _dt_meta = {"member_type": mty}
+                if _dt_ct is not None:
+                    _dt_meta["member_ctype"] = _dt_ct
                 if base_is_ptr:
                     self.instructions.append(
                         IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m,
-                                      meta={"member_type": mty})
+                                      meta=_dt_meta, result_type=_dt_rt)
                     )
                 else:
                     self.instructions.append(
                         IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m,
-                                      meta={"member_type": mty})
+                                      meta=_dt_meta, result_type=_dt_rt)
                     )
-                self._var_types[taddr] = f"{mty}*"
                 # Recurse into the nested struct with the chained designator
                 if isinstance(inner_val, Initializer):
                     self._lower_designated_struct_init(taddr, True, mty, inner_val, decl)
@@ -2122,11 +2232,13 @@ class IRGenerator:
                     sub_member = self._resolve_designator_member(next_desig)
                     if sub_member is not None:
                         v = self._gen_expr(inner_val)
+                        sub_layout = getattr(self._sema_ctx, "layouts", {}).get(mty)
+                        _csm_ct = self._member_ctype_from_layout(sub_layout, sub_member) if sub_layout is not None else None
+                        _csm_meta = {"member_ctype": _csm_ct} if _csm_ct else None
                         self.instructions.append(
-                            IRInstruction(op="store_member_ptr", result=v, operand1=taddr, operand2=sub_member)
+                            IRInstruction(op="store_member_ptr", result=v, operand1=taddr, operand2=sub_member, meta=_csm_meta)
                         )
                         # Zero-fill other sub-members
-                        sub_layout = getattr(self._sema_ctx, "layouts", {}).get(mty)
                         if sub_layout is not None:
                             for sm in sub_layout.member_offsets:
                                 if sm != sub_member:
@@ -2134,23 +2246,34 @@ class IRGenerator:
                                         value=0, is_hex=False, is_octal=False,
                                         line=decl.line, column=decl.column,
                                     ))
+                                    _czf_ct = self._member_ctype_from_layout(sub_layout, sm)
+                                    _czf_meta = {"member_ctype": _czf_ct} if _czf_ct else None
                                     self.instructions.append(
-                                        IRInstruction(op="store_member_ptr", result=zv, operand1=taddr, operand2=sm)
+                                        IRInstruction(op="store_member_ptr", result=zv, operand1=taddr, operand2=sm, meta=_czf_meta)
                                     )
             elif isinstance(val, Initializer) and isinstance(mty, str) and self._is_struct_or_union_type(mty):
                 # Nested brace-enclosed initializer for an aggregate member
-                taddr = self._new_temp()
+                _dn_ct = self._member_ctype_from_layout(layout, m)
+                if _dn_ct is not None:
+                    _dn_ptr = PointerType(kind=TypeKind.POINTER, pointee=_dn_ct)
+                    taddr = self._new_temp_typed(_dn_ptr)
+                else:
+                    taddr = self._new_temp()
+                    self._var_types[taddr] = f"{mty}*"
+                _dn_rt = PointerType(kind=TypeKind.POINTER, pointee=_dn_ct) if _dn_ct else None
+                _dn_meta = {"member_type": mty}
+                if _dn_ct is not None:
+                    _dn_meta["member_ctype"] = _dn_ct
                 if base_is_ptr:
                     self.instructions.append(
                         IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m,
-                                      meta={"member_type": mty})
+                                      meta=_dn_meta, result_type=_dn_rt)
                     )
                 else:
                     self.instructions.append(
                         IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m,
-                                      meta={"member_type": mty})
+                                      meta=_dn_meta, result_type=_dn_rt)
                     )
-                self._var_types[taddr] = f"{mty}*"
                 if self._has_any_designator(val):
                     self._lower_designated_struct_init(taddr, True, mty, val, decl)
                 else:
@@ -2175,19 +2298,23 @@ class IRGenerator:
                                         value=0, is_hex=False, is_octal=False,
                                         line=decl.line, column=decl.column,
                                     ))
+                                _nsm_ct = self._member_ctype_from_layout(sub_layout, sm)
+                                _nsm_meta = {"member_ctype": _nsm_ct} if _nsm_ct else None
                                 self.instructions.append(
-                                    IRInstruction(op="store_member_ptr", result=sv, operand1=taddr, operand2=sm)
+                                    IRInstruction(op="store_member_ptr", result=sv, operand1=taddr, operand2=sm, meta=_nsm_meta)
                                 )
             else:
                 # Scalar value for this member
                 v = self._gen_expr(val)
+                _ds_ct = self._member_ctype_from_layout(layout, m)
+                _ds_meta = {"member_ctype": _ds_ct} if _ds_ct else None
                 if base_is_ptr:
                     self.instructions.append(
-                        IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m)
+                        IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_ds_meta)
                     )
                 else:
                     self.instructions.append(
-                        IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m)
+                        IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_ds_meta)
                     )
 
         return True
@@ -2196,18 +2323,28 @@ class IRGenerator:
         self, base_sym: str, base_is_ptr: bool, member: str, mty: str, decl: Declaration
     ) -> None:
         """Zero-fill a nested struct/union member."""
-        taddr = self._new_temp()
+        # Look up member CType from the parent struct layout.
+        _zfm_ct = self._lookup_member_ctype(base_sym, member)
+        if _zfm_ct is not None:
+            _zfm_ptr = PointerType(kind=TypeKind.POINTER, pointee=_zfm_ct)
+            taddr = self._new_temp_typed(_zfm_ptr)
+        else:
+            taddr = self._new_temp()
+            self._var_types[taddr] = f"{mty}*"
+        _zfm_rt = PointerType(kind=TypeKind.POINTER, pointee=_zfm_ct) if _zfm_ct else None
+        _zfm_meta = {"member_type": mty}
+        if _zfm_ct is not None:
+            _zfm_meta["member_ctype"] = _zfm_ct
         if base_is_ptr:
             self.instructions.append(
                 IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=member,
-                              meta={"member_type": mty})
+                              meta=_zfm_meta, result_type=_zfm_rt)
             )
         else:
             self.instructions.append(
                 IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=member,
-                              meta={"member_type": mty})
+                              meta=_zfm_meta, result_type=_zfm_rt)
             )
-        self._var_types[taddr] = f"{mty}*"
         sub_layout = getattr(self._sema_ctx, "layouts", {}).get(mty)
         if sub_layout is not None:
             for sm in sub_layout.member_offsets:
@@ -2215,8 +2352,10 @@ class IRGenerator:
                     value=0, is_hex=False, is_octal=False,
                     line=decl.line, column=decl.column,
                 ))
+                _zsm_ct = self._member_ctype_from_layout(sub_layout, sm)
+                _zsm_meta = {"member_ctype": _zsm_ct} if _zsm_ct else None
                 self.instructions.append(
-                    IRInstruction(op="store_member_ptr", result=zv, operand1=taddr, operand2=sm)
+                    IRInstruction(op="store_member_ptr", result=zv, operand1=taddr, operand2=sm, meta=_zsm_meta)
                 )
 
     def _lower_local_array_designated_init(self, item: Declaration) -> bool:
@@ -3540,9 +3679,19 @@ class IRGenerator:
                             mtypes = getattr(layout, "member_types", {}) or {}
                             mty = mtypes.get(expr.member)
                             if isinstance(mty, str) and self._is_struct_or_union_type(mty):
-                                taddr = self._new_temp()
-                                self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base, operand2=expr.member, meta={"member_type": mty}))
-                                self._var_types[taddr] = f"{mty}*"
+                                # Resolve member CType for type annotation.
+                                member_ctype = self._lookup_member_ctype(base, expr.member)
+                                if member_ctype is not None:
+                                    ptr_ctype = PointerType(kind=TypeKind.POINTER, pointee=member_ctype)
+                                    taddr = self._new_temp_typed(ptr_ctype)
+                                else:
+                                    taddr = self._new_temp()
+                                    self._var_types[taddr] = f"{mty}*"
+                                aom_meta = {"member_type": mty}
+                                if member_ctype is not None:
+                                    aom_meta["member_ctype"] = member_ctype
+                                rt = PointerType(kind=TypeKind.POINTER, pointee=member_ctype) if member_ctype else None
+                                self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base, operand2=expr.member, meta=aom_meta, result_type=rt))
                                 return taddr
             except Exception:
                 pass
@@ -3550,6 +3699,7 @@ class IRGenerator:
             t = self._new_temp()
             # Look up member type and attach to IR meta for codegen.
             load_meta = {}
+            member_ct = self._lookup_member_ctype(base, expr.member)
             try:
                 if self._sema_ctx is not None and isinstance(base, str):
                     bty = self._var_types.get(base, "")
@@ -3568,14 +3718,26 @@ class IRGenerator:
                                 self._var_types[t] = mty
             except Exception:
                 pass
-            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member, meta=load_meta if load_meta else None))
+            if member_ct is not None:
+                load_meta["member_ctype"] = member_ct
+                # Register result temp with member CType in symbol table.
+                if self._sym_table:
+                    self._sym_table.insert(t, member_ct)
+            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member, meta=load_meta if load_meta else None, result_type=member_ct))
             return t
         # Address-of a member: &obj.member
         if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, MemberAccess):
             ma = expr.operand
             base = self._gen_expr(ma.object)
-            t = self._new_temp()
-            self.instructions.append(IRInstruction(op="addr_of_member", result=t, operand1=base, operand2=ma.member))
+            # Look up member CType for type annotation.
+            member_ct = self._lookup_member_ctype(base, ma.member)
+            if member_ct is not None:
+                ptr_ctype = PointerType(kind=TypeKind.POINTER, pointee=member_ct)
+                t = self._new_temp_typed(ptr_ctype)
+            else:
+                t = self._new_temp()
+            aom_rt = PointerType(kind=TypeKind.POINTER, pointee=member_ct) if member_ct else None
+            self.instructions.append(IRInstruction(op="addr_of_member", result=t, operand1=base, operand2=ma.member, result_type=aom_rt))
             # Preserve base type on the lvalue symbol so codegen can resolve
             # offsets/sizes even for globals.
             try:
@@ -3769,7 +3931,13 @@ class IRGenerator:
                                 self._var_types[t] = mty
             except Exception:
                 pass
-            self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None))
+            # Annotate with member CType for type-safe codegen.
+            member_ct = self._lookup_member_ctype(base, expr.member)
+            if member_ct is not None:
+                meta["member_ctype"] = member_ct
+                if self._sym_table:
+                    self._sym_table.insert(t, member_ct)
+            self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None, result_type=member_ct))
             return t
         if isinstance(expr, Assignment):
             rhs = self._gen_expr(expr.value)
@@ -4028,6 +4196,10 @@ class IRGenerator:
                                     rhs_val = src_addr
                 except Exception:
                     pass
+                # Annotate with member CType.
+                sm_member_ct = self._lookup_member_ctype(base, member)
+                if sm_member_ct is not None:
+                    meta_sm["member_ctype"] = sm_member_ct
                 self.instructions.append(IRInstruction(op="store_member", result=rhs_val, operand1=base, operand2=member, meta=meta_sm if meta_sm else None))
                 return rhs
 
@@ -4059,6 +4231,10 @@ class IRGenerator:
                                     rhs_val = src_addr
                 except Exception:
                     pass
+                # Annotate with member CType.
+                smp_member_ct = self._lookup_member_ctype(base, member)
+                if smp_member_ct is not None:
+                    meta["member_ctype"] = smp_member_ct
                 self.instructions.append(IRInstruction(op="store_member_ptr", result=rhs_val, operand1=base, operand2=member, meta=meta if meta else None))
                 return rhs
 
