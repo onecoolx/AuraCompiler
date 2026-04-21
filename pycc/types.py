@@ -297,14 +297,14 @@ def ctype_to_ir_type(ct: CType) -> str:
 # -- Standalone typedef resolution -------------------------------------------
 
 def resolve_typedefs(ct: CType, sema_ctx, _seen: Optional[Set[str]] = None) -> CType:
-    """递归解析 CType 中的 typedef 引用到底层具体类型（独立函数版本）。
+    """Recursively resolve typedef references in a CType to the underlying concrete type (standalone version).
 
-    处理策略：
-    - StructType/EnumType: 检查 tag 是否是 typedef 名称，解析到底层类型
-    - PointerType: 递归解析 pointee
-    - ArrayType: 递归解析 element
-    - 其他: 原样返回
-    使用 seen 集合防止循环 typedef 引用。
+    Resolution strategy:
+    - StructType/EnumType: check if tag is a typedef name, resolve to underlying type
+    - PointerType: recursively resolve pointee
+    - ArrayType: recursively resolve element
+    - Others: return as-is
+    Uses a seen set to prevent circular typedef references.
     """
     if sema_ctx is None:
         return ct
@@ -354,15 +354,15 @@ def resolve_typedefs(ct: CType, sema_ctx, _seen: Optional[Set[str]] = None) -> C
 
 
 def _resolve_typedef_name(name: str, sema_ctx, seen: Set[str]) -> Optional[CType]:
-    """通过 sema_ctx.typedefs 递归解析 typedef 名称到 CType。
+    """Recursively resolve a typedef name to CType via sema_ctx.typedefs.
 
-    返回 None 表示 name 不是 typedef 名称。
+    Returns None if name is not a typedef name.
     """
     typedefs = getattr(sema_ctx, 'typedefs', None)
     if typedefs is None:
         return None
     if name in seen:
-        return None  # 循环 typedef，停止解析
+        return None  # Circular typedef detected, stop resolution
     seen.add(name)
 
     ast_type = typedefs.get(name)
@@ -388,9 +388,9 @@ def _merge_quals(ctype: CType, quals: Qualifiers) -> CType:
 
 
 def ast_type_to_ctype_resolved(ast_type, sema_ctx=None) -> CType:
-    """将 AST Type 节点转换为完全解析的 CType。
+    """Convert an AST Type node to a fully resolved CType.
 
-    与 ast_type_to_ctype 的区别：递归解析 typedef 名称。
+    Unlike ast_type_to_ctype, this recursively resolves typedef names.
     """
     ct = ast_type_to_ctype(ast_type)
     if sema_ctx is not None:
@@ -401,10 +401,10 @@ def ast_type_to_ctype_resolved(ast_type, sema_ctx=None) -> CType:
 # -- TypedSymbolTable --------------------------------------------------------
 
 class TypedSymbolTable:
-    """集中式符号到 CType 的映射，支持作用域。
+    """Centralized symbol-to-CType mapping with scope support.
 
-    替代 IRGenerator._var_types 和 CodeGenerator._var_types。
-    所有 typedef 在插入时即解析到底层具体类型。
+    Replaces IRGenerator._var_types and CodeGenerator._var_types.
+    All typedefs are resolved to the underlying concrete type at insertion time.
     """
 
     def __init__(self, sema_ctx=None):
@@ -413,19 +413,19 @@ class TypedSymbolTable:
         self._scope_stack: List[Dict[str, CType]] = []
 
     def push_scope(self) -> None:
-        """进入新的函数作用域。"""
+        """Enter a new function scope."""
         self._scope_stack.append({})
 
     def pop_scope(self) -> None:
-        """离开当前函数作用域。"""
+        """Leave the current function scope."""
         self._scope_stack.pop()
 
     def insert(self, name: str, ctype: CType) -> None:
-        """插入符号及其已解析的 CType。
+        """Insert a symbol and its resolved CType.
 
-        如果在函数作用域内，插入到当前作用域；
-        否则插入到全局作用域。
-        Typedef 在插入时即解析到底层具体类型。
+        If inside a function scope, inserts into the current scope;
+        otherwise inserts into the global scope.
+        Typedefs are resolved to the underlying concrete type at insertion time.
         """
         resolved = self._resolve_typedef(ctype)
         if self._scope_stack:
@@ -434,10 +434,11 @@ class TypedSymbolTable:
             self._globals[name] = resolved
 
     def lookup(self, name: str) -> Optional[CType]:
-        """查找符号的 CType。
+        """Look up the CType for a symbol.
 
-        先查当前函数作用域（从内到外），再查全局作用域。
-        未找到返回 None。
+        Searches the current function scope (innermost to outermost first),
+        then falls back to the global scope.
+        Returns None if not found.
         """
         for scope in reversed(self._scope_stack):
             if name in scope:
@@ -445,14 +446,14 @@ class TypedSymbolTable:
         return self._globals.get(name)
 
     def _resolve_typedef(self, ctype: CType, _seen: Optional[Set[str]] = None) -> CType:
-        """递归解析 CType 中的 typedef 引用到底层具体类型。
+        """Recursively resolve typedef references in a CType to the underlying concrete type.
 
-        处理策略：
-        - StructType/EnumType: 检查 tag 是否是 typedef 名称，解析到底层类型
-        - PointerType: 递归解析 pointee
-        - ArrayType: 递归解析 element
-        - 其他: 原样返回
-        使用 seen 集合防止循环 typedef 引用。
+        Resolution strategy:
+        - StructType/EnumType: check if tag is a typedef name, resolve to underlying type
+        - PointerType: recursively resolve pointee
+        - ArrayType: recursively resolve element
+        - Others: return as-is
+        Uses a seen set to prevent circular typedef references.
         """
         if self._sema_ctx is None:
             return ctype
@@ -502,16 +503,16 @@ class TypedSymbolTable:
         return ctype
 
     def _resolve_typedef_name(self, name: str, seen: Set[str]) -> Optional[CType]:
-        """通过 SemanticContext.typedefs 递归解析 typedef 名称到 CType。
+        """Recursively resolve a typedef name to CType via SemanticContext.typedefs.
 
-        返回 None 表示 name 不是 typedef 名称。
+        Returns None if name is not a typedef name.
         """
         typedefs = getattr(self._sema_ctx, 'typedefs', None)
         if typedefs is None:
             return None
 
         if name in seen:
-            return None  # 循环 typedef，停止解析
+            return None  # Circular typedef detected, stop resolution
         seen.add(name)
 
         ast_type = typedefs.get(name)

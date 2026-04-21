@@ -1,6 +1,6 @@
 """Property-based tests for TypedSymbolTable.
 
-**Feature: ir-type-annotations, Property 2: Typedef 解析产生完全解析的 CType**
+**Feature: ir-type-annotations, Property 2: Typedef resolution produces fully resolved CType**
 **Validates: Requirements 1.2, 2.2, 5.2, 9.1**
 
 Property: For any typedef chain (including multi-level nesting), after inserting
@@ -182,9 +182,9 @@ def typedef_chain_with_pointer(draw):
 # ---------------------------------------------------------------------------
 
 class TestProperty2TypedefResolution:
-    """Property 2: Typedef 解析产生完全解析的 CType
+    """Property 2: Typedef resolution produces fully resolved CType
 
-    **Feature: ir-type-annotations, Property 2: Typedef 解析产生完全解析的 CType**
+    **Feature: ir-type-annotations, Property 2: Typedef resolution produces fully resolved CType**
     **Validates: Requirements 1.2, 2.2, 5.2, 9.1**
     """
 
@@ -330,9 +330,9 @@ def global_and_local_types(draw):
 # ---------------------------------------------------------------------------
 
 class TestProperty3ScopeLookupPriority:
-    """Property 3: 作用域查找优先返回局部符号
+    """Property 3: Scope lookup returns local symbols with priority
 
-    **Feature: ir-type-annotations, Property 3: 作用域查找优先返回局部符号**
+    **Feature: ir-type-annotations, Property 3: Scope lookup returns local symbols with priority**
     **Validates: Requirements 2.4**
 
     For any symbol name, if that name exists in both the global scope and the
@@ -509,9 +509,9 @@ def qualified_typedef_chain(draw):
 # ---------------------------------------------------------------------------
 
 class TestProperty7QualifierPreservation:
-    """Property 7: 限定符在 typedef 解析中保留
+    """Property 7: Qualifiers are preserved during typedef resolution
 
-    **Feature: ir-type-annotations, Property 7: 限定符在 typedef 解析中保留**
+    **Feature: ir-type-annotations, Property 7: Qualifiers are preserved during typedef resolution**
     **Validates: Requirements 9.3**
 
     For any type with const or volatile qualifiers, after typedef resolution,

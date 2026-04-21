@@ -19,6 +19,8 @@ import struct as _struct
 from dataclasses import dataclass
 from typing import List, Optional, Union, Any
 
+from pycc.types import CType
+
 from pycc.ast_nodes import (
     Program,
     Declaration,
@@ -301,6 +303,8 @@ class IRInstruction:
     label: Optional[str] = None
     args: Optional[List[str]] = None
     meta: Optional[dict] = None
+    # CType for the result operand (optional, supports incremental migration)
+    result_type: Optional[CType] = None
 
     def __post_init__(self) -> None:
         if self.args is None:
