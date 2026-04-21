@@ -3377,10 +3377,23 @@ class IRGenerator:
 
         if isinstance(expr, Cast):
             v = self._gen_expr(expr.expression)
+
+            # Compute the target CType via the unified resolution path.
+            # This handles typedef targets (e.g. PrivPtr -> struct Priv *)
+            # and pointer-to-typedef-struct (e.g. (cJSON_bool)x).
+            _cast_dst_ctype = None  # type: Optional[CType]
+            _cast_ast_ty = getattr(expr, "type", None)
+            if _cast_ast_ty is not None and self._sema_ctx is not None:
+                try:
+                    _cast_dst_ctype = ast_type_to_ctype_resolved(
+                        _cast_ast_ty, self._sema_ctx)
+                except Exception:
+                    pass
+
             # Float casts: int↔float/double/long double, float↔double↔long double
             _FP_TYPES = {"float", "double", "long double"}
             try:
-                dst_ty = getattr(expr, "type", None)
+                dst_ty = _cast_ast_ty
                 # Resolve typedef in cast target type so downstream code sees
                 # the real type (e.g. PrivPtr -> struct Priv *).
                 _orig_is_pointer = getattr(dst_ty, "is_pointer", False)
@@ -3410,43 +3423,53 @@ class IRGenerator:
                 dst_base = str(getattr(dst_ty, "base", "")).strip() if dst_ty else ""
                 src_fp = self._var_types.get(v, "") if isinstance(v, str) else ""
                 if dst_base in _FP_TYPES and src_fp not in _FP_TYPES:
-                    t = self._new_temp()
+                    # Build CType for the float destination.
+                    _fp_ctype = _cast_dst_ctype
+                    if _fp_ctype is None:
+                        _fp_kind = TypeKind.FLOAT if dst_base == "float" else TypeKind.DOUBLE
+                        _fp_ctype = FloatType(kind=_fp_kind)
                     if dst_base == "float":
                         conv_op = "i2f"
                     elif dst_base == "long double":
                         conv_op = "i2ld"
                     else:
                         conv_op = "i2d"
+                    t = self._new_temp_typed(_fp_ctype)
                     self.instructions.append(IRInstruction(
                         op=conv_op,
-                        result=t, operand1=v, meta={"fp_type": dst_base}))
-                    self._var_types[t] = dst_base
+                        result=t, operand1=v, meta={"fp_type": dst_base},
+                        result_type=_fp_ctype))
                     return t
                 if dst_base in _FP_TYPES and src_fp in _FP_TYPES and dst_base != src_fp:
-                    t = self._new_temp()
+                    _fp_ctype = _cast_dst_ctype
+                    if _fp_ctype is None:
+                        _fp_kind = TypeKind.FLOAT if dst_base == "float" else TypeKind.DOUBLE
+                        _fp_ctype = FloatType(kind=_fp_kind)
                     if src_fp == "long double" or dst_base == "long double":
                         conv_op = "ld2f" if dst_base == "float" else ("ld2d" if dst_base == "double" else ("f2ld" if src_fp == "float" else "d2ld"))
                     elif dst_base == "double":
                         conv_op = "f2d"
                     else:
                         conv_op = "d2f"
+                    t = self._new_temp_typed(_fp_ctype)
                     self.instructions.append(IRInstruction(
                         op=conv_op,
-                        result=t, operand1=v, meta={"fp_type": dst_base}))
-                    self._var_types[t] = dst_base
+                        result=t, operand1=v, meta={"fp_type": dst_base},
+                        result_type=_fp_ctype))
                     return t
                 if dst_base not in _FP_TYPES and src_fp in _FP_TYPES:
-                    t = self._new_temp()
+                    _int_ctype = _cast_dst_ctype if _cast_dst_ctype is not None else IntegerType(kind=TypeKind.INT)
                     if src_fp == "long double":
                         conv_op = "ld2i"
                     elif src_fp == "float":
                         conv_op = "f2i"
                     else:
                         conv_op = "d2i"
+                    t = self._new_temp_typed(_int_ctype)
                     self.instructions.append(IRInstruction(
                         op=conv_op,
-                        result=t, operand1=v, meta={"fp_type": src_fp}))
-                    self._var_types[t] = "int"
+                        result=t, operand1=v, meta={"fp_type": src_fp},
+                        result_type=_int_ctype))
                     return t
             except Exception:
                 pass
@@ -3491,11 +3514,17 @@ class IRGenerator:
                 # Keep dst_str in sync with the normalized spelling for later
                 # _var_types recording.
                 dst_str = dst_norm
+
+                # Determine the CType for the cast destination (used for
+                # _new_temp_typed).  Fall back to building from dst_norm when
+                # the resolved CType is unavailable.
+                _int_cast_ctype = _cast_dst_ctype  # type: Optional[CType]
+
                 if dst_norm in {"unsigned char", "char"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 8 bits (zero-extend on read by masking).
-                    t = self._new_temp()
-                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$255", label="&"))
-                    self._var_types[t] = dst_str
+                    _tc = _int_cast_ctype if _int_cast_ctype is not None else IntegerType(kind=TypeKind.CHAR, is_unsigned=(dst_norm == "unsigned char"))
+                    t = self._new_temp_typed(_tc)
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$255", label="&", result_type=_tc))
                     v = t
                 elif dst_norm == "signed char":
                     # Truncate to 8 bits then sign-extend back to the IR's
@@ -3504,48 +3533,56 @@ class IRGenerator:
                     # This is required for cases like:
                     #   x == (signed char)-116
                     # where the RHS constant must compare as -116, not 140.
-                    t = self._new_temp()
-                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$255", label="&"))
-                    t2 = self._new_temp()
-                    self.instructions.append(IRInstruction(op="sext8", result=t2, operand1=t))
-                    self._var_types[t2] = dst_str
+                    _tc = IntegerType(kind=TypeKind.CHAR, is_unsigned=False)
+                    t = self._new_temp_typed(_tc)
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$255", label="&", result_type=_tc))
+                    _tc2 = _int_cast_ctype if _int_cast_ctype is not None else _tc
+                    t2 = self._new_temp_typed(_tc2)
+                    self.instructions.append(IRInstruction(op="sext8", result=t2, operand1=t, result_type=_tc2))
                     v = t2
                 elif dst_norm in {"unsigned short", "unsigned short int", "short", "short int"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 16 bits.
                     # For signed `short`, also sign-extend so comparisons use
                     # the same representation as loads (which are sign-extended).
-                    t = self._new_temp()
-                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
                     dst_canon = self._canon_int_type(dst_str)
-                    self._var_types[t] = dst_canon
+                    _tc = _int_cast_ctype if _int_cast_ctype is not None else IntegerType(kind=TypeKind.SHORT, is_unsigned=(dst_canon != "short"))
+                    t = self._new_temp_typed(_tc)
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&", result_type=_tc))
                     if dst_canon == "short":
-                        t2 = self._new_temp()
-                        self.instructions.append(IRInstruction(op="sext16", result=t2, operand1=t))
-                        self._var_types[t2] = "short"
+                        t2 = self._new_temp_typed(_tc)
+                        self.instructions.append(IRInstruction(op="sext16", result=t2, operand1=t, result_type=_tc))
                         v = t2
                     else:
                         v = t
                 elif dst_norm in {"signed short", "signed short int"} and not getattr(dst_ty, "is_pointer", False):
                     # Truncate to 16 bits then sign-extend.
-                    t = self._new_temp()
-                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&"))
-                    t2 = self._new_temp()
-                    self.instructions.append(IRInstruction(op="sext16", result=t2, operand1=t))
-                    self._var_types[t2] = self._canon_int_type(dst_str)
+                    _tc = _int_cast_ctype if _int_cast_ctype is not None else IntegerType(kind=TypeKind.SHORT, is_unsigned=False)
+                    t = self._new_temp_typed(_tc)
+                    self.instructions.append(IRInstruction(op="binop", result=t, operand1=v, operand2="$65535", label="&", result_type=_tc))
+                    t2 = self._new_temp_typed(_tc)
+                    self.instructions.append(IRInstruction(op="sext16", result=t2, operand1=t, result_type=_tc))
                     v = t2
                 # Preserve pointer-ness in casted values.
                 # IMPORTANT: do not clobber _var_types of named variables when
                 # the cast would lose struct/union type information needed for
                 # member offset resolution. For example, `(void*)root` should
                 # NOT change root's type from "cJSON*" to "void*".
+                #
+                # NOTE: We intentionally do NOT update _sym_table for named
+                # variables here.  The cast result should use a new temp if
+                # the caller needs a differently-typed value.  Modifying the
+                # source operand's CType in the symbol table would violate
+                # Requirement 5.1.  The _var_types update below is kept only
+                # for backward compatibility during incremental migration.
                 cast_ty = None
                 if getattr(dst_ty, "is_pointer", False):
                     cast_ty = dst_str if "*" in dst_str else f"{dst_str}*"
                 else:
                     cast_ty = dst_str
                 if isinstance(v, str) and v.startswith("@"):
-                    # Named variable: only update if the new type doesn't lose
-                    # struct/union pointer info that member access needs.
+                    # Named variable: only update _var_types if the new type
+                    # doesn't lose struct/union pointer info that member
+                    # access needs.  Never touch _sym_table for named vars.
                     old_ty = self._var_types.get(v, "")
                     if isinstance(old_ty, str) and "*" in old_ty:
                         old_base = old_ty.replace("*", "").strip()
@@ -3562,7 +3599,10 @@ class IRGenerator:
                     else:
                         self._var_types[v] = cast_ty
                 else:
+                    # Temp variable: update both _var_types and _sym_table.
                     self._var_types[v] = cast_ty
+                    if self._sym_table and _cast_dst_ctype is not None:
+                        self._sym_table.insert(v, _cast_dst_ctype)
             # If casting to pointer, allow integer literal 0 to stay 0; otherwise passthrough.
             return v
         if isinstance(expr, Identifier):
