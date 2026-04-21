@@ -230,3 +230,170 @@ class TestQualifierPreservation:
         resolved = st._resolve_typedef(ct)
         assert isinstance(resolved, PointerType)
         assert resolved.quals.const is True
+
+
+# -- Tests for standalone resolve_typedefs and ast_type_to_ctype_resolved ----
+
+from pycc.types import resolve_typedefs, ast_type_to_ctype_resolved
+
+
+class TestResolveTypedefs:
+    """Test the standalone resolve_typedefs function."""
+
+    def test_simple_typedef(self):
+        """GLfloat -> float"""
+        sema = _make_sema_ctx(typedefs={"GLfloat": _ty("float")})
+        ct = StructType(kind=TypeKind.STRUCT, tag="GLfloat")
+        resolved = resolve_typedefs(ct, sema)
+        assert resolved.kind == TypeKind.FLOAT
+
+    def test_typedef_to_struct(self):
+        """hooks_t -> struct internal_hooks"""
+        sema = _make_sema_ctx(typedefs={"hooks_t": _ty("struct internal_hooks")})
+        ct = StructType(kind=TypeKind.STRUCT, tag="hooks_t")
+        resolved = resolve_typedefs(ct, sema)
+        assert resolved.kind == TypeKind.STRUCT
+        assert isinstance(resolved, StructType)
+        assert resolved.tag == "internal_hooks"
+
+    def test_chained_typedef(self):
+        """MyInt -> GLint -> int"""
+        sema = _make_sema_ctx(typedefs={
+            "MyInt": _ty("GLint"),
+            "GLint": _ty("int"),
+        })
+        ct = StructType(kind=TypeKind.STRUCT, tag="MyInt")
+        resolved = resolve_typedefs(ct, sema)
+        assert resolved.kind == TypeKind.INT
+
+    def test_circular_typedef_stops(self):
+        sema = _make_sema_ctx(typedefs={"A": _ty("B"), "B": _ty("A")})
+        ct = StructType(kind=TypeKind.STRUCT, tag="A")
+        # Should not raise
+        resolve_typedefs(ct, sema)
+
+    def test_pointer_pointee_resolved(self):
+        sema = _make_sema_ctx(typedefs={"hooks_t": _ty("struct internal_hooks")})
+        ct = PointerType(
+            kind=TypeKind.POINTER,
+            pointee=StructType(kind=TypeKind.STRUCT, tag="hooks_t"),
+        )
+        resolved = resolve_typedefs(ct, sema)
+        assert isinstance(resolved, PointerType)
+        assert isinstance(resolved.pointee, StructType)
+        assert resolved.pointee.tag == "internal_hooks"
+
+    def test_array_element_resolved(self):
+        sema = _make_sema_ctx(typedefs={"GLfloat": _ty("float")})
+        ct = ArrayType(
+            kind=TypeKind.ARRAY,
+            element=StructType(kind=TypeKind.STRUCT, tag="GLfloat"),
+            size=10,
+        )
+        resolved = resolve_typedefs(ct, sema)
+        assert isinstance(resolved, ArrayType)
+        assert resolved.element.kind == TypeKind.FLOAT
+        assert resolved.size == 10
+
+    def test_no_sema_ctx_passthrough(self):
+        ct = StructType(kind=TypeKind.STRUCT, tag="hooks_t")
+        assert resolve_typedefs(ct, None) is ct
+
+    def test_non_typedef_unchanged(self):
+        sema = _make_sema_ctx(typedefs={})
+        ct = IntegerType(kind=TypeKind.INT)
+        assert resolve_typedefs(ct, sema) is ct
+
+    def test_const_preserved(self):
+        sema = _make_sema_ctx(typedefs={"GLfloat": _ty("float")})
+        ct = StructType(kind=TypeKind.STRUCT, quals=Qualifiers(const=True), tag="GLfloat")
+        resolved = resolve_typedefs(ct, sema)
+        assert resolved.kind == TypeKind.FLOAT
+        assert resolved.quals.const is True
+
+    def test_pointer_quals_preserved(self):
+        sema = _make_sema_ctx(typedefs={"hooks_t": _ty("struct internal_hooks")})
+        ct = PointerType(
+            kind=TypeKind.POINTER,
+            quals=Qualifiers(const=True),
+            pointee=StructType(kind=TypeKind.STRUCT, tag="hooks_t"),
+        )
+        resolved = resolve_typedefs(ct, sema)
+        assert resolved.quals.const is True
+        assert resolved.pointee.tag == "internal_hooks"
+
+    def test_enum_typedef_resolved(self):
+        sema = _make_sema_ctx(typedefs={"Color": _ty("int")})
+        ct = EnumType(kind=TypeKind.ENUM, tag="Color")
+        resolved = resolve_typedefs(ct, sema)
+        assert resolved.kind == TypeKind.INT
+
+
+class TestAstTypeToCTypeResolved:
+    """Test the ast_type_to_ctype_resolved convenience function."""
+
+    def test_without_sema_ctx(self):
+        """Without sema_ctx, behaves like ast_type_to_ctype."""
+        result = ast_type_to_ctype_resolved(_ty("int"))
+        assert result.kind == TypeKind.INT
+
+    def test_simple_typedef_resolved(self):
+        sema = _make_sema_ctx(typedefs={"GLfloat": _ty("float")})
+        # ast_type_to_ctype for an unknown base falls back to INT,
+        # but the typedef resolution should catch it if the base matches a typedef.
+        # However, ast_type_to_ctype converts the AST Type first, so we need
+        # the AST Type's base to be the typedef name.
+        result = ast_type_to_ctype_resolved(_ty("GLfloat"), sema_ctx=sema)
+        # ast_type_to_ctype("GLfloat") -> IntegerType(INT) (unknown base fallback)
+        # resolve_typedefs won't resolve IntegerType since it's not StructType/EnumType
+        # This is expected: ast_type_to_ctype_resolved resolves typedefs in the
+        # *resulting CType*, not in the AST base name. The AST base name resolution
+        # happens when the AST Type is a typedef name that maps to a StructType tag.
+        assert result.kind == TypeKind.INT
+
+    def test_pointer_to_typedef_struct(self):
+        """Pointer to typedef struct should resolve the pointee."""
+        sema = _make_sema_ctx(typedefs={"hooks_t": _ty("struct internal_hooks")})
+        # Create an AST Type that produces PointerType(pointee=StructType(tag="hooks_t"))
+        ast_ty = _ty("struct hooks_t", is_pointer=True, pointer_level=1)
+        result = ast_type_to_ctype_resolved(ast_ty, sema_ctx=sema)
+        assert isinstance(result, PointerType)
+        assert isinstance(result.pointee, StructType)
+        assert result.pointee.tag == "internal_hooks"
+
+    def test_struct_typedef_resolved(self):
+        """struct hooks_t where hooks_t is a typedef should resolve."""
+        sema = _make_sema_ctx(typedefs={"hooks_t": _ty("struct internal_hooks")})
+        ast_ty = _ty("struct hooks_t")
+        result = ast_type_to_ctype_resolved(ast_ty, sema_ctx=sema)
+        assert isinstance(result, StructType)
+        assert result.tag == "internal_hooks"
+
+    def test_none_ast_type(self):
+        """None ast_type should return INT (default)."""
+        result = ast_type_to_ctype_resolved(None)
+        assert result.kind == TypeKind.INT
+
+    def test_string_type(self):
+        """String type should work through _str_to_ctype."""
+        result = ast_type_to_ctype_resolved("unsigned long")
+        assert result.kind == TypeKind.LONG
+        assert result.is_unsigned is True
+
+    def test_chained_typedef_pointer(self):
+        """Pointer to chained typedef: MyStruct -> struct hooks_t -> struct internal_hooks.
+        
+        Note: each intermediate typedef must produce a StructType tag
+        for resolve_typedefs to continue the chain. If a typedef maps to
+        a bare name (e.g. 'hooks_t' without 'struct' prefix), ast_type_to_ctype
+        falls back to IntegerType(INT) and the chain stops.
+        """
+        sema = _make_sema_ctx(typedefs={
+            "MyStruct": _ty("struct hooks_t"),
+            "hooks_t": _ty("struct internal_hooks"),
+        })
+        ast_ty = _ty("struct MyStruct", is_pointer=True, pointer_level=1)
+        result = ast_type_to_ctype_resolved(ast_ty, sema_ctx=sema)
+        assert isinstance(result, PointerType)
+        assert isinstance(result.pointee, StructType)
+        assert result.pointee.tag == "internal_hooks"

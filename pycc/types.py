@@ -294,6 +294,110 @@ def ctype_to_ir_type(ct: CType) -> str:
     return 'int'
 
 
+# -- Standalone typedef resolution -------------------------------------------
+
+def resolve_typedefs(ct: CType, sema_ctx, _seen: Optional[Set[str]] = None) -> CType:
+    """递归解析 CType 中的 typedef 引用到底层具体类型（独立函数版本）。
+
+    处理策略：
+    - StructType/EnumType: 检查 tag 是否是 typedef 名称，解析到底层类型
+    - PointerType: 递归解析 pointee
+    - ArrayType: 递归解析 element
+    - 其他: 原样返回
+    使用 seen 集合防止循环 typedef 引用。
+    """
+    if sema_ctx is None:
+        return ct
+    if _seen is None:
+        _seen = set()
+
+    # StructType whose tag might be a typedef name
+    if isinstance(ct, StructType) and ct.tag is not None:
+        resolved = _resolve_typedef_name(ct.tag, sema_ctx, _seen)
+        if resolved is not None:
+            if ct.quals.const or ct.quals.volatile:
+                resolved = _merge_quals(resolved, ct.quals)
+            return resolved
+
+    # EnumType whose tag might be a typedef name
+    if isinstance(ct, EnumType) and ct.tag is not None:
+        resolved = _resolve_typedef_name(ct.tag, sema_ctx, _seen)
+        if resolved is not None:
+            if ct.quals.const or ct.quals.volatile:
+                resolved = _merge_quals(resolved, ct.quals)
+            return resolved
+
+    # PointerType: recursively resolve pointee
+    if isinstance(ct, PointerType) and ct.pointee is not None:
+        resolved_pointee = resolve_typedefs(ct.pointee, sema_ctx, _seen)
+        if resolved_pointee is not ct.pointee:
+            return PointerType(
+                kind=TypeKind.POINTER,
+                quals=ct.quals,
+                pointee=resolved_pointee,
+            )
+        return ct
+
+    # ArrayType: recursively resolve element
+    if isinstance(ct, ArrayType) and ct.element is not None:
+        resolved_elem = resolve_typedefs(ct.element, sema_ctx, _seen)
+        if resolved_elem is not ct.element:
+            return ArrayType(
+                kind=TypeKind.ARRAY,
+                quals=ct.quals,
+                element=resolved_elem,
+                size=ct.size,
+            )
+        return ct
+
+    return ct
+
+
+def _resolve_typedef_name(name: str, sema_ctx, seen: Set[str]) -> Optional[CType]:
+    """通过 sema_ctx.typedefs 递归解析 typedef 名称到 CType。
+
+    返回 None 表示 name 不是 typedef 名称。
+    """
+    typedefs = getattr(sema_ctx, 'typedefs', None)
+    if typedefs is None:
+        return None
+    if name in seen:
+        return None  # 循环 typedef，停止解析
+    seen.add(name)
+
+    ast_type = typedefs.get(name)
+    if ast_type is None:
+        return None
+
+    ct = ast_type_to_ctype(ast_type)
+    return resolve_typedefs(ct, sema_ctx, seen)
+
+
+def _merge_quals(ctype: CType, quals: Qualifiers) -> CType:
+    """Return a copy of ctype with merged qualifiers."""
+    merged = Qualifiers(
+        const=ctype.quals.const or quals.const,
+        volatile=ctype.quals.volatile or quals.volatile,
+    )
+    if merged == ctype.quals:
+        return ctype
+    import copy
+    result = copy.copy(ctype)
+    object.__setattr__(result, 'quals', merged)
+    return result
+
+
+def ast_type_to_ctype_resolved(ast_type, sema_ctx=None) -> CType:
+    """将 AST Type 节点转换为完全解析的 CType。
+
+    与 ast_type_to_ctype 的区别：递归解析 typedef 名称。
+    """
+    ct = ast_type_to_ctype(ast_type)
+    if sema_ctx is not None:
+        ct = resolve_typedefs(ct, sema_ctx)
+    return ct
+
+
 # -- TypedSymbolTable --------------------------------------------------------
 
 class TypedSymbolTable:

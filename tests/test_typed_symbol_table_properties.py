@@ -424,3 +424,205 @@ class TestProperty3ScopeLookupPriority:
         table.push_scope()
         assert table.lookup(name) is None
         table.pop_scope()
+
+
+# ---------------------------------------------------------------------------
+# Strategies for Property 7
+# ---------------------------------------------------------------------------
+
+# Strategy for generating qualifier combinations (at least one must be True)
+_qualifiers_with_at_least_one = st.sampled_from([
+    Qualifiers(const=True, volatile=False),
+    Qualifiers(const=False, volatile=True),
+    Qualifiers(const=True, volatile=True),
+])
+
+# Concrete CType factories (without qualifiers — qualifiers applied separately)
+_base_ctype_for_quals = st.sampled_from([
+    lambda q: IntegerType(kind=TypeKind.INT, quals=q, is_unsigned=False),
+    lambda q: IntegerType(kind=TypeKind.INT, quals=q, is_unsigned=True),
+    lambda q: IntegerType(kind=TypeKind.CHAR, quals=q, is_unsigned=False),
+    lambda q: IntegerType(kind=TypeKind.SHORT, quals=q, is_unsigned=False),
+    lambda q: IntegerType(kind=TypeKind.LONG, quals=q, is_unsigned=False),
+    lambda q: FloatType(kind=TypeKind.FLOAT, quals=q),
+    lambda q: FloatType(kind=TypeKind.DOUBLE, quals=q),
+    lambda q: PointerType(kind=TypeKind.POINTER, quals=q,
+                           pointee=IntegerType(kind=TypeKind.INT)),
+    lambda q: PointerType(kind=TypeKind.POINTER, quals=q,
+                           pointee=IntegerType(kind=TypeKind.CHAR)),
+    lambda q: StructType(kind=TypeKind.STRUCT, quals=q, tag="test_struct"),
+    lambda q: EnumType(kind=TypeKind.ENUM, quals=q, tag="test_enum"),
+])
+
+
+@st.composite
+def qualified_ctype(draw):
+    """Generate a CType with at least one qualifier (const or volatile) set.
+
+    Returns (ctype_with_quals, qualifiers).
+    """
+    quals = draw(_qualifiers_with_at_least_one)
+    factory = draw(_base_ctype_for_quals)
+    ct = factory(quals)
+    return ct, quals
+
+
+@st.composite
+def qualified_typedef_chain(draw):
+    """Generate a typedef chain where the input CType has qualifiers.
+
+    The input CType (a StructType with tag=typedef_name) carries const/volatile,
+    and after resolution through the typedef chain, the resolved CType should
+    preserve those qualifiers.
+
+    Returns (typedefs_dict, leaf_typedef_name, input_quals, concrete_base).
+    """
+    depth = draw(st.integers(min_value=1, max_value=4))
+    concrete = draw(st.sampled_from([
+        "int", "char", "short", "long", "float", "double",
+        "unsigned int", "unsigned long",
+    ]))
+    quals = draw(_qualifiers_with_at_least_one)
+
+    names = []
+    seen = set()
+    for _ in range(depth):
+        name = draw(_typedef_name.filter(lambda n, s=seen: n not in s))
+        seen.add(name)
+        names.append(name)
+
+    typedefs = {}
+    for i, name in enumerate(names):
+        if i < len(names) - 1:
+            target = names[i + 1]
+            typedefs[name] = _ty(target)
+        else:
+            is_unsigned = "unsigned" in concrete
+            base = concrete.replace("unsigned ", "").strip() or "int"
+            typedefs[name] = _ty(base, is_unsigned=is_unsigned)
+
+    return typedefs, names[0], quals, concrete
+
+
+# ---------------------------------------------------------------------------
+# Property 7 tests
+# ---------------------------------------------------------------------------
+
+class TestProperty7QualifierPreservation:
+    """Property 7: 限定符在 typedef 解析中保留
+
+    **Feature: ir-type-annotations, Property 7: 限定符在 typedef 解析中保留**
+    **Validates: Requirements 9.3**
+
+    For any type with const or volatile qualifiers, after typedef resolution,
+    the returned CType should preserve the original qualifier information
+    (quals.const and quals.volatile).
+    """
+
+    @given(data=qualified_ctype())
+    @settings(max_examples=150)
+    def test_direct_insert_preserves_qualifiers(self, data):
+        """Qualifiers on a non-typedef CType are preserved through insert+lookup."""
+        ct, quals = data
+        table = TypedSymbolTable()
+
+        table.insert("@qvar", ct)
+        result = table.lookup("@qvar")
+
+        assert result is not None, "Symbol should be found after insert"
+        assert result.quals.const == quals.const, (
+            f"const qualifier lost: expected {quals.const}, got {result.quals.const}"
+        )
+        assert result.quals.volatile == quals.volatile, (
+            f"volatile qualifier lost: expected {quals.volatile}, "
+            f"got {result.quals.volatile}"
+        )
+
+    @given(data=qualified_typedef_chain())
+    @settings(max_examples=150)
+    def test_typedef_resolution_preserves_qualifiers(self, data):
+        """Qualifiers on the input CType are preserved after typedef resolution.
+
+        When we insert a StructType(tag=typedef_name, quals=Qualifiers(const=True))
+        into the symbol table, the resolved CType should still have const=True.
+        """
+        typedefs, leaf_name, quals, concrete = data
+        sema = _make_sema_ctx(typedefs)
+        table = TypedSymbolTable(sema_ctx=sema)
+
+        # Create input CType with qualifiers — tag is a typedef name
+        ct_input = StructType(kind=TypeKind.STRUCT, tag=leaf_name, quals=quals)
+        table.insert("@qualified_var", ct_input)
+
+        result = table.lookup("@qualified_var")
+        assert result is not None, "Symbol should be found after insert"
+        # The typedef should be resolved but qualifiers preserved
+        assert result.quals.const == quals.const, (
+            f"const qualifier lost during typedef resolution: "
+            f"input quals={quals}, result quals={result.quals}. "
+            f"Chain: {leaf_name} -> ... -> {concrete}"
+        )
+        assert result.quals.volatile == quals.volatile, (
+            f"volatile qualifier lost during typedef resolution: "
+            f"input quals={quals}, result quals={result.quals}. "
+            f"Chain: {leaf_name} -> ... -> {concrete}"
+        )
+
+    @given(data=qualified_typedef_chain())
+    @settings(max_examples=100)
+    def test_typedef_resolution_merges_qualifiers(self, data):
+        """If both the typedef input and the resolved type have qualifiers,
+        the result should have the union (OR) of both qualifier sets."""
+        typedefs, leaf_name, input_quals, concrete = data
+        sema = _make_sema_ctx(typedefs)
+        table = TypedSymbolTable(sema_ctx=sema)
+
+        ct_input = StructType(kind=TypeKind.STRUCT, tag=leaf_name, quals=input_quals)
+        table.insert("@merged_var", ct_input)
+
+        result = table.lookup("@merged_var")
+        assert result is not None
+        # At minimum, the input qualifiers must be present
+        if input_quals.const:
+            assert result.quals.const, (
+                f"const from input lost after merge. "
+                f"input={input_quals}, result={result.quals}"
+            )
+        if input_quals.volatile:
+            assert result.quals.volatile, (
+                f"volatile from input lost after merge. "
+                f"input={input_quals}, result={result.quals}"
+            )
+
+    @given(
+        quals=_qualifiers_with_at_least_one,
+        depth=st.integers(min_value=1, max_value=5),
+    )
+    @settings(max_examples=100)
+    def test_deep_chain_preserves_qualifiers(self, quals, depth):
+        """Qualifiers are preserved even through deep typedef chains."""
+        # Build a chain: td_0 -> td_1 -> ... -> td_{depth-1} -> int
+        names = [f"td_deep_{i}" for i in range(depth)]
+        typedefs = {}
+        for i, name in enumerate(names):
+            if i < len(names) - 1:
+                typedefs[name] = _ty(names[i + 1])
+            else:
+                typedefs[name] = _ty("int")
+
+        sema = _make_sema_ctx(typedefs)
+        table = TypedSymbolTable(sema_ctx=sema)
+
+        ct_input = StructType(kind=TypeKind.STRUCT, tag=names[0], quals=quals)
+        table.insert("@deep_var", ct_input)
+
+        result = table.lookup("@deep_var")
+        assert result is not None
+        assert result.quals.const == quals.const, (
+            f"const lost through {depth}-deep chain: "
+            f"input={quals}, result={result.quals}"
+        )
+        assert result.quals.volatile == quals.volatile, (
+            f"volatile lost through {depth}-deep chain: "
+            f"input={quals}, result={result.quals}"
+        )
