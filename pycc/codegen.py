@@ -2530,6 +2530,9 @@ class CodeGenerator:
                 else:
                     self._emit("  movsbl (%rax), %eax")
                     self._emit("  movslq %eax, %rax")
+            elif sz == 2:
+                self._emit("  movw (%rax), %ax")
+                self._emit("  movswq %ax, %rax")
             elif sz == 4:
                 self._emit("  movl (%rax), %eax")
                 self._emit("  movl %eax, %eax")
@@ -2567,6 +2570,9 @@ class CodeGenerator:
                 else:
                     self._emit("  movsbl (%rax), %eax")
                     self._emit("  movslq %eax, %rax")
+            elif sz == 2:
+                self._emit("  movw (%rax), %ax")
+                self._emit("  movswq %ax, %rax")
             elif sz == 4:
                 self._emit("  movl (%rax), %eax")
                 self._emit("  movl %eax, %eax")
@@ -2619,6 +2625,8 @@ class CodeGenerator:
             self._load_operand(val, "%rcx")
             if sz == 1:
                 self._emit("  movb %cl, (%rax)")
+            elif sz == 2:
+                self._emit("  movw %cx, (%rax)")
             elif sz == 4:
                 self._emit("  movl %ecx, (%rax)")
             else:
@@ -2645,6 +2653,8 @@ class CodeGenerator:
             self._load_operand(val, "%rcx")
             if sz == 1:
                 self._emit("  movb %cl, (%rax)")
+            elif sz == 2:
+                self._emit("  movw %cx, (%rax)")
             elif sz == 4:
                 self._emit("  movl %ecx, (%rax)")
             else:
@@ -2671,6 +2681,8 @@ class CodeGenerator:
             self._load_operand(val, "%rdx")
             if sz == 1:
                 self._emit("  movb %dl, (%rax)")
+            elif sz == 2:
+                self._emit("  movw %dx, (%rax)")
             elif sz == 4:
                 self._emit("  movl %edx, (%rax)")
             else:
