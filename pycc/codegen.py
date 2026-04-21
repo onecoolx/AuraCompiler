@@ -1545,6 +1545,9 @@ class CodeGenerator:
             else:
                 self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
+            # Propagate member type for correct pointer arithmetic downstream.
+            if isinstance(ins.meta, dict) and "member_type" in ins.meta:
+                self._var_types[ins.result] = ins.meta["member_type"]
             return
 
         if op == "addr_of_member_ptr":
@@ -1591,6 +1594,10 @@ class CodeGenerator:
             else:
                 self._emit("  movq (%rax), %rax")
             self._store_result(ins.result, "%rax")
+            # Propagate member type to result for correct pointer arithmetic
+            # and array indexing downstream.
+            if isinstance(ins.meta, dict) and "member_type" in ins.meta:
+                self._var_types[ins.result] = ins.meta["member_type"]
             return
 
         if op == "unop":

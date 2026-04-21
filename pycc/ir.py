@@ -3468,9 +3468,8 @@ class IRGenerator:
                 pass
 
             t = self._new_temp()
-            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member))
-            # Propagate member type to result so downstream ops (e.g.
-            # ptr->member chaining) can resolve struct layouts.
+            # Look up member type and attach to IR meta for codegen.
+            load_meta = {}
             try:
                 if self._sema_ctx is not None and isinstance(base, str):
                     bty = self._var_types.get(base, "")
@@ -3483,10 +3482,13 @@ class IRGenerator:
                     if layout is not None:
                         mtypes = getattr(layout, "member_types", {}) or {}
                         mty = mtypes.get(expr.member)
-                        if isinstance(mty, str) and ("*" in mty):
-                            self._var_types[t] = mty
+                        if isinstance(mty, str):
+                            load_meta["member_type"] = mty
+                            if "*" in mty:
+                                self._var_types[t] = mty
             except Exception:
                 pass
+            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member, meta=load_meta if load_meta else None))
             return t
         # Address-of a member: &obj.member
         if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, MemberAccess):
@@ -3670,24 +3672,24 @@ class IRGenerator:
                 struct_ty = base_ty.strip()[:-1].strip()
                 if struct_ty:
                     meta["struct_type"] = struct_ty
-            self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None))
-            # Propagate member type to result for chained access.
+            # Look up member type from layout and attach to meta for codegen.
             try:
-                if self._sema_ctx is not None and isinstance(base_ty, str):
-                    sty = base_ty.strip()
-                    if sty.endswith("*"):
-                        sty = sty[:-1].strip()
+                if self._sema_ctx is not None:
+                    sty = struct_ty if 'struct_ty' in dir() and struct_ty else ""
                     resolved_sty = self._resolve_elem_type(sty) if sty else sty
                     layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_sty)
-                    if layout is None:
+                    if layout is None and sty:
                         layout = getattr(self._sema_ctx, "layouts", {}).get(sty)
                     if layout is not None:
                         mtypes = getattr(layout, "member_types", {}) or {}
                         mty = mtypes.get(expr.member)
-                        if isinstance(mty, str) and ("*" in mty):
-                            self._var_types[t] = mty
+                        if isinstance(mty, str):
+                            meta["member_type"] = mty
+                            if "*" in mty:
+                                self._var_types[t] = mty
             except Exception:
                 pass
+            self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None))
             return t
         if isinstance(expr, Assignment):
             rhs = self._gen_expr(expr.value)
