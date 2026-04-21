@@ -23,7 +23,7 @@ from pycc.types import (
     CType, TypedSymbolTable, ctype_to_ir_type, ast_type_to_ctype_resolved,
     TypeKind, IntegerType, FloatType, PointerType,
     ArrayType as CArrayType, StructType as CStructType,
-    type_sizeof,
+    type_sizeof, _str_to_ctype,
 )
 
 
@@ -1691,6 +1691,64 @@ class IRGenerator:
             return ct
         return None
 
+    def _return_type_to_ctype(self, func_name: str) -> Optional[CType]:
+        """Get the return CType for a function call from function_sigs.
+
+        Looks up the function name in sema_ctx.function_sigs to get the
+        return type string, then converts it to a CType via _str_to_ctype.
+        Returns None if the function is not found or sema_ctx is unavailable.
+        """
+        if self._sema_ctx is None:
+            return None
+        sigs = getattr(self._sema_ctx, "function_sigs", None)
+        if not isinstance(sigs, dict):
+            return None
+        sig = sigs.get(func_name)
+        if sig is None:
+            return None
+        try:
+            ret_base = str(sig[0])
+        except Exception:
+            return None
+        if not ret_base or ret_base == "void":
+            return None
+        try:
+            return _str_to_ctype(ret_base)
+        except Exception:
+            return None
+
+    def _uac_result_ctype(self, lty_str: str, rty_str: str) -> Optional[CType]:
+        """Compute the result CType for a binary operation using UAC rules.
+
+        For integer operands, applies usual arithmetic conversions to determine
+        the common type. For comparison operators, the result is always int.
+        Returns None if types cannot be determined.
+        """
+        if not lty_str and not rty_str:
+            return None
+        # If either is a float type, determine common fp type.
+        _FP = {"float", "double", "long double"}
+        ln = lty_str.strip().lower() if lty_str else ""
+        rn = rty_str.strip().lower() if rty_str else ""
+        if ln in _FP or rn in _FP:
+            if "long double" in (ln, rn):
+                return FloatType(kind=TypeKind.DOUBLE)  # best approx for long double
+            if "double" in (ln, rn):
+                return FloatType(kind=TypeKind.DOUBLE)
+            return FloatType(kind=TypeKind.FLOAT)
+        # Integer UAC
+        if self._is_int_like_type(lty_str) and self._is_int_like_type(rty_str):
+            common = self._usual_arithmetic_conversion(lty_str, rty_str)
+            if common:
+                return _str_to_ctype(common)
+        # Single side available
+        if lty_str:
+            try:
+                return _str_to_ctype(lty_str)
+            except Exception:
+                pass
+        return None
+
     def _insert_decl_ctype(self, ir_sym: str, decl) -> None:
         """Insert a local variable or parameter CType into the symbol table.
 
@@ -3206,14 +3264,17 @@ class IRGenerator:
         if isinstance(expr, IntLiteral):
             return f"${expr.value}"
         if isinstance(expr, FloatLiteral):
-            t = self._new_temp()
             suffix = getattr(expr, 'suffix', '')
             if suffix in ('l', 'L'):
                 fp_type = "long double"
+                _fp_ctype = FloatType(kind=TypeKind.DOUBLE)  # best approx
             elif suffix in ('f', 'F'):
                 fp_type = "float"
+                _fp_ctype = FloatType(kind=TypeKind.FLOAT)
             else:
                 fp_type = "double"
+                _fp_ctype = FloatType(kind=TypeKind.DOUBLE)
+            t = self._new_temp_typed(_fp_ctype)
             self.instructions.append(IRInstruction(
                 op="fmov", result=t, operand1=str(expr.value),
                 meta={"fp_type": fp_type}
@@ -3225,7 +3286,10 @@ class IRGenerator:
             # Our AST stores the raw single-character string.
             return f"${ord(expr.value)}"
         if isinstance(expr, StringLiteral):
-            t = self._new_temp()
+            # String literal: type is char* (pointer to char).
+            _str_ctype = PointerType(kind=TypeKind.POINTER,
+                                     pointee=IntegerType(kind=TypeKind.CHAR))
+            t = self._new_temp_typed(_str_ctype)
             # encode string in IR as str_const with result temp
             self.instructions.append(IRInstruction(op="str_const", result=t, operand1=expr.value))
             # Record that this temp is a pointer (char*).
@@ -4478,7 +4542,9 @@ class IRGenerator:
         if isinstance(expr, BinaryOp):
             # Logical operators must be short-circuiting in C.
             if expr.operator in {"&&", "||"}:
-                out = self._new_temp()
+                # Logical ops always produce int (0 or 1).
+                _int_ct = IntegerType(kind=TypeKind.INT)
+                out = self._new_temp_typed(_int_ct)
 
                 l = self._gen_expr(expr.left)
 
@@ -4578,13 +4644,21 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(op=conv_op, result=conv, operand1=r, meta={"fp_type": fp_type}))
                     self._var_types[conv] = fp_type
                     r = conv
-                t = self._new_temp()
+                # Determine CType for the float binary op result.
+                if fp_type == "float":
+                    _fbop_ct = FloatType(kind=TypeKind.FLOAT)
+                else:
+                    _fbop_ct = FloatType(kind=TypeKind.DOUBLE)
+                t = self._new_temp_typed(_fbop_ct)
                 meta = {"fp_type": fp_type}
                 if expr.operator in {"+", "-", "*", "/"}:
                     fp_ops = {"+": "fadd", "-": "fsub", "*": "fmul", "/": "fdiv"}
                     self.instructions.append(IRInstruction(op=fp_ops[expr.operator], result=t, operand1=l, operand2=r, meta=meta))
                     self._var_types[t] = fp_type
                 elif expr.operator in {"==", "!=", "<", "<=", ">", ">="}:
+                    # Comparison result is always int, override the float CType.
+                    if self._sym_table:
+                        self._sym_table.insert(t, IntegerType(kind=TypeKind.INT))
                     self.instructions.append(IRInstruction(op="fcmp", result=t, operand1=l, operand2=r, label=expr.operator, meta=meta))
                     self._var_types[t] = "int"
                 else:
@@ -4671,6 +4745,9 @@ class IRGenerator:
             t = self._new_temp()
 
             if expr.operator in {"==", "!=", "<", "<=", ">", ">="}:
+                # Comparison result is always int.
+                if self._sym_table:
+                    self._sym_table.insert(t, IntegerType(kind=TypeKind.INT))
                 # Decide compare signedness based on the common type when known.
                 lty = self._operand_type_string(l)
                 rty = self._operand_type_string(r)
@@ -4703,6 +4780,14 @@ class IRGenerator:
                         if common == "int":
                             l = _materialize_int_promotion(l, lty)
                             r = _materialize_int_promotion(r, rty)
+                    # Register UAC result CType for arithmetic ops (non-pointer).
+                    # Pointer type propagation is handled separately below.
+                    if self._sym_table and expr.operator in {"+", "-", "*", "/", "%", "&", "|", "^", "<<", ">>"}:
+                        _arith_ct = self._uac_result_ctype(
+                            self._operand_type_string(l),
+                            self._operand_type_string(r))
+                        if _arith_ct is not None:
+                            self._sym_table.insert(t, _arith_ct)
                 self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator))
 
             # Best-effort: preserve pointer type when doing pointer +/- integer.
@@ -4804,6 +4889,13 @@ class IRGenerator:
                 pass
 
             self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
+            # Register return type CType in symbol table for the call result temp.
+            # Skip struct/union returns: the ABI uses a hidden pointer, so the
+            # call result temp is not the struct value itself.
+            if self._sym_table and isinstance(expr.function, Identifier):
+                ret_ct = self._return_type_to_ctype(expr.function.name)
+                if ret_ct is not None and ret_ct.kind not in (TypeKind.STRUCT, TypeKind.UNION):
+                    self._sym_table.insert(t, ret_ct)
             # Record return type for float-aware codegen
             if isinstance(call_ty, str) and ("float" in call_ty or "double" in call_ty):
                 ct = call_ty.strip()
