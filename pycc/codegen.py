@@ -232,6 +232,13 @@ class CodeGenerator:
             return ct.pointee
         return None
 
+    def _ctype_is_unsigned_char(self, ct: Optional[CType]) -> bool:
+        """Check if a CType represents an unsigned char."""
+        if ct is None:
+            return False
+        return (ct.kind == TypeKind.CHAR and
+                isinstance(ct, IntegerType) and ct.is_unsigned)
+
     def _ctype_sizeof(self, ct: CType) -> int:
         """Get size in bytes from CType, using layouts for struct/union."""
         if ct.kind in (TypeKind.STRUCT, TypeKind.UNION):
@@ -1627,10 +1634,20 @@ class CodeGenerator:
                 self._emit("  movslq %eax, %rax")
                 self._store_result(ins.result, "%rax")
                 return
-            _, sz = self._resolve_member(base, member)
-            if sz == 1:
+            # CType-based path: use result_type to determine member size
+            rt = getattr(ins, "result_type", None)
+            if rt is not None:
+                sz = self._ctype_sizeof(rt)
+                is_unsigned_char = self._ctype_is_unsigned_char(rt)
+            else:
+                # String-based fallback
+                _, sz = self._resolve_member(base, member)
+                is_unsigned_char = False
                 mem_ty = self._resolve_member_type(base, member)
                 if isinstance(mem_ty, str) and "unsigned" in mem_ty:
+                    is_unsigned_char = True
+            if sz == 1:
+                if is_unsigned_char:
                     self._emit("  movb (%rax), %al")
                     self._emit("  movzbq %al, %rax")
                 else:
@@ -1675,11 +1692,21 @@ class CodeGenerator:
             off = self._resolve_member_offset(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
-            # Load the member value based on its size.
-            _, sz = self._resolve_member(base, member)
-            if sz == 1:
+            # CType-based path: use result_type to determine member size
+            rt = getattr(ins, "result_type", None)
+            if rt is not None:
+                sz = self._ctype_sizeof(rt)
+                is_unsigned_char = self._ctype_is_unsigned_char(rt)
+            else:
+                # String-based fallback
+                _, sz = self._resolve_member(base, member)
+                is_unsigned_char = False
                 mem_ty = self._resolve_member_type(base, member)
                 if isinstance(mem_ty, str) and "unsigned" in mem_ty:
+                    is_unsigned_char = True
+            # Load the member value based on its size.
+            if sz == 1:
+                if is_unsigned_char:
                     self._emit("  movb (%rax), %al")
                     self._emit("  movzbq %al, %rax")
                 else:
@@ -2595,36 +2622,57 @@ class CodeGenerator:
             if off:
                 self._emit(f"  addq ${off}, %rax")
 
+            # CType-based path: use result_type to determine member type/size
+            rt = getattr(ins, "result_type", None)
+
             # If the member itself is a struct/union, `load_member` should yield
             # its address (so subsequent `.x` accesses don't interpret the first
             # bytes of the subobject as a pointer).
-            mem_ty = self._resolve_member_type(base, member)
-            # Fallback: for locals, semantic typing might not be available.
-            # If IR recorded the member access result as a struct/union type,
-            # treat it as an address.
-            if mem_ty is None:
-                try:
-                    rty = self._var_types.get(ins.result or "")
-                except Exception:
-                    rty = None
-                if isinstance(rty, str) and (rty.strip().startswith("struct ") or rty.strip().startswith("union ")):
-                    mem_ty = rty.strip()
-            if mem_ty is not None:
-                mem_ty_s = str(mem_ty).strip()
-                if mem_ty_s.startswith("struct ") or mem_ty_s.startswith("union "):
-                    if ins.result and isinstance(ins.result, str) and ins.result.startswith("%t"):
-                        self._var_types[ins.result] = f"{mem_ty_s}*"
-                    self._store_result(ins.result, "%rax")
-                    return
+            is_struct_member = False
+            if rt is not None and self._ctype_is_struct_or_union(rt):
+                is_struct_member = True
+            else:
+                mem_ty = self._resolve_member_type(base, member)
+                # Fallback: for locals, semantic typing might not be available.
+                # If IR recorded the member access result as a struct/union type,
+                # treat it as an address.
+                if mem_ty is None:
+                    try:
+                        rty = self._var_types.get(ins.result or "")
+                    except Exception:
+                        rty = None
+                    if isinstance(rty, str) and (rty.strip().startswith("struct ") or rty.strip().startswith("union ")):
+                        mem_ty = rty.strip()
+                if mem_ty is not None:
+                    mem_ty_s = str(mem_ty).strip()
+                    if mem_ty_s.startswith("struct ") or mem_ty_s.startswith("union "):
+                        is_struct_member = True
+
+            if is_struct_member:
+                if ins.result and isinstance(ins.result, str) and ins.result.startswith("%t"):
+                    if rt is not None:
+                        tag = self._ctype_struct_tag(rt)
+                        if tag:
+                            self._var_types[ins.result] = f"{tag}*"
+                    else:
+                        mem_ty_s = str(mem_ty).strip() if mem_ty is not None else ""
+                        if mem_ty_s:
+                            self._var_types[ins.result] = f"{mem_ty_s}*"
+                self._store_result(ins.result, "%rax")
+                return
+
+            # Determine load width from CType or string fallback
+            if rt is not None:
+                sz = self._ctype_sizeof(rt)
+                is_unsigned_char = self._ctype_is_unsigned_char(rt)
+            else:
+                is_unsigned_char = False
+                mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
+                is_unsigned_char = mem_ty_s.startswith("unsigned char")
 
             # load based on member size
             if sz == 1:
-                # Best-effort signedness for 1-byte members.
-                # Default C89: plain `char` is implementation-defined. This
-                # backend treats `char` as signed.
-                mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
-                is_unsigned = mem_ty_s.startswith("unsigned char")
-                if is_unsigned:
+                if is_unsigned_char:
                     self._emit("  movzbl (%rax), %eax")
                     self._emit("  movl %eax, %eax")
                 else:
@@ -2653,18 +2701,26 @@ class CodeGenerator:
             if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
                 self._var_types[base] = f"{ins.meta['struct_type']}*"
             self._load_operand(base, "%rax")
-            off, sz = self._resolve_member(base, member)
-            if off:
-                self._emit(f"  addq ${off}, %rax")
-            if sz == 1:
-                mem_ty = None
+            # CType-based path: use result_type to determine member size
+            rt = getattr(ins, "result_type", None)
+            if rt is not None:
+                off_only, _ = self._resolve_member(base, member)
+                sz = self._ctype_sizeof(rt)
+                is_unsigned_char = self._ctype_is_unsigned_char(rt)
+            else:
+                # String-based fallback
+                off_only, sz = self._resolve_member(base, member)
+                is_unsigned_char = False
                 try:
                     mem_ty = self._resolve_member_type(base, member)
                 except Exception:
                     mem_ty = None
                 mem_ty_s = str(mem_ty).strip().lower() if mem_ty is not None else ""
-                is_unsigned = mem_ty_s.startswith("unsigned char")
-                if is_unsigned:
+                is_unsigned_char = mem_ty_s.startswith("unsigned char")
+            if off_only:
+                self._emit(f"  addq ${off_only}, %rax")
+            if sz == 1:
+                if is_unsigned_char:
                     self._emit("  movzbl (%rax), %eax")
                     self._emit("  movl %eax, %eax")
                 else:
@@ -2715,6 +2771,10 @@ class CodeGenerator:
                 self._emit("  orl %ecx, %eax")  # set new bits
                 self._emit("  movl %eax, (%rdx)")  # store back
                 return
+            # CType-based path: use member_ctype from meta to determine copy size
+            member_ct = (ins.meta or {}).get("member_ctype") if isinstance(ins.meta, dict) else None
+            if member_ct is not None:
+                sz = self._ctype_sizeof(member_ct)
             # Struct/union member: block copy via memcpy.
             if sz > 8:
                 self._emit("  movq %rax, %rdi")  # dest = &base.member
@@ -2744,6 +2804,10 @@ class CodeGenerator:
             off, sz = self._resolve_member(base, member)
             if off:
                 self._emit(f"  addq ${off}, %rax")
+            # CType-based path: use member_ctype from meta to determine copy size
+            member_ct = (ins.meta or {}).get("member_ctype") if isinstance(ins.meta, dict) else None
+            if member_ct is not None:
+                sz = self._ctype_sizeof(member_ct)
             if sz > 8:
                 self._emit("  movq %rax, %rdi")
                 self._load_operand(val, "%rsi")
@@ -2759,34 +2823,6 @@ class CodeGenerator:
                 self._emit("  movl %ecx, (%rax)")
             else:
                 self._emit("  movq %rcx, (%rax)")
-            return
-
-        if op == "store_member_ptr":
-            base = ins.operand1 or ""
-            member = ins.operand2 or ""
-            val = ins.result
-            if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
-                self._var_types[base] = f"{ins.meta['struct_type']}*"
-            # load pointer value into %rax
-            self._load_operand(base, "%rax")
-            off, sz = self._resolve_member(base, member)
-            if off:
-                self._emit(f"  addq ${off}, %rax")
-            if sz > 8:
-                self._emit("  movq %rax, %rdi")
-                self._load_operand(val, "%rsi")
-                self._emit(f"  movq ${sz}, %rdx")
-                self._emit("  call memcpy")
-                return
-            self._load_operand(val, "%rdx")
-            if sz == 1:
-                self._emit("  movb %dl, (%rax)")
-            elif sz == 2:
-                self._emit("  movw %dx, (%rax)")
-            elif sz == 4:
-                self._emit("  movl %edx, (%rax)")
-            else:
-                self._emit("  movq %rdx, (%rax)")
             return
 
         if op == "ret":
