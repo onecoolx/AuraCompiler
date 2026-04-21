@@ -24,7 +24,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
 
 from pycc.ir import IRInstruction
-from pycc.types import CType, _str_to_ctype
+from pycc.types import (
+    CType, TypeKind, PointerType, StructType, ArrayType,
+    IntegerType, FloatType, EnumType,
+    type_sizeof, ctype_to_ir_type, _str_to_ctype,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +205,59 @@ class CodeGenerator:
         if ty_str:
             return _str_to_ctype(ty_str)
         return None
+
+    def _ctype_is_struct_or_union(self, ct: Optional[CType]) -> bool:
+        """Check if a CType represents a struct or union."""
+        if ct is None:
+            return False
+        return ct.kind in (TypeKind.STRUCT, TypeKind.UNION)
+
+    def _ctype_is_pointer(self, ct: Optional[CType]) -> bool:
+        """Check if a CType represents a pointer."""
+        if ct is None:
+            return False
+        return ct.kind == TypeKind.POINTER
+
+    def _ctype_struct_tag(self, ct: CType) -> Optional[str]:
+        """Extract the struct/union layout key from a CType for sema_ctx.layouts lookup."""
+        if ct.kind == TypeKind.STRUCT and isinstance(ct, StructType) and ct.tag:
+            return f"struct {ct.tag}"
+        if ct.kind == TypeKind.UNION and isinstance(ct, StructType) and ct.tag:
+            return f"union {ct.tag}"
+        return None
+
+    def _ctype_deref(self, ct: CType) -> Optional[CType]:
+        """Dereference a pointer CType to get the pointee type."""
+        if isinstance(ct, PointerType) and ct.pointee is not None:
+            return ct.pointee
+        return None
+
+    def _ctype_sizeof(self, ct: CType) -> int:
+        """Get size in bytes from CType, using layouts for struct/union."""
+        if ct.kind in (TypeKind.STRUCT, TypeKind.UNION):
+            tag = self._ctype_struct_tag(ct)
+            if tag and self._sema_ctx is not None:
+                layout = getattr(self._sema_ctx, "layouts", {}).get(tag)
+                if layout is not None:
+                    try:
+                        return int(getattr(layout, "size"))
+                    except Exception:
+                        pass
+            return 0
+        return type_sizeof(ct)
+
+    def _get_base_struct_ctype(self, name: str) -> Optional[CType]:
+        """Get the struct/union CType for a base operand used in member access.
+
+        If the operand is a pointer to struct, dereferences to get the struct type.
+        """
+        ct = self._get_type(name)
+        if ct is None:
+            return None
+        # If pointer, dereference to get pointee
+        if self._ctype_is_pointer(ct):
+            ct = self._ctype_deref(ct)
+        return ct if ct is not None and self._ctype_is_struct_or_union(ct) else None
 
     def generate(self, instructions: List[IRInstruction]) -> str:
         """Generate x86-64 assembly from IR"""
@@ -621,9 +678,8 @@ class CodeGenerator:
     def _resolve_member_type(self, base: str, member: str) -> Optional[str]:
         """Best-effort resolve the declared type of a struct/union member.
 
-        Uses semantic information (sema_ctx.layouts + sema_ctx.global_types) to
-        determine whether a byte-sized member is `signed char` vs `unsigned char`
-        or plain `char`.
+        Uses CType from symbol table when available, falls back to string-based
+        semantic information (sema_ctx.layouts + sema_ctx.global_types).
 
         Returns a type string (e.g. "signed char") or None.
         """
@@ -631,6 +687,20 @@ class CodeGenerator:
         if self._sema_ctx is None:
             return None
 
+        # CType-based path: use symbol table to get struct tag, look up layout
+        struct_ct = self._get_base_struct_ctype(base)
+        if struct_ct is not None:
+            tag = self._ctype_struct_tag(struct_ct)
+            if tag:
+                layout = getattr(self._sema_ctx, "layouts", {}).get(tag)
+                if layout is not None:
+                    mtypes = getattr(layout, "member_types", None)
+                    if isinstance(mtypes, dict):
+                        mt = mtypes.get(member)
+                        if isinstance(mt, str):
+                            return mt
+
+        # String-based fallback
         ty = self._var_types.get(base)
         if isinstance(ty, str) and ty.strip().endswith("*"):
             ty = ty.strip()[:-1].strip()
@@ -711,9 +781,20 @@ class CodeGenerator:
             else:
                 # Struct/union locals: allocate actual size, at least 8 bytes for alignment.
                 ty_str = str(d.operand1) if d.operand1 else ""
+                # CType-based path: parse the declared type string into CType
+                # Note: symbol table local scope is empty during codegen (popped
+                # after IR generation), so we parse the type string directly.
+                is_struct_union = False
                 resolved_ty = self._resolve_type(ty_str)
-                if resolved_ty.startswith("struct ") or resolved_ty.startswith("union "):
+                decl_ct = _str_to_ctype(resolved_ty) if resolved_ty else None
+                if decl_ct is not None and self._ctype_is_struct_or_union(decl_ct):
+                    is_struct_union = True
+                    size_bytes = self._ctype_sizeof(decl_ct)
+                elif resolved_ty.startswith("struct ") or resolved_ty.startswith("union "):
+                    # String-based fallback
+                    is_struct_union = True
                     size_bytes = self._type_size_bytes(resolved_ty)
+                if is_struct_union:
                     # Round up to multiple of 8 so register-chunk stores don't overflow.
                     size_bytes = ((size_bytes + 7) // 8) * 8
                     size_bytes = max(size_bytes, 8)
@@ -3401,9 +3482,21 @@ class CodeGenerator:
         return off
 
     def _type_size_bytes(self, ty: str) -> int:
-        """Best-effort size (bytes) for a type string."""
+        """Best-effort size (bytes) for a type string.
+
+        Uses CType for struct/union layout lookup when the string-based
+        _resolve_type produces a struct/union tag. Falls back to string
+        matching for scalars and pointers.
+        """
         b = self._resolve_type(ty)
         if b.startswith("struct ") or b.startswith("union "):
+            # CType-based path for struct/union: parse to CType, look up layout
+            ct = _str_to_ctype(b)
+            if ct is not None and self._ctype_is_struct_or_union(ct):
+                sz = self._ctype_sizeof(ct)
+                if sz > 0:
+                    return sz
+            # String-based fallback
             layout = getattr(self._sema_ctx, "layouts", {}).get(b)
             return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
         if "*" in b:
@@ -3428,6 +3521,18 @@ class CodeGenerator:
 
     def _resolve_member(self, base_sym: str, member: str) -> Tuple[int, int]:
         """Return (offset, size_bytes) for `base_sym.member`."""
+        # CType-based path: use symbol table to get struct tag, look up layout
+        struct_ct = self._get_base_struct_ctype(base_sym)
+        if struct_ct is not None and self._sema_ctx is not None:
+            tag = self._ctype_struct_tag(struct_ct)
+            if tag:
+                layout = getattr(self._sema_ctx, "layouts", {}).get(tag)
+                if layout is not None:
+                    off = layout.member_offsets.get(member)
+                    sz = layout.member_sizes.get(member)
+                    if off is not None and sz is not None:
+                        return int(off), int(sz)
+        # String-based fallback
         decl_ty = self._var_types.get(base_sym)
         if isinstance(decl_ty, str) and decl_ty.strip().endswith("*"):
             decl_ty = decl_ty.strip()[:-1].strip()
@@ -3450,6 +3555,17 @@ class CodeGenerator:
 
     def _resolve_bitfield(self, base_sym: str, member: str):
         """Return (bit_offset, bit_width) if member is a bit-field, else None."""
+        # CType-based path: use symbol table to get struct tag, look up layout
+        struct_ct = self._get_base_struct_ctype(base_sym)
+        if struct_ct is not None and self._sema_ctx is not None:
+            tag = self._ctype_struct_tag(struct_ct)
+            if tag:
+                layout = getattr(self._sema_ctx, "layouts", {}).get(tag)
+                if layout and getattr(layout, 'bit_fields', None) and member in layout.bit_fields:
+                    members = getattr(layout, '_bf_info', None)
+                    if members and member in members:
+                        return members[member]
+        # String-based fallback
         decl_ty = self._var_types.get(base_sym)
         if isinstance(decl_ty, str) and decl_ty.strip().endswith("*"):
             decl_ty = decl_ty.strip()[:-1].strip()
@@ -3459,8 +3575,6 @@ class CodeGenerator:
             resolved_ty = self._resolve_type(decl_ty)
             layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_ty)
             if layout and getattr(layout, 'bit_fields', None) and member in layout.bit_fields:
-                # Find bit_offset and bit_width from the Declaration objects
-                # stored during layout computation
                 members = getattr(layout, '_bf_info', None)
                 if members and member in members:
                     return members[member]
