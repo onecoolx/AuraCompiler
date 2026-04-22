@@ -3904,7 +3904,18 @@ class IRGenerator:
                                 if member_ctype is not None:
                                     aom_meta["member_ctype"] = member_ctype
                                 rt = PointerType(kind=TypeKind.POINTER, pointee=member_ctype) if member_ctype else None
-                                self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base, operand2=expr.member, meta=aom_meta, result_type=rt))
+                                # If base is a pointer (e.g. from addr_of_member_ptr),
+                                # use addr_of_member_ptr instead of addr_of_member.
+                                _base_is_ptr = False
+                                _bty_c = self._var_types.get(base, "")
+                                if isinstance(_bty_c, str) and ("*" in _bty_c or _bty_c.strip() == "ptr"):
+                                    _base_is_ptr = True
+                                elif self._sym_table:
+                                    _base_ct = self._sym_table.lookup(base)
+                                    if _base_ct is not None and isinstance(_base_ct, PointerType):
+                                        _base_is_ptr = True
+                                _aom_op = "addr_of_member_ptr" if _base_is_ptr else "addr_of_member"
+                                self.instructions.append(IRInstruction(op=_aom_op, result=taddr, operand1=base, operand2=expr.member, meta=aom_meta, result_type=rt))
                                 return taddr
             except Exception:
                 pass
@@ -3936,7 +3947,19 @@ class IRGenerator:
                 # Register result temp with member CType in symbol table.
                 if self._sym_table:
                     self._sym_table.insert(t, member_ct)
-            self.instructions.append(IRInstruction(op="load_member", result=t, operand1=base, operand2=expr.member, meta=load_meta if load_meta else None, result_type=member_ct))
+            # If the base is a pointer (e.g. from addr_of_member_ptr for a
+            # struct sub-member like p->hooks), use load_member_ptr instead
+            # of load_member so codegen loads the pointer value first.
+            base_is_ptr = False
+            bty_check = self._var_types.get(base, "")
+            if isinstance(bty_check, str) and ("*" in bty_check or bty_check.strip() == "ptr"):
+                base_is_ptr = True
+            elif self._sym_table:
+                base_ct = self._sym_table.lookup(base)
+                if base_ct is not None and isinstance(base_ct, PointerType):
+                    base_is_ptr = True
+            op_name = "load_member_ptr" if base_is_ptr else "load_member"
+            self.instructions.append(IRInstruction(op=op_name, result=t, operand1=base, operand2=expr.member, meta=load_meta if load_meta else None, result_type=member_ct))
             return t
         # Address-of a member: &obj.member
         if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, MemberAccess):
@@ -3967,6 +3990,19 @@ class IRGenerator:
                     pass
             except Exception:
                 pass
+            return t
+        # Address-of a pointer member: &p->member
+        if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, PointerMemberAccess):
+            pma = expr.operand
+            base = self._gen_expr(pma.pointer)
+            member_ct = self._lookup_member_ctype(base, pma.member)
+            if member_ct is not None:
+                ptr_ctype = PointerType(kind=TypeKind.POINTER, pointee=member_ct)
+                t = self._new_temp_typed(ptr_ctype)
+            else:
+                t = self._new_temp()
+            aom_rt = PointerType(kind=TypeKind.POINTER, pointee=member_ct) if member_ct else None
+            self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=t, operand1=base, operand2=pma.member, result_type=aom_rt))
             return t
         if isinstance(expr, ArrayAccess):
             # Multi-dimensional array indexing:
@@ -4150,7 +4186,6 @@ class IRGenerator:
             return t
         if isinstance(expr, PointerMemberAccess):
             base = self._gen_expr(expr.pointer)
-            t = self._new_temp()
             # Propagate struct type info so codegen can resolve member offsets.
             meta = {}
             base_ty = self._var_types.get(base, "")
@@ -4158,7 +4193,7 @@ class IRGenerator:
                 struct_ty = base_ty.strip()[:-1].strip()
                 if struct_ty:
                     meta["struct_type"] = struct_ty
-            # Look up member type from layout and attach to meta for codegen.
+            # Look up member type from layout.
             try:
                 if self._sema_ctx is not None:
                     sty = struct_ty if 'struct_ty' in dir() and struct_ty else ""
@@ -4171,16 +4206,42 @@ class IRGenerator:
                         mty = mtypes.get(expr.member)
                         if isinstance(mty, str):
                             meta["member_type"] = mty
+                            # If the member is a struct/union, return an lvalue
+                            # address (pointer) so chained access works: p->hooks.reallocate
+                            if self._is_struct_or_union_type(mty):
+                                member_ctype = self._lookup_member_ctype(base, expr.member)
+                                if member_ctype is not None:
+                                    ptr_ctype = PointerType(kind=TypeKind.POINTER, pointee=member_ctype)
+                                    taddr = self._new_temp_typed(ptr_ctype)
+                                else:
+                                    taddr = self._new_temp()
+                                    self._var_types[taddr] = f"{mty}*"
+                                aom_meta = dict(meta)
+                                if member_ctype is not None:
+                                    aom_meta["member_ctype"] = member_ctype
+                                rt = PointerType(kind=TypeKind.POINTER, pointee=member_ctype) if member_ctype else None
+                                self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base, operand2=expr.member, meta=aom_meta, result_type=rt))
+                                return taddr
                             if "*" in mty or mty.strip() in ("float", "double", "long double"):
-                                self._var_types[t] = mty
+                                self._var_types[base + "_member_" + expr.member] = mty
             except Exception:
                 pass
-            # Annotate with member CType for type-safe codegen.
+            # Scalar/pointer member: load the value.
+            t = self._new_temp()
             member_ct = self._lookup_member_ctype(base, expr.member)
             if member_ct is not None:
                 meta["member_ctype"] = member_ct
                 if self._sym_table:
                     self._sym_table.insert(t, member_ct)
+            # Propagate float/double type to _var_types for codegen.
+            try:
+                mty_str = meta.get("member_type", "")
+                if isinstance(mty_str, str) and mty_str.strip() in ("float", "double", "long double"):
+                    self._var_types[t] = mty_str.strip()
+                elif isinstance(mty_str, str) and "*" in mty_str:
+                    self._var_types[t] = mty_str
+            except Exception:
+                pass
             self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None, result_type=member_ct))
             return t
         if isinstance(expr, Assignment):
