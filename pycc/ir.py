@@ -4962,6 +4962,42 @@ class IRGenerator:
             except Exception:
                 pass
 
+            # Implicit int-to-double/float conversion for function call arguments.
+            # When a prototype declares a parameter as double/float but the
+            # actual argument is an integer, insert an i2d/i2f conversion.
+            try:
+                if self._sema_ctx is not None and isinstance(expr.function, Identifier):
+                    param_types = getattr(self._sema_ctx, "function_param_types", {}).get(expr.function.name)
+                    if param_types is not None:
+                        _FP_PARAMS = {"float", "double", "long double"}
+                        for pi in range(min(len(param_types), len(args))):
+                            pt = str(param_types[pi]).strip().lower()
+                            if pt not in _FP_PARAMS:
+                                continue
+                            # Check if the argument is already a float/double.
+                            arg_ty = self._var_types.get(args[pi], "")
+                            if isinstance(arg_ty, str) and arg_ty.strip().lower() in _FP_PARAMS:
+                                continue
+                            # Integer argument needs conversion to float/double.
+                            if pt == "float":
+                                conv_t = self._new_temp()
+                                self._var_types[conv_t] = "float"
+                                self.instructions.append(IRInstruction(
+                                    op="i2f", result=conv_t, operand1=args[pi],
+                                    meta={"fp_type": "float"},
+                                    result_type=FloatType(kind=TypeKind.FLOAT)))
+                                args[pi] = conv_t
+                            else:
+                                conv_t = self._new_temp()
+                                self._var_types[conv_t] = "double"
+                                self.instructions.append(IRInstruction(
+                                    op="i2d", result=conv_t, operand1=args[pi],
+                                    meta={"fp_type": "double"},
+                                    result_type=FloatType(kind=TypeKind.DOUBLE)))
+                                args[pi] = conv_t
+            except Exception:
+                pass
+
             self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
             # Register return type CType in symbol table for the call result temp.
             # Skip struct/union returns: the ABI uses a hidden pointer, so the
