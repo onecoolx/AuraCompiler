@@ -4650,6 +4650,20 @@ class IRGenerator:
                             pointee_ty = stripped[:-1].rstrip()
                 except Exception:
                     pass
+                # If the pointee is a struct/union, dereferencing produces an
+                # lvalue (address), not a scalar load. Return the pointer as-is
+                # so that downstream member access and struct-copy operations
+                # can use it as a base address.
+                if pointee_ty and self._is_struct_or_union_type(pointee_ty):
+                    if pointee_ty:
+                        self._var_types[base] = f"{pointee_ty}*"
+                    return base
+                # Also check via symbol table CType
+                if self._sym_table:
+                    base_ct = self._sym_table.lookup(base)
+                    if isinstance(base_ct, PointerType) and base_ct.pointee is not None:
+                        if base_ct.pointee.kind in (TypeKind.STRUCT, TypeKind.UNION):
+                            return base
                 t = self._new_temp()
                 _deref_vol3 = self._is_volatile_deref(expr.operand)
                 self.instructions.append(IRInstruction(op="load", result=t, operand1=base,
