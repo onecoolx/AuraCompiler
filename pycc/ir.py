@@ -1960,12 +1960,21 @@ class IRGenerator:
         if self._sema_ctx is None:
             return False
 
-        layout = getattr(self._sema_ctx, "layouts", {}).get(str(decl.type.base))
+        type_key = str(decl.type.base)
+        layout = getattr(self._sema_ctx, "layouts", {}).get(type_key)
+        if layout is None:
+            # Resolve typedef name to underlying struct/union layout key.
+            resolved_key = self._resolve_elem_type(type_key)
+            if resolved_key != type_key:
+                layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_key)
+                if layout is not None:
+                    type_key = resolved_key
         if layout is None:
             return False
 
         # Preserve declared type on the symbol so codegen can resolve member offsets/sizes.
-        self._var_types[f"@{decl.name}"] = str(decl.type.base)
+        # Use the resolved key so codegen can find the layout.
+        self._var_types[f"@{decl.name}"] = type_key
 
         def _init_elems(init_any: Any) -> list[Any]:
             elems0 = self._const_initializer_list(init_any)
@@ -1984,6 +1993,12 @@ class IRGenerator:
             ty_s = str(ty_name).strip()
             layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
             if layout_n is None:
+                resolved = self._resolve_elem_type(ty_s)
+                if resolved != ty_s:
+                    layout_n = getattr(self._sema_ctx, "layouts", {}).get(resolved)
+                    if layout_n is not None:
+                        ty_s = resolved
+            if layout_n is None:
                 return 1
             members = list(getattr(layout_n, "member_offsets", {}) or {})
             if ty_s.startswith("union "):
@@ -1993,6 +2008,13 @@ class IRGenerator:
         def _lower_struct_init(base_sym: str, base_is_ptr: bool, ty_name: str, init_any: Any) -> bool:
             ty_s = str(ty_name).strip()
             layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
+            if layout_n is None:
+                # Resolve typedef name to underlying struct/union layout key.
+                resolved = self._resolve_elem_type(ty_s)
+                if resolved != ty_s:
+                    layout_n = getattr(self._sema_ctx, "layouts", {}).get(resolved)
+                    if layout_n is not None:
+                        ty_s = resolved
             if layout_n is None:
                 return False
             members_n = list(layout_n.member_offsets.keys())
@@ -2153,11 +2175,11 @@ class IRGenerator:
         # Check if the initializer contains any designators.
         if isinstance(decl.initializer, Initializer) and self._has_any_designator(decl.initializer):
             return self._lower_designated_struct_init(
-                self._resolve_name(decl.name), False, str(decl.type.base), decl.initializer, decl
+                self._resolve_name(decl.name), False, type_key, decl.initializer, decl
             )
 
         # Parse initializer list elements in order (non-designated path).
-        if not _lower_struct_init(self._resolve_name(decl.name), False, str(decl.type.base), decl.initializer):
+        if not _lower_struct_init(self._resolve_name(decl.name), False, type_key, decl.initializer):
             return False
         return True
 

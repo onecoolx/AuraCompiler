@@ -526,6 +526,11 @@ class CodeGenerator:
                     if d.op == "addr_of_member" and d.result:
                         if d.result not in self._var_types:
                             mty = (d.meta or {}).get("member_type")
+                            if not mty and getattr(d, "result_type", None) is not None:
+                                # Extract type string from CType result_type.
+                                rt = d.result_type
+                                if isinstance(rt, PointerType) and rt.pointee is not None:
+                                    mty = ctype_to_ir_type(rt.pointee)
                             self._var_types[d.result] = f"{mty}*" if mty else "ptr"
                     # Propagate best-effort result type for temps produced by load_index.
                     # IRGenerator annotates element type via ins.meta["result_ty"].
