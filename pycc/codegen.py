@@ -2522,8 +2522,8 @@ class CodeGenerator:
                 else:
                     # Pop x87 stack if no result needed
                     self._emit("  fstp %st(0)")
-            # Float return: result in xmm0
-            elif "float" in ret_ty and "function" in ret_ty:
+            # Float/double return: result in xmm0
+            elif ("float" in ret_ty or "double" in ret_ty) and "function" in ret_ty and "long double" not in ret_ty:
                 fp = "float" if ret_ty.endswith("float") else "double"
                 s = "s" if fp == "float" else "d"
                 if ins.result:
@@ -3048,6 +3048,46 @@ class CodeGenerator:
             member_ct = (ins.meta or {}).get("member_ctype") if isinstance(ins.meta, dict) else None
             if member_ct is not None:
                 sz = self._ctype_sizeof(member_ct)
+
+            # Float/double member store: use SSE instructions.
+            is_float_mem = (member_ct is not None and member_ct.kind == TypeKind.FLOAT)
+            is_double_mem = (member_ct is not None and member_ct.kind == TypeKind.DOUBLE)
+            if not is_float_mem and not is_double_mem:
+                try:
+                    _mt = self._resolve_member_type(base, member)
+                    _mts = str(_mt).strip().lower() if _mt else ""
+                    if _mts == "float":
+                        is_float_mem = True
+                    elif _mts == "double":
+                        is_double_mem = True
+                except Exception:
+                    pass
+            if is_float_mem or is_double_mem:
+                self._emit("  movq %rax, %rdx")  # save dest address
+                val_ty = self._var_types.get(val, "") if isinstance(val, str) else ""
+                val_off = self._ensure_local(val) if isinstance(val, str) else 0
+                if is_float_mem:
+                    if val_ty == "float":
+                        self._emit(f"  movss -{val_off}(%rbp), %xmm0")
+                    elif val_ty == "double":
+                        self._emit(f"  movsd -{val_off}(%rbp), %xmm0")
+                        self._emit("  cvtsd2ss %xmm0, %xmm0")
+                    else:
+                        self._load_operand(val, "%rax")
+                        self._emit("  cvtsi2ssq %rax, %xmm0")
+                    self._emit("  movss %xmm0, (%rdx)")
+                else:
+                    if val_ty == "double":
+                        self._emit(f"  movsd -{val_off}(%rbp), %xmm0")
+                    elif val_ty == "float":
+                        self._emit(f"  movss -{val_off}(%rbp), %xmm0")
+                        self._emit("  cvtss2sd %xmm0, %xmm0")
+                    else:
+                        self._load_operand(val, "%rax")
+                        self._emit("  cvtsi2sdq %rax, %xmm0")
+                    self._emit("  movsd %xmm0, (%rdx)")
+                return
+
             if sz > 8:
                 self._emit("  movq %rax, %rdi")
                 self._load_operand(val, "%rsi")
