@@ -4440,6 +4440,21 @@ class IRGenerator:
                 sm_member_ct = self._lookup_member_ctype(base, member)
                 if sm_member_ct is not None:
                     meta_sm["member_ctype"] = sm_member_ct
+                # Compound assignment (e.g. s.val += n): load current value,
+                # perform operation, then store back.
+                if expr.operator != "=":
+                    cur = self._new_temp()
+                    load_meta = {"member_type": meta_sm.get("member_type", "")}
+                    if sm_member_ct is not None:
+                        load_meta["member_ctype"] = sm_member_ct
+                    self.instructions.append(IRInstruction(
+                        op="load_member", result=cur, operand1=base,
+                        operand2=member, meta=load_meta, result_type=sm_member_ct))
+                    bop = expr.operator[:-1]  # "+=" -> "+"
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="binop", result=t, operand1=cur, operand2=rhs_val, label=bop))
+                    rhs_val = t
                 self.instructions.append(IRInstruction(op="store_member", result=rhs_val, operand1=base, operand2=member, meta=meta_sm if meta_sm else None))
                 return rhs
 
@@ -4475,6 +4490,23 @@ class IRGenerator:
                 smp_member_ct = self._lookup_member_ctype(base, member)
                 if smp_member_ct is not None:
                     meta["member_ctype"] = smp_member_ct
+                # Compound assignment (e.g. p->val += n): load current value,
+                # perform operation, then store back.
+                if expr.operator != "=":
+                    cur = self._new_temp()
+                    load_meta = {}
+                    if meta.get("struct_type"):
+                        load_meta["struct_type"] = meta["struct_type"]
+                    if smp_member_ct is not None:
+                        load_meta["member_ctype"] = smp_member_ct
+                    self.instructions.append(IRInstruction(
+                        op="load_member_ptr", result=cur, operand1=base,
+                        operand2=member, meta=load_meta, result_type=smp_member_ct))
+                    bop = expr.operator[:-1]  # "+=" -> "+"
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="binop", result=t, operand1=cur, operand2=rhs_val, label=bop))
+                    rhs_val = t
                 self.instructions.append(IRInstruction(op="store_member_ptr", result=rhs_val, operand1=base, operand2=member, meta=meta if meta else None))
                 return rhs
 
