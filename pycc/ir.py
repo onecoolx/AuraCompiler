@@ -1938,6 +1938,179 @@ class IRGenerator:
                 return True
         return False
 
+    def _struct_member_count(self, ty_name: str) -> int:
+        """Return number of subobjects consumed by brace elision.
+
+        For structs: number of members.
+        For unions (C89): only the first member is initialized.
+        """
+        ty_s = str(ty_name).strip()
+        layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
+        if layout_n is None:
+            resolved = self._resolve_elem_type(ty_s)
+            if resolved != ty_s:
+                layout_n = getattr(self._sema_ctx, "layouts", {}).get(resolved)
+                if layout_n is not None:
+                    ty_s = resolved
+        if layout_n is None:
+            return 1
+        members = list(getattr(layout_n, "member_offsets", {}) or {})
+        if ty_s.startswith("union "):
+            return 1
+        return max(1, len(members))
+
+    def _lower_struct_init_recursive(self, base_sym: str, base_is_ptr: bool,
+                                      ty_name: str, init_any: Any,
+                                      src_line: int = 0, src_col: int = 0) -> bool:
+        """Recursively lower a struct/union initializer to IR instructions.
+
+        Handles nested aggregates, brace elision, and zero-fill for
+        trailing members. Can be called from both _lower_local_struct_initializer
+        (for direct struct declarations) and from array init loops (for
+        struct array elements).
+        """
+        ty_s = str(ty_name).strip()
+        layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
+        if layout_n is None:
+            resolved = self._resolve_elem_type(ty_s)
+            if resolved != ty_s:
+                layout_n = getattr(self._sema_ctx, "layouts", {}).get(resolved)
+                if layout_n is not None:
+                    ty_s = resolved
+        if layout_n is None:
+            return False
+
+        def _init_elems(ia: Any) -> list:
+            elems0 = self._const_initializer_list(ia)
+            if elems0 is None:
+                return [ia]
+            return elems0
+
+        members_n = list(layout_n.member_offsets.keys())
+        mtypes_n = getattr(layout_n, "member_types", {})
+        elems_n = _init_elems(init_any)
+
+        # C89 union initialization: only the first member is initialized.
+        if ty_s.startswith("union "):
+            if not members_n:
+                return True
+            m0 = members_n[0]
+            mty0 = mtypes_n.get(m0)
+            if not elems_n:
+                val_expr = IntLiteral(value=0, is_hex=False, is_octal=False,
+                                      line=src_line, column=src_col)
+                v = self._gen_expr(val_expr)
+                _m0_ct = self._member_ctype_from_layout(layout_n, m0)
+                _m0_meta = {"member_ctype": _m0_ct} if _m0_ct else None
+                if base_is_ptr:
+                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta))
+                else:
+                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta))
+                return True
+
+            elem0 = elems_n[0]
+            if isinstance(mty0, str) and self._is_struct_or_union_type(mty0):
+                if isinstance(elem0, Initializer):
+                    sub_init = elem0
+                else:
+                    take = self._struct_member_count(str(mty0))
+                    sub_elems: list = []
+                    eidx_u = 0
+                    for _ in range(take):
+                        if eidx_u >= len(elems_n):
+                            break
+                        if isinstance(elems_n[eidx_u], Initializer):
+                            break
+                        sub_elems.append(elems_n[eidx_u])
+                        eidx_u += 1
+                    sub_init = Initializer(elements=[(None, e) for e in sub_elems],
+                                           line=src_line, column=src_col)
+                _m0_ct2 = self._member_ctype_from_layout(layout_n, m0)
+                if _m0_ct2 is not None:
+                    taddr = self._new_temp_typed(PointerType(kind=TypeKind.POINTER, pointee=_m0_ct2))
+                else:
+                    taddr = self._new_temp()
+                    self._var_types[taddr] = f"{mty0}*"
+                _aom_rt = PointerType(kind=TypeKind.POINTER, pointee=_m0_ct2) if _m0_ct2 else None
+                op_aom = "addr_of_member_ptr" if base_is_ptr else "addr_of_member"
+                self.instructions.append(IRInstruction(op=op_aom, result=taddr, operand1=base_sym, operand2=m0, result_type=_aom_rt))
+                return self._lower_struct_init_recursive(taddr, True, str(mty0), sub_init, src_line, src_col)
+
+            if isinstance(elem0, Initializer):
+                return False
+            v = self._gen_expr(elem0)
+            _m0_ct3 = self._member_ctype_from_layout(layout_n, m0)
+            _m0_meta3 = {"member_ctype": _m0_ct3} if _m0_ct3 else None
+            if base_is_ptr:
+                self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta3))
+            else:
+                self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta3))
+            if len(elems_n) > 1:
+                raise IRGenError(f"excess elements in initializer for '{ty_s}'")
+            return True
+
+        eidx = 0
+        for m in members_n:
+            mty = mtypes_n.get(m)
+
+            if eidx >= len(elems_n):
+                val_expr = IntLiteral(value=0, is_hex=False, is_octal=False,
+                                      line=src_line, column=src_col)
+                _zf_ct = self._member_ctype_from_layout(layout_n, m)
+                _zf_meta = {"member_ctype": _zf_ct} if _zf_ct else None
+                v = self._gen_expr(val_expr)
+                if base_is_ptr:
+                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_zf_meta))
+                else:
+                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_zf_meta))
+                continue
+
+            elem0 = elems_n[eidx]
+
+            if isinstance(mty, str) and self._is_struct_or_union_type(mty):
+                if isinstance(elem0, Initializer):
+                    sub_init = elem0
+                    eidx += 1
+                else:
+                    take = self._struct_member_count(str(mty))
+                    sub_elems: list = []
+                    for _ in range(take):
+                        if eidx >= len(elems_n):
+                            break
+                        if isinstance(elems_n[eidx], Initializer):
+                            break
+                        sub_elems.append(elems_n[eidx])
+                        eidx += 1
+                    sub_init = Initializer(elements=[(None, e) for e in sub_elems],
+                                           line=src_line, column=src_col)
+                _agg_ct = self._member_ctype_from_layout(layout_n, m)
+                if _agg_ct is not None:
+                    taddr = self._new_temp_typed(PointerType(kind=TypeKind.POINTER, pointee=_agg_ct))
+                else:
+                    taddr = self._new_temp()
+                    self._var_types[taddr] = f"{mty}*"
+                _agg_rt = PointerType(kind=TypeKind.POINTER, pointee=_agg_ct) if _agg_ct else None
+                op_aom = "addr_of_member_ptr" if base_is_ptr else "addr_of_member"
+                self.instructions.append(IRInstruction(op=op_aom, result=taddr, operand1=base_sym, operand2=m, result_type=_agg_rt))
+                if not self._lower_struct_init_recursive(taddr, True, str(mty), sub_init, src_line, src_col):
+                    return False
+                continue
+
+            if isinstance(elem0, Initializer):
+                return False
+            v = self._gen_expr(elem0)
+            _sc_ct = self._member_ctype_from_layout(layout_n, m)
+            _sc_meta = {"member_ctype": _sc_ct} if _sc_ct else None
+            if base_is_ptr:
+                self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_sc_meta))
+            else:
+                self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_sc_meta))
+            eidx += 1
+
+        if eidx < len(elems_n):
+            raise IRGenError(f"excess elements in initializer for '{ty_s}'")
+        return True
+
     def _lower_local_struct_initializer(self, decl: Declaration) -> bool:
         """Lower `struct/union T x = { ... }` for local variables (subset).
 
@@ -1952,6 +2125,9 @@ class IRGenerator:
         if decl.initializer is None:
             return False
         if getattr(decl.type, "is_pointer", False):
+            return False
+        # Reject arrays of structs — they should be handled by the array init path.
+        if getattr(decl, "array_size", None) is not None:
             return False
         if not self._is_struct_or_union_type(decl.type.base):
             return False
@@ -1976,202 +2152,6 @@ class IRGenerator:
         # Use the resolved key so codegen can find the layout.
         self._var_types[f"@{decl.name}"] = type_key
 
-        def _init_elems(init_any: Any) -> list[Any]:
-            elems0 = self._const_initializer_list(init_any)
-            if elems0 is None:
-                return [init_any]
-            return elems0
-
-        def _member_count(ty_name: str) -> int:
-            """Return number of subobjects consumed by brace elision.
-
-            For structs: number of members.
-            For unions (C89): only the first member is initialized by a
-            non-designated initializer.
-            """
-
-            ty_s = str(ty_name).strip()
-            layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
-            if layout_n is None:
-                resolved = self._resolve_elem_type(ty_s)
-                if resolved != ty_s:
-                    layout_n = getattr(self._sema_ctx, "layouts", {}).get(resolved)
-                    if layout_n is not None:
-                        ty_s = resolved
-            if layout_n is None:
-                return 1
-            members = list(getattr(layout_n, "member_offsets", {}) or {})
-            if ty_s.startswith("union "):
-                return 1
-            return max(1, len(members))
-
-        def _lower_struct_init(base_sym: str, base_is_ptr: bool, ty_name: str, init_any: Any) -> bool:
-            ty_s = str(ty_name).strip()
-            layout_n = getattr(self._sema_ctx, "layouts", {}).get(ty_s)
-            if layout_n is None:
-                # Resolve typedef name to underlying struct/union layout key.
-                resolved = self._resolve_elem_type(ty_s)
-                if resolved != ty_s:
-                    layout_n = getattr(self._sema_ctx, "layouts", {}).get(resolved)
-                    if layout_n is not None:
-                        ty_s = resolved
-            if layout_n is None:
-                return False
-            members_n = list(layout_n.member_offsets.keys())
-            mtypes_n = getattr(layout_n, "member_types", {})
-            elems_n = _init_elems(init_any)
-
-            # C89 union initialization: only the first member is initialized.
-            if ty_s.startswith("union "):
-                if not members_n:
-                    return True
-                m0 = members_n[0]
-                mty0 = mtypes_n.get(m0)
-                if not elems_n:
-                    # No initializer elements: treat as zero-init for first member.
-                    val_expr = IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
-                    v = self._gen_expr(val_expr)
-                    _m0_ct = self._member_ctype_from_layout(layout_n, m0)
-                    _m0_meta = {"member_ctype": _m0_ct} if _m0_ct else None
-                    if base_is_ptr:
-                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta))
-                    else:
-                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta))
-                    return True
-
-                elem0 = elems_n[0]
-                if isinstance(mty0, str) and self._is_struct_or_union_type(mty0):
-                    # Initialize the first union member as an aggregate.
-                    if isinstance(elem0, Initializer):
-                        sub_init = elem0
-                    else:
-                        # Brace elision into the first member.
-                        take = _member_count(str(mty0))
-                        sub_elems: list[Any] = []
-                        eidx_u = 0
-                        for _ in range(take):
-                            if eidx_u >= len(elems_n):
-                                break
-                            if isinstance(elems_n[eidx_u], Initializer):
-                                break
-                            sub_elems.append(elems_n[eidx_u])
-                            eidx_u += 1
-                        sub_init = Initializer(
-                            elements=[(None, e) for e in sub_elems],
-                            line=getattr(decl, "line", 0),
-                            column=getattr(decl, "column", 0),
-                        )
-
-                    _m0_ct2 = self._member_ctype_from_layout(layout_n, m0)
-                    if _m0_ct2 is not None:
-                        _ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=_m0_ct2)
-                        taddr = self._new_temp_typed(_ptr_ct)
-                    else:
-                        taddr = self._new_temp()
-                        self._var_types[taddr] = f"{mty0}*"
-                    _aom_rt = PointerType(kind=TypeKind.POINTER, pointee=_m0_ct2) if _m0_ct2 else None
-                    if base_is_ptr:
-                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m0, result_type=_aom_rt))
-                    else:
-                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m0, result_type=_aom_rt))
-                    return _lower_struct_init(taddr, True, str(mty0), sub_init)
-
-                # Scalar first member.
-                if isinstance(elem0, Initializer):
-                    return False
-                v = self._gen_expr(elem0)
-                _m0_ct3 = self._member_ctype_from_layout(layout_n, m0)
-                _m0_meta3 = {"member_ctype": _m0_ct3} if _m0_ct3 else None
-                if base_is_ptr:
-                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta3))
-                else:
-                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m0, meta=_m0_meta3))
-                # Reject excess elements beyond the first subobject.
-                if len(elems_n) > 1:
-                    raise IRGenError(f"excess elements in initializer for '{ty_s}'")
-                return True
-
-                # Note: we reject excess elements for unions below after we
-                # determine how many elements were consumed.
-
-            eidx = 0
-            for m in members_n:
-                mty = mtypes_n.get(m)
-
-                # If we ran out of initializer elements, zero-fill remaining members.
-                if eidx >= len(elems_n):
-                    val_expr = IntLiteral(value=0, is_hex=False, is_octal=False, line=decl.line, column=decl.column)
-                    _zf_ct = self._member_ctype_from_layout(layout_n, m)
-                    _zf_meta = {"member_ctype": _zf_ct} if _zf_ct else None
-                    if base_is_ptr:
-                        v = self._gen_expr(val_expr)
-                        self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_zf_meta))
-                    else:
-                        v = self._gen_expr(val_expr)
-                        self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_zf_meta))
-                    continue
-
-                elem0 = elems_n[eidx]
-
-                if isinstance(mty, str) and self._is_struct_or_union_type(mty):
-                    # Aggregate member.
-                    if isinstance(elem0, Initializer):
-                        sub_init = elem0
-                        eidx += 1
-                    else:
-                        # Brace elision: consume scalars for nested members.
-                        take = _member_count(str(mty))
-                        sub_elems: list[Any] = []
-                        for _ in range(take):
-                            if eidx >= len(elems_n):
-                                break
-                            if isinstance(elems_n[eidx], Initializer):
-                                break
-                            sub_elems.append(elems_n[eidx])
-                            eidx += 1
-                        sub_init = Initializer(
-                            elements=[(None, e) for e in sub_elems],
-                            line=getattr(decl, "line", 0),
-                            column=getattr(decl, "column", 0),
-                        )
-
-                    # Compute pointer to member and recurse.
-                    _agg_ct = self._member_ctype_from_layout(layout_n, m)
-                    if _agg_ct is not None:
-                        _agg_ptr = PointerType(kind=TypeKind.POINTER, pointee=_agg_ct)
-                        taddr = self._new_temp_typed(_agg_ptr)
-                    else:
-                        taddr = self._new_temp()
-                        self._var_types[taddr] = f"{mty}*"
-                    _agg_rt = PointerType(kind=TypeKind.POINTER, pointee=_agg_ct) if _agg_ct else None
-                    if base_is_ptr:
-                        self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base_sym, operand2=m, result_type=_agg_rt))
-                    else:
-                        self.instructions.append(IRInstruction(op="addr_of_member", result=taddr, operand1=base_sym, operand2=m, result_type=_agg_rt))
-                    if not _lower_struct_init(taddr, True, str(mty), sub_init):
-                        return False
-                    continue
-
-                # Scalar member.
-                if isinstance(elem0, Initializer):
-                    return False
-                v = self._gen_expr(elem0)
-                _sc_ct = self._member_ctype_from_layout(layout_n, m)
-                _sc_meta = {"member_ctype": _sc_ct} if _sc_ct else None
-                if base_is_ptr:
-                    self.instructions.append(IRInstruction(op="store_member_ptr", result=v, operand1=base_sym, operand2=m, meta=_sc_meta))
-                else:
-                    self.instructions.append(IRInstruction(op="store_member", result=v, operand1=base_sym, operand2=m, meta=_sc_meta))
-                eidx += 1
-
-            # Reject excess initializer elements.
-            if eidx < len(elems_n):
-                raise IRGenError(
-                    f"excess elements in initializer for '{ty_s}'"
-                )
-
-            return True
-
         # Check if the initializer contains any designators.
         if isinstance(decl.initializer, Initializer) and self._has_any_designator(decl.initializer):
             return self._lower_designated_struct_init(
@@ -2179,7 +2159,9 @@ class IRGenerator:
             )
 
         # Parse initializer list elements in order (non-designated path).
-        if not _lower_struct_init(self._resolve_name(decl.name), False, type_key, decl.initializer):
+        if not self._lower_struct_init_recursive(
+                self._resolve_name(decl.name), False, type_key,
+                decl.initializer, decl.line, decl.column):
             return False
         return True
 
@@ -2992,6 +2974,39 @@ class IRGenerator:
                                             label="char" if str(item.type.base).strip() in {"char", "unsigned char"} else "int",
                                         )
                                     )
+                                continue
+
+                            # struct/union element array: T arr[N] = {{...},{...}}
+                            elem_base = str(item.type.base).strip()
+                            resolved_elem = self._resolve_elem_type(elem_base)
+                            if self._is_struct_or_union_type(elem_base):
+                                n = int(item.array_size)
+                                if len(inits) > n:
+                                    raise IRGenError(
+                                        f"excess elements in initializer for array '{item.name}'"
+                                    )
+                                sym = self._resolve_name(item.name)
+                                for idx in range(n):
+                                    t_addr = self._new_temp()
+                                    self._var_types[t_addr] = f"{resolved_elem}*"
+                                    self.instructions.append(IRInstruction(
+                                        op="addr_index", result=t_addr,
+                                        operand1=sym, operand2=f"${idx}"))
+                                    if idx < len(inits):
+                                        elem_init = inits[idx]
+                                        if not isinstance(elem_init, Initializer):
+                                            elem_init = Initializer(
+                                                elements=[(None, elem_init)],
+                                                line=item.line, column=item.column)
+                                        self._lower_struct_init_recursive(
+                                            t_addr, True, resolved_elem,
+                                            elem_init, item.line, item.column)
+                                    else:
+                                        # Zero-fill: create empty initializer
+                                        self._lower_struct_init_recursive(
+                                            t_addr, True, resolved_elem,
+                                            Initializer(elements=[], line=item.line, column=item.column),
+                                            item.line, item.column)
                                 continue
 
                             # int a[N] = {...}

@@ -515,13 +515,38 @@ class CodeGenerator:
                     d = instructions[j]
                     if d.op == "decl" and d.result and d.operand1:
                         self._var_types[d.result] = str(d.operand1)
+                    # mov_addr (array decay): derive pointer type from array element type.
+                    # Only propagate for struct/union elements where member offset
+                    # resolution needs the type. For scalar/pointer arrays, the
+                    # default handling is sufficient.
+                    if d.op == "mov_addr" and d.result and d.operand1:
+                        if d.result not in self._var_types:
+                            src_ty = self._var_types.get(d.operand1, "") if d.operand1 else ""
+                            if isinstance(src_ty, str) and src_ty.strip().startswith("array("):
+                                inner = src_ty.strip()[len("array("):]
+                                if inner.endswith(")"):
+                                    inner = inner[:-1]
+                                elem_base = inner.split(",", 1)[0].strip()
+                                if elem_base and (elem_base.startswith("struct ") or elem_base.startswith("union ")):
+                                    self._var_types[d.result] = f"{elem_base}*"
                     # If the IR uses a temp as the result of addr_index, it is a pointer value.
                     if d.op == "addr_index" and d.result:
-                        # IR lowering may annotate the temp type in sema_ctx-like tables
-                        # (CodeGenerator only sees the IR list). Only default to "ptr" when
-                        # we have no type for it.
                         if d.result not in self._var_types:
-                            self._var_types[d.result] = "ptr"
+                            # Try to derive element pointer type from the array base.
+                            base_ty = self._var_types.get(d.operand1, "") if d.operand1 else ""
+                            elem_ptr_ty = "ptr"
+                            if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
+                                inner = base_ty.strip()[len("array("):]
+                                if inner.endswith(")"):
+                                    inner = inner[:-1]
+                                elem_base = inner.split(",", 1)[0].strip()
+                                if elem_base:
+                                    elem_ptr_ty = f"{elem_base}*"
+                            elif isinstance(base_ty, str) and base_ty.strip().endswith("*"):
+                                # Base is already a pointer (e.g. from mov_addr decay).
+                                # addr_index on a pointer produces the same pointer type.
+                                elem_ptr_ty = base_ty.strip()
+                            self._var_types[d.result] = elem_ptr_ty
                     # If the IR uses a temp as the result of addr_of_member, it is a pointer value.
                     if d.op == "addr_of_member" and d.result:
                         if d.result not in self._var_types:
