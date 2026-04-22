@@ -2934,8 +2934,10 @@ class IRGenerator:
                         # NOTE: Some declarators (e.g. `char (*p)[4]`) carry
                         # `array_size` from the parser but are pointer objects
                         # (not arrays). Only take the array-init path for true
-                        # array objects.
-                        if getattr(item, "array_size", None) is not None and not getattr(item.type, "is_pointer", False):
+                        # array objects. Pointer arrays (e.g. char *a[3]) have
+                        # is_pointer=True but are still arrays — check
+                        # _local_arrays membership instead.
+                        if getattr(item, "array_size", None) is not None and item.name in self._local_arrays:
                             inits = self._const_initializer_list(item.initializer)
                             if inits is None:
                                 raise IRGenError("unsupported array initializer: expected initializer list")
@@ -3040,7 +3042,7 @@ class IRGenerator:
                         # already handled above when `array_size` is known.
                         # If we reached here and this is an array, it means we don't
                         # support the given initializer form for arrays yet.
-                        if getattr(item, "array_size", None) is not None and not getattr(item.type, "is_pointer", False):
+                        if getattr(item, "array_size", None) is not None and item.name in self._local_arrays:
                             raise IRGenError("unsupported array initializer")
 
                         # Scalar init (existing path)
