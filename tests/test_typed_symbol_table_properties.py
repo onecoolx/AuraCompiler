@@ -364,8 +364,12 @@ class TestProperty3ScopeLookupPriority:
 
     @given(data=global_and_local_types())
     @settings(max_examples=150)
-    def test_global_visible_after_scope_pop(self, data):
-        """After popping local scope, lookup returns the global CType."""
+    def test_local_archived_after_scope_pop(self, data):
+        """After popping local scope, lookup returns the archived local CType.
+
+        pop_scope() archives local symbols into _locals so they remain
+        accessible to codegen after IR generation completes.
+        """
         name, global_ct, local_ct = data
         table = TypedSymbolTable()
 
@@ -376,12 +380,12 @@ class TestProperty3ScopeLookupPriority:
         # While in scope, local shadows global
         assert table.lookup(name) is local_ct
 
-        # After pop, global is visible again
+        # After pop, local is archived and still takes priority
         table.pop_scope()
         result = table.lookup(name)
-        assert result is not None, "Global symbol should still exist after pop"
-        assert result is global_ct, (
-            f"After pop_scope, lookup should return global CType {global_ct} "
+        assert result is not None, "Symbol should still exist after pop"
+        assert result is local_ct, (
+            f"After pop_scope, lookup should return archived local CType {local_ct} "
             f"but got {result}"
         )
 

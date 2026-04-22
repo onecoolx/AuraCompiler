@@ -455,14 +455,24 @@ class TypedSymbolTable:
         self._sema_ctx = sema_ctx
         self._globals: Dict[str, CType] = {}
         self._scope_stack: List[Dict[str, CType]] = []
+        # Flat archive of all function-local symbols across all scopes.
+        # Populated by pop_scope() so that codegen can look up local symbols
+        # after IR generation has finished (scopes are popped at function end).
+        self._locals: Dict[str, CType] = {}
 
     def push_scope(self) -> None:
         """Enter a new function scope."""
         self._scope_stack.append({})
 
     def pop_scope(self) -> None:
-        """Leave the current function scope."""
-        self._scope_stack.pop()
+        """Leave the current function scope.
+
+        All symbols from the popped scope are archived into _locals so they
+        remain accessible to codegen after IR generation completes.
+        """
+        if self._scope_stack:
+            popped = self._scope_stack.pop()
+            self._locals.update(popped)
 
     def insert(self, name: str, ctype: CType) -> None:
         """Insert a symbol and its resolved CType.
@@ -480,13 +490,14 @@ class TypedSymbolTable:
     def lookup(self, name: str) -> Optional[CType]:
         """Look up the CType for a symbol.
 
-        Searches the current function scope (innermost to outermost first),
-        then falls back to the global scope.
+        Search order: active scopes (innermost first) → archived locals → globals.
         Returns None if not found.
         """
         for scope in reversed(self._scope_stack):
             if name in scope:
                 return scope[name]
+        if name in self._locals:
+            return self._locals[name]
         return self._globals.get(name)
 
     def _resolve_typedef(self, ctype: CType, _seen: Optional[Set[str]] = None) -> CType:

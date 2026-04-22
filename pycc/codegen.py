@@ -515,56 +515,15 @@ class CodeGenerator:
                     d = instructions[j]
                     if d.op == "decl" and d.result and d.operand1:
                         self._var_types[d.result] = str(d.operand1)
-                    # mov_addr (array decay): derive pointer type from array element type.
-                    # Only propagate for struct/union elements where member offset
-                    # resolution needs the type. For scalar/pointer arrays, the
-                    # default handling is sufficient.
-                    if d.op == "mov_addr" and d.result and d.operand1:
-                        if d.result not in self._var_types:
-                            src_ty = self._var_types.get(d.operand1, "") if d.operand1 else ""
-                            if isinstance(src_ty, str) and src_ty.strip().startswith("array("):
-                                inner = src_ty.strip()[len("array("):]
-                                if inner.endswith(")"):
-                                    inner = inner[:-1]
-                                elem_base = inner.split(",", 1)[0].strip()
-                                if elem_base and (elem_base.startswith("struct ") or elem_base.startswith("union ")):
-                                    self._var_types[d.result] = f"{elem_base}*"
                     # If the IR uses a temp as the result of addr_index, it is a pointer value.
+                    # Minimal fallback: set "ptr" so codegen knows it's a pointer.
+                    # Full type info is available via _get_type() -> symbol table.
                     if d.op == "addr_index" and d.result:
                         if d.result not in self._var_types:
-                            # Try to derive element pointer type from the array base.
-                            base_ty = self._var_types.get(d.operand1, "") if d.operand1 else ""
-                            elem_ptr_ty = "ptr"
-                            if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
-                                inner = base_ty.strip()[len("array("):]
-                                if inner.endswith(")"):
-                                    inner = inner[:-1]
-                                elem_base = inner.split(",", 1)[0].strip()
-                                if elem_base:
-                                    elem_ptr_ty = f"{elem_base}*"
-                            elif isinstance(base_ty, str) and base_ty.strip().endswith("*"):
-                                # Base is already a pointer (e.g. from mov_addr decay).
-                                # addr_index on a pointer produces the same pointer type.
-                                elem_ptr_ty = base_ty.strip()
-                            self._var_types[d.result] = elem_ptr_ty
-                    # If the IR uses a temp as the result of addr_of_member, it is a pointer value.
+                            self._var_types[d.result] = "ptr"
                     if d.op == "addr_of_member" and d.result:
                         if d.result not in self._var_types:
-                            mty = (d.meta or {}).get("member_type")
-                            if not mty and getattr(d, "result_type", None) is not None:
-                                # Extract type string from CType result_type.
-                                rt = d.result_type
-                                if isinstance(rt, PointerType) and rt.pointee is not None:
-                                    mty = ctype_to_ir_type(rt.pointee)
-                            self._var_types[d.result] = f"{mty}*" if mty else "ptr"
-                    # Propagate best-effort result type for temps produced by load_index.
-                    # IRGenerator annotates element type via ins.meta["result_ty"].
-                    if d.op == "load_index" and d.result:
-                        try:
-                            if isinstance(d.meta, dict) and "result_ty" in d.meta and d.result not in self._var_types:
-                                self._var_types[d.result] = str(d.meta["result_ty"])
-                        except Exception:
-                            pass
+                            self._var_types[d.result] = "ptr"
                     j += 1
                 # collect decls/params (and optional func_ret marker) until the
                 # first non-prologue instruction. IR commonly emits:

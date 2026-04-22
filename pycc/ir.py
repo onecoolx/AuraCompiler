@@ -2986,8 +2986,14 @@ class IRGenerator:
                                         f"excess elements in initializer for array '{item.name}'"
                                     )
                                 sym = self._resolve_name(item.name)
+                                # Build CType for element pointer (for symbol table registration).
+                                _elem_ct = ast_type_to_ctype_resolved(item.type, self._sema_ctx) if self._sema_ctx else None
+                                _elem_ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=_elem_ct) if _elem_ct else None
                                 for idx in range(n):
-                                    t_addr = self._new_temp()
+                                    if _elem_ptr_ct is not None:
+                                        t_addr = self._new_temp_typed(_elem_ptr_ct)
+                                    else:
+                                        t_addr = self._new_temp()
                                     self._var_types[t_addr] = f"{resolved_elem}*"
                                     self.instructions.append(IRInstruction(
                                         op="addr_index", result=t_addr,
@@ -3002,7 +3008,6 @@ class IRGenerator:
                                             t_addr, True, resolved_elem,
                                             elem_init, item.line, item.column)
                                     else:
-                                        # Zero-fill: create empty initializer
                                         self._lower_struct_init_recursive(
                                             t_addr, True, resolved_elem,
                                             Initializer(elements=[], line=item.line, column=item.column),
