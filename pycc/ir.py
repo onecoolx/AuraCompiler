@@ -4004,6 +4004,25 @@ class IRGenerator:
             aom_rt = PointerType(kind=TypeKind.POINTER, pointee=member_ct) if member_ct else None
             self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=t, operand1=base, operand2=pma.member, result_type=aom_rt))
             return t
+        # Address-of an array element: &arr[i]
+        # When the element is a struct/union, _gen_expr(ArrayAccess) already
+        # returns an addr_index result (a pointer to the element). In that case
+        # &arr[i] should return the same pointer, not take its stack address.
+        if isinstance(expr, UnaryOp) and expr.operator == "&" and isinstance(expr.operand, ArrayAccess):
+            v = self._gen_expr(expr.operand)
+            # Check if the result is already a pointer (from addr_index for struct elements)
+            if self._sym_table:
+                ct = self._sym_table.lookup(v)
+                if ct is not None and isinstance(ct, PointerType):
+                    return v
+            # Also check _var_types
+            vty = self._var_types.get(v, "")
+            if isinstance(vty, str) and "*" in vty:
+                return v
+            # Scalar element: take address normally
+            t = self._new_temp()
+            self.instructions.append(IRInstruction(op="addr_of", result=t, operand1=v))
+            return t
         if isinstance(expr, ArrayAccess):
             # Multi-dimensional array indexing:
             # - For `a[i]` where `a` is a 2D local array, lower to an lvalue row
