@@ -2213,16 +2213,8 @@ class CodeGenerator:
                 self._store_result(ins.result, "$0")
                 return
 
-            # Ensure the stack is 16-byte aligned at the call instruction.
-            # Our codegen sometimes grows the stack dynamically (e.g. spilling temps)
-            # or does ad-hoc pushes; libc functions like printf assume proper alignment.
-            # If currently misaligned, temporarily adjust by 8 and undo after call.
+            # Stack alignment will be checked after all stack pushes (see below).
             pre_call_pad = False
-            if getattr(self, "_call_stack_adjust", 0) % 16 != 0:
-                # SysV AMD64 ABI: %rsp must be 16-byte aligned at each `call`.
-                self._emit("  subq $8, %rsp")
-                self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 8
-                pre_call_pad = True
 
             # operand1 is function name or @name
             # args are operand strings
@@ -2232,16 +2224,13 @@ class CodeGenerator:
             gp_idx = 0
             xmm_idx = 0
 
-            # SysV AMD64: args beyond r9 go on the stack (right-to-left).
-            stack_args = list(ins.args or [])[len(arg_regs):]
+            # SysV AMD64: GP args beyond 6 go on the stack.
+            # SSE (float/double) args have their own register bank and do NOT
+            # consume GP register slots.  We must classify args first to
+            # determine which GP args overflow to the stack.
+            #
+            # Deferred: stack_args will be computed after _arg_descs classification.
             stack_pad = 0
-
-            if stack_args:
-                for a in reversed(stack_args):
-                    self._load_operand(a, "%rax")
-                    self._emit("  pushq %rax")
-                    stack_pad += 8
-                self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + stack_pad
 
             # --- Two-pass argument setup for struct-aware ABI ---
             # Pass 1: Pre-allocate stack copies for large (MEMORY class) structs
@@ -2286,6 +2275,14 @@ class CodeGenerator:
             _pre_xmm = 0
             for idx, a in enumerate(ins.args or []):
                 a_ty = self._var_types.get(a, "") if isinstance(a, str) else ""
+                # CType-based: use symbol table to determine argument type
+                # for correct GP vs SSE classification.
+                a_ct = self._get_type(a) if isinstance(a, str) else None
+                if a_ct is not None:
+                    if a_ct.kind == TypeKind.FLOAT:
+                        a_ty = "float"
+                    elif a_ct.kind == TypeKind.DOUBLE:
+                        a_ty = "double"
                 if isinstance(a_ty, str) and a_ty.strip() == "long double":
                     # SysV ABI: long double is MEMORY class, passed on the stack
                     _arg_descs.append((a, a_ty, "long_double", None))
@@ -2315,6 +2312,38 @@ class CodeGenerator:
                 else:
                     _arg_descs.append((a, a_ty, "gp", None))
                     _pre_gp += 1
+
+            # Push GP args that overflow beyond the 6 GP registers onto the stack.
+            # SSE (float/double) args do NOT consume GP register slots.
+            _gp_count = 0
+            _stack_overflow_args = []  # (arg_value, desc_idx) for GP args beyond 6
+            for desc_idx, (a, a_ty, kind, extra) in enumerate(_arg_descs):
+                if kind == "gp":
+                    _gp_count += 1
+                    if _gp_count > len(arg_regs):
+                        _stack_overflow_args.append((a, desc_idx))
+                elif kind in ("struct_reg", "struct_hidden"):
+                    _gp_count += 1
+                    if _gp_count > len(arg_regs):
+                        _stack_overflow_args.append((a, desc_idx))
+
+            # Ensure the stack is 16-byte aligned at the call instruction.
+            # Must be checked AFTER counting overflow args but BEFORE pushing them,
+            # so the padding is below the args (at higher stack address).
+            _overflow_push_count = len(_stack_overflow_args)
+            _total_stack_push = _overflow_push_count * 8
+            if (getattr(self, "_call_stack_adjust", 0) + _total_stack_push) % 16 != 0:
+                self._emit("  subq $8, %rsp")
+                self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + 8
+                stack_pad += 8
+                pre_call_pad = True
+
+            if _stack_overflow_args:
+                for a, _ in reversed(_stack_overflow_args):
+                    self._load_operand(a, "%rax")
+                    self._emit("  pushq %rax")
+                    stack_pad += 8
+                self._call_stack_adjust = getattr(self, "_call_stack_adjust", 0) + _overflow_push_count * 8
 
             # Pass 1: allocate stack copies for hidden_ptr structs.
             # We store the resulting pointer in a temp spill slot so that
