@@ -4581,6 +4581,42 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(op="mov", result=sym, operand1=new,
                                                            meta={"volatile": True} if _inc_vol else None))
                     return old if getattr(expr, "is_postfix", False) else new
+                # MemberAccess: s.val++ / ++s.val / s.val-- / --s.val
+                if isinstance(expr.operand, MemberAccess):
+                    base = self._gen_expr(expr.operand.object)
+                    member = expr.operand.member
+                    member_ct = self._lookup_member_ctype(base, member)
+                    load_meta = {"member_ctype": member_ct} if member_ct else {}
+                    old = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="load_member", result=old, operand1=base,
+                        operand2=member, meta=load_meta, result_type=member_ct))
+                    new = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="binop", result=new, operand1=old, operand2=delta, label=op_name))
+                    store_meta = {"member_ctype": member_ct} if member_ct else {}
+                    self.instructions.append(IRInstruction(
+                        op="store_member", result=new, operand1=base,
+                        operand2=member, meta=store_meta))
+                    return old if getattr(expr, "is_postfix", False) else new
+                # PointerMemberAccess: p->val++ / ++p->val / p->val-- / --p->val
+                if isinstance(expr.operand, PointerMemberAccess):
+                    base = self._gen_expr(expr.operand.pointer)
+                    member = expr.operand.member
+                    member_ct = self._lookup_member_ctype(base, member)
+                    load_meta = {"member_ctype": member_ct} if member_ct else {}
+                    old = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="load_member_ptr", result=old, operand1=base,
+                        operand2=member, meta=load_meta, result_type=member_ct))
+                    new = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="binop", result=new, operand1=old, operand2=delta, label=op_name))
+                    store_meta = {"member_ctype": member_ct} if member_ct else {}
+                    self.instructions.append(IRInstruction(
+                        op="store_member_ptr", result=new, operand1=base,
+                        operand2=member, meta=store_meta))
+                    return old if getattr(expr, "is_postfix", False) else new
                 # Fallback for non-identifier operands (e.g. *p++)
                 v = self._gen_expr(expr.operand)
                 t = self._new_temp()
