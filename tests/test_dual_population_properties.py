@@ -61,10 +61,10 @@ class RecordingSymbolTable(TypedSymbolTable):
         super().push_scope()
         self._current_scope_inserts = {}
 
-    def pop_scope(self) -> None:
+    def pop_scope(self, func_name=None) -> None:
         self.scope_snapshots.append(dict(self._current_scope_inserts))
         self._current_scope_inserts = {}
-        super().pop_scope()
+        super().pop_scope(func_name=func_name)
 
     def insert(self, name: str, ctype: CType) -> None:
         super().insert(name, ctype)

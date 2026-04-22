@@ -2619,7 +2619,7 @@ class IRGenerator:
         self._gen_stmt(fn.body)
         self._pop_scope()
         if self._sym_table:
-            self._sym_table.pop_scope()
+            self._sym_table.pop_scope(func_name=fn.name)
         # Ensure a return exists
         self.instructions.append(IRInstruction(op="ret", operand1="$0"))
         self.instructions.append(IRInstruction(op="func_end", label=fn.name))

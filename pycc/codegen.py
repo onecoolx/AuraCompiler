@@ -493,6 +493,11 @@ class CodeGenerator:
             if ins.op == "func_begin":
                 fn_name = ins.label or ""
                 self._fn_name = fn_name
+                # Activate the per-function symbol table locals so that
+                # _get_type() returns correct CTypes for this function's
+                # parameters and local variables.
+                if self._sym_table and hasattr(self._sym_table, 'activate_function'):
+                    self._sym_table.activate_function(fn_name)
                 # Seed return type (if known) for ABI-sensitive `ret`.
                 self._fn_ret_ty = ""
                 try:

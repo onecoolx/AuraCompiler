@@ -459,20 +459,35 @@ class TypedSymbolTable:
         # Populated by pop_scope() so that codegen can look up local symbols
         # after IR generation has finished (scopes are popped at function end).
         self._locals: Dict[str, CType] = {}
+        # Per-function archive: func_name -> {symbol: CType}.
+        # Populated by pop_scope(func_name=...) during IR generation.
+        # Codegen calls activate_function() to restore the correct locals.
+        self._func_locals: Dict[str, Dict[str, CType]] = {}
 
     def push_scope(self) -> None:
         """Enter a new function scope."""
         self._scope_stack.append({})
 
-    def pop_scope(self) -> None:
+    def pop_scope(self, func_name: str = None) -> None:
         """Leave the current function scope.
 
-        All symbols from the popped scope are archived into _locals so they
-        remain accessible to codegen after IR generation completes.
+        All symbols from the popped scope are archived. If func_name is
+        provided, the scope is stored in a per-function archive so codegen
+        can restore it when processing that function's IR.
         """
         if self._scope_stack:
             popped = self._scope_stack.pop()
-            self._locals.update(popped)
+            if func_name is not None:
+                self._func_locals[func_name] = dict(popped)
+            # Also update _locals as a convenience for single-function lookups.
+            self._locals = dict(popped)
+
+    def activate_function(self, func_name: str) -> None:
+        """Restore the archived locals for a specific function.
+
+        Called by codegen when it begins processing a function's IR.
+        """
+        self._locals = self._func_locals.get(func_name, {})
 
     def insert(self, name: str, ctype: CType) -> None:
         """Insert a symbol and its resolved CType.
