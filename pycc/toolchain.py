@@ -79,6 +79,7 @@ class Toolchain:
         ])
 
         crtbegin, crtend = _probe_gcc_crt()
+        crtbeginS, crtendS = _probe_gcc_crt(shared=True)
 
         result: Dict[str, str] = {}
         if crt1:
@@ -91,6 +92,10 @@ class Toolchain:
             result["crtbegin"] = crtbegin
         if crtend:
             result["crtend"] = crtend
+        if crtbeginS:
+            result["crtbeginS"] = crtbeginS
+        if crtendS:
+            result["crtendS"] = crtendS
 
         self._crt_files = result
         return self._crt_files
@@ -124,8 +129,13 @@ class Toolchain:
         extra_libs: Optional[List[str]] = None,
         extra_lib_dirs: Optional[List[str]] = None,
         shared: bool = False,
+        wl_args: Optional[List[str]] = None,
     ) -> List[str]:
         """Build a full ``ld`` command line for linking *obj_paths*.
+
+        *wl_args* are raw ``-Wl,`` arguments from the compiler driver.
+        Each entry is the part after ``-Wl,`` (e.g. ``"-soname,libfoo.so.1"``).
+        Commas are expanded into separate linker arguments.
 
         Raises ``RuntimeError`` when the required toolchain components
         cannot be found.
@@ -159,6 +169,7 @@ class Toolchain:
                 extra_libs=extra_libs,
                 extra_lib_dirs=extra_lib_dirs,
                 shared=shared,
+                wl_args=wl_args,
             )
 
         # Fallback: static newlib-ish layout.
@@ -207,17 +218,28 @@ class Toolchain:
         extra_libs: Optional[List[str]] = None,
         extra_lib_dirs: Optional[List[str]] = None,
         shared: bool = False,
+        wl_args: Optional[List[str]] = None,
     ) -> List[str]:
         cmd: List[str] = [self.linker, "-o", output]
 
         if shared:
             cmd.append("-shared")
+            crtbegin = crt.get("crtbeginS", crt["crtbegin"])
+            crtend = crt.get("crtendS", crt["crtend"])
         else:
             cmd += ["-dynamic-linker", dyn_linker]
             cmd.append(crt["crt1"])
+            crtbegin = crt["crtbegin"]
+            crtend = crt["crtend"]
+
+        # Expand -Wl, arguments: each entry may contain commas that
+        # separate multiple linker flags (e.g. "-soname,libfoo.so.1"
+        # becomes ["-soname", "libfoo.so.1"]).
+        for wl in (wl_args or []):
+            cmd += wl.split(",")
 
         cmd.append(crt["crti"])
-        cmd.append(crt["crtbegin"])
+        cmd.append(crtbegin)
         cmd += obj_paths
 
         # Library search directories.
@@ -234,7 +256,7 @@ class Toolchain:
         for lib in (extra_libs or []):
             cmd.append(f"-l{lib}")
 
-        cmd += [crt["crtend"], crt["crtn"]]
+        cmd += [crtend, crt["crtn"]]
         return cmd
 
 
@@ -247,11 +269,18 @@ def _first_existing(paths: List[str]) -> Optional[str]:
     return next((p for p in paths if os.path.exists(p)), None)
 
 
-def _probe_gcc_crt() -> tuple:
-    """Probe for ``crtbegin.o`` / ``crtend.o`` under GCC lib dirs.
+def _probe_gcc_crt(shared: bool = False) -> tuple:
+    """Probe for CRT begin/end objects under GCC lib dirs.
 
-    Returns ``(crtbegin_path, crtend_path)`` or ``(None, None)``.
+    When *shared* is False (default), looks for ``crtbegin.o`` / ``crtend.o``
+    (used for executables).  When True, looks for ``crtbeginS.o`` /
+    ``crtendS.o`` (PIC variants required for shared libraries).
+
+    Returns ``(begin_path, end_path)`` or ``(None, None)``.
     """
+    suffix = "S" if shared else ""
+    begin_name = f"crtbegin{suffix}.o"
+    end_name = f"crtend{suffix}.o"
     prefixes = [
         "/usr/lib/gcc/x86_64-linux-gnu",
         "/usr/lib/gcc/x86_64-pc-linux-gnu",
@@ -267,8 +296,8 @@ def _probe_gcc_crt() -> tuple:
         except OSError:
             continue
         for v in reversed(vers):
-            cb = os.path.join(prefix, v, "crtbegin.o")
-            ce = os.path.join(prefix, v, "crtend.o")
+            cb = os.path.join(prefix, v, begin_name)
+            ce = os.path.join(prefix, v, end_name)
             if os.path.exists(cb) and os.path.exists(ce):
                 return cb, ce
     return None, None

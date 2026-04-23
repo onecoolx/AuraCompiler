@@ -68,8 +68,9 @@ def test_toolchain_probe_crt_files():
     tc = Toolchain()
     crt = tc.probe_crt_files()
     assert isinstance(crt, dict)
+    valid_keys = {"crt1", "crti", "crtn", "crtbegin", "crtend", "crtbeginS", "crtendS"}
     for key in crt:
-        assert key in ("crt1", "crti", "crtn", "crtbegin", "crtend")
+        assert key in valid_keys
         assert os.path.exists(crt[key])
 
 

@@ -194,6 +194,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("-fomit-frame-pointer", action="store_true", help="(ignored)")
     ap.add_argument("-fno-omit-frame-pointer", action="store_true", help="(ignored)")
     ap.add_argument("-fstack-protector", action="store_true", help="(ignored)")
+    ap.add_argument("-fstack-protector-strong", action="store_true", help="(ignored)")
     ap.add_argument("-fno-stack-protector", action="store_true", help="(ignored)")
     # Machine
     ap.add_argument("-m32", action="store_true", help="32-bit mode (not supported, ignored)")
@@ -728,6 +729,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         extra_libs=args.link_libs or None,
                         extra_lib_dirs=args.link_dirs or None,
                         shared=getattr(args, "shared", False),
+                        wl_args=getattr(args, "wl_args", None) or None,
                     )
                     if args.verbose:
                         print(f"[pycc] link: {' '.join(link_cmd)}")
@@ -795,6 +797,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 extra_libs=args.link_libs or None,
                 extra_lib_dirs=args.link_dirs or None,
                 shared=getattr(args, "shared", False),
+                wl_args=getattr(args, "wl_args", None) or None,
             )
             if args.verbose:
                 print(f"[pycc] link: {' '.join(link_cmd)}")
