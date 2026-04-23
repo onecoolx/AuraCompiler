@@ -2,12 +2,12 @@
 
 Practical **C89/ANSI C** compiler written in **Python**, targeting **x86-64 SysV Linux**.
 
-Compiles real-world C projects (cJSON 1.7.19 test suite passes) using only **binutils `as`/`ld`** — no gcc dependency for linking.
+Compiles real-world C projects using only **binutils `as`/`ld`** — no gcc dependency for linking.
 
 ## Current Status
 
 - **1771 pytest tests** passing
-- **cJSON 1.7.19** compiles and passes its test suite
+- Successfully compiles and runs real-world open-source C libraries
 - **CMake compatible** — works as a drop-in `CC` for CMake projects
 
 ## Features
