@@ -6,9 +6,8 @@ Compiles real-world C projects using only **binutils `as`/`ld`** — no gcc depe
 
 ## Current Status
 
-- **1771 pytest tests** passing
-- Successfully compiles and runs real-world open-source C libraries
-- **CMake compatible** — works as a drop-in `CC` for CMake projects
+- Compiles and runs real-world open-source C projects
+- Comprehensive test suite with property-based testing
 
 ## Features
 
@@ -72,7 +71,7 @@ No dependency on `gcc` or `clang` for compilation or linking.
 │   ├── builtins.py                # GCC builtin function registry
 │   ├── compiler.py                # Compilation pipeline orchestrator
 │   └── gcc_extensions.py          # System header compatibility
-├── tests/                         # 1771 pytest tests
+├── tests/                         # Test suite
 ├── examples/                      # Example C programs
 ├── docs/                          # Documentation
 │   ├── ARCHITECTURE.md            # Detailed architecture design
@@ -128,12 +127,6 @@ sudo dnf install binutils glibc-devel
 
 # Verbose output
 ./pycc.py -v input.c -o output
-```
-
-### CMake Integration
-
-```cmake
-set(CMAKE_C_COMPILER /path/to/pycc.py)
 ```
 
 ### Environment Variables
