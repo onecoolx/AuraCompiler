@@ -194,9 +194,9 @@ This is a large refactoring that should be done incrementally:
 Large refactoring. Should be broken into 3-5 standalone specs, one per phase. Estimated 2000-3000 lines of new code, replacing ~1500 lines of current IR generation and ~2000 lines of current codegen. The overall line count may increase slightly due to the additional abstraction layers, but each layer will be significantly simpler and more maintainable than the current monolithic design.
 
 
-## 5. 重构 `_parse_type_specifier` 为无序声明说明符收集器
+## 5. Refactor `_parse_type_specifier` into an unordered declaration-specifier collector
 
-**问题**：当前 `_parse_type_specifier` 的架构假设声明说明符（declaration specifiers）是有序的——先消费限定符（`const`/`volatile`），再用 if/elif 链匹配类型关键字（`int`/`struct`/`enum`/typedef-name）。但 C 标准规定声明说明符是无序集合，以下写法全部合法且等价：
+**Problem**: The current `_parse_type_specifier` assumes declaration specifiers appear in a fixed order — qualifiers (`const`/`volatile`) first, then a type keyword (`int`/`struct`/`enum`/typedef-name). But the C standard treats declaration specifiers as an unordered set. All of the following are legal and equivalent:
 
 ```c
 const struct Foo *p;
@@ -206,15 +206,15 @@ long unsigned volatile x;
 const enum Color c;
 ```
 
-当前实现的具体缺陷：
+Specific flaws in the current implementation:
 
-1. 方法入口保存 `tok = self.current_token`，while 循环消费限定符后，后续分支仍用 `tok`（已过时）做判断。这导致 `const struct Foo` 被误解析为 `const int`（`saw_any` 兜底分支假设隐含 int）。
-2. 修复后虽然 enum/struct/union 分支改用了 `self.current_token`，但 `tok` 变量仍然存在于方法中，`saw_any` 分支通过 `pass` fall-through 到下面的分支，控制流不直观。未来新增类型分支时容易再次用错 `tok`。
-3. 限定符（`const`/`volatile`）和类型修饰符（`unsigned`/`signed`/`short`/`long`）在同一个 while 循环中处理，但类型关键字（`int`/`struct`/`enum`）在循环外用 if/elif 处理。这种分裂导致组合处理不一致。
+1. The method saves `tok = self.current_token` at entry. A while loop consumes qualifiers, but subsequent branches still check `tok` (now stale) instead of `self.current_token`. This caused `const struct Foo` to be misparsed as `const int` (the `saw_any` fallback assumed implicit int).
+2. After the fix, enum/struct/union branches use `self.current_token`, but the `tok` variable still exists. The `saw_any` branch uses `pass` to fall through, making control flow non-obvious. Future contributors adding new type branches could easily use `tok` by mistake.
+3. Qualifiers (`const`/`volatile`) and integer modifiers (`unsigned`/`signed`/`short`/`long`) are consumed in the while loop, but type keywords (`int`/`struct`/`enum`) are handled outside via if/elif chains. This split makes combination handling inconsistent.
 
-**正确的架构**：
+**Correct architecture**:
 
-用一个统一的 while 循环收集所有声明说明符，循环结束后根据收集结果一次性构造 Type：
+A single while loop collects all declaration specifiers, then a post-loop function constructs the Type from the collected information:
 
 ```python
 def _parse_type_specifier(self) -> Type:
@@ -249,16 +249,15 @@ def _parse_type_specifier(self) -> Type:
         else:
             break
 
-    # 根据收集结果构造 Type（一次性，无分支遗漏）
     return self._build_type_from_specifiers(quals, sign, size, base, tag_type, typedef_name)
 ```
 
-**好处**：
-- 消除 `tok` 变量和 `saw_any` 标志，不再有"过时 token"问题
-- 所有说明符组合自动支持，无需为每种排列写分支
-- `struct`/`union`/`enum` 解析提取为独立方法，职责清晰
-- 未来新增类型关键字（如 `_Bool`、`long long`、`_Complex`）只需在 while 循环中加一个 elif
+**Benefits**:
+- Eliminates the `tok` variable and `saw_any` flag — no more stale-token bugs
+- All specifier orderings are automatically supported without per-permutation branches
+- `struct`/`union`/`enum` parsing extracted into dedicated methods with clear responsibilities
+- Adding new type keywords (e.g. `_Bool`, `long long`, `_Complex`) requires only one new elif
 
-**前置条件**：无。可独立进行。
+**Prerequisites**: None. Can be done independently.
 
-**规模**：中等重构。`_parse_type_specifier` 约 200 行，重构后预计 150 行（主方法 + `_build_type_from_specifiers` + 提取的 `_parse_struct_or_union_specifier`/`_parse_enum_specifier`）。需要全量测试验证。
+**Scope**: Medium refactor. `_parse_type_specifier` is ~200 lines today; expected ~150 lines after refactoring (main method + `_build_type_from_specifiers` + extracted `_parse_struct_or_union_specifier`/`_parse_enum_specifier`). Requires full test suite validation.
