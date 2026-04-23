@@ -497,7 +497,10 @@ class CodeGenerator:
                 # _get_type() returns correct CTypes for this function's
                 # parameters and local variables.
                 if self._sym_table and hasattr(self._sym_table, 'activate_function'):
-                    self._sym_table.activate_function(fn_name)
+                    # Strip @static suffix: IR gen uses bare function name for
+                    # _func_locals keys, but func_begin label may have @static.
+                    _activate_name = fn_name.split("@")[0] if "@" in fn_name else fn_name
+                    self._sym_table.activate_function(_activate_name)
                 # Seed return type (if known) for ABI-sensitive `ret`.
                 self._fn_ret_ty = ""
                 try:
