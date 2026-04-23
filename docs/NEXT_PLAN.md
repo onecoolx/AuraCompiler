@@ -294,14 +294,8 @@ def _parse_type_specifier(self) -> Type:
    - No logic changes required, just annotations
    - Can be done incrementally (annotate hottest functions first)
 
-4. **C rewrite of preprocessor core** (high effort, 100x+ speedup)
-   - Rewrite the token scanner and macro expander in C
-   - Expose via `ctypes`/`cffi` with the same Python API
-   - The preprocessor has a clean text-in/text-out interface, making it ideal for C rewrite
-   - This would make `use_system_cpp` unnecessary, eliminating all GCC builtin compatibility issues
-
 **Success criteria**: Preprocess sqlite3.c (250K lines, ~30 `#include` expansions) in under 10 seconds on a typical development machine, without depending on system gcc.
 
 **Prerequisites**: None. Can be done independently of other refactoring plans.
 
-**Scope**: Varies by approach. Algorithm audit is a small task (1-2 days). PyPy validation is trivial. mypyc is medium (1 week). C rewrite is large (2-3 weeks).
+**Scope**: Varies by approach. Algorithm audit is a small task (1-2 days). PyPy validation is trivial. mypyc is medium (1 week). 
