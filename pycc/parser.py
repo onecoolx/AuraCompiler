@@ -250,6 +250,34 @@ class Parser:
                 return td
 
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
+
+            # Function type typedef: typedef int func_t(int, int);
+            # Treat as function pointer type for downstream compatibility.
+            if self._at(TokenType.LPAREN):
+                self.advance()  # consume '('
+                try:
+                    fp_params = self._parse_parameter_list()
+                except Exception:
+                    # Skip to closing paren on parse failure
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._at(TokenType.LPAREN):
+                            depth += 1
+                        elif self._at(TokenType.RPAREN):
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        self.advance()
+                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+                fp_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
+                             line=base_type.line, column=base_type.column)
+                fp_ty._normalize_pointer_state()
+                self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
+                td = TypedefDecl(name=name_tok.value, type=fp_ty,
+                                 line=name_tok.line, column=name_tok.column)
+                self._typedefs.add(td.name)
+                return td
+
             td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
             self._typedefs.add(td.name)
             results = [td]
@@ -1064,6 +1092,15 @@ class Parser:
                         self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
                         members.append(Declaration(name=mem_name.value, type=fp_ty,
                                                    line=mem_name.line, column=mem_name.column))
+                        continue
+
+                    # Anonymous bit-field: `int :32;` — padding, no member name.
+                    if self._at(TokenType.COLON):
+                        self.advance()  # consume ':'
+                        bw_expr = self._parse_expression()
+                        bw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
+                        # Skip anonymous padding — don't add to members list.
+                        self._expect(TokenType.SEMICOLON, "Expected ';' after anonymous bit-field")
                         continue
 
                     mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
