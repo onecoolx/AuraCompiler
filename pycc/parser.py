@@ -823,6 +823,29 @@ class Parser:
         return decls
 
     def _parse_type_specifier(self) -> Type:
+        """Parse a C declaration-specifier sequence and return a Type.
+
+        C allows qualifiers both before and after the base type:
+          const int   ←→   int const
+          volatile char  ←→  char volatile
+        This wrapper delegates to _parse_type_specifier_core and then
+        consumes any trailing qualifiers (const/volatile) so that all
+        call sites see a clean token stream with qualifiers already absorbed.
+        """
+        t = self._parse_type_specifier_core()
+        # C post-type qualifiers: `char const *p` == `const char *p`.
+        # Absorb trailing const/volatile so callers see `*` or IDENTIFIER next.
+        while (self.current_token
+               and self.current_token.type == TokenType.KEYWORD
+               and self.current_token.value in {"const", "volatile"}):
+            if self.current_token.value == "const":
+                t.is_const = True
+            elif self.current_token.value == "volatile":
+                t.is_volatile = True
+            self.advance()
+        return t
+
+    def _parse_type_specifier_core(self) -> Type:
         tok = self.current_token
         if not self._is_type_specifier():
             raise ParserError("Expected type specifier", tok)
@@ -1228,9 +1251,6 @@ class Parser:
                 break
 
             base_type = self._parse_type_specifier()
-            # C allows post-type qualifiers: `char const *` == `const char *`.
-            # Consume trailing qualifiers before looking for pointer stars.
-            self._skip_pointer_qualifiers()
             while self._match(TokenType.STAR):
                 new_level = int(getattr(base_type, "pointer_level", 0) or 0) + 1
                 base_type = Type(base=base_type.base, is_pointer=True,
