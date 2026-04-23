@@ -1,6 +1,6 @@
 # AuraCompiler (pycc) Architecture
 
-Last updated: 2026-03-31
+Last updated: 2025-07-14
 
 ## 1. Compiler Pipeline Overview
 
@@ -337,35 +337,60 @@ class ASTNode:
     # ... specific fields for each node type
 ```
 
-### 3.3 Type System
-```python
-@dataclass
-class Type:
-    base: str           # 'int', 'float', 'char', 'struct', 'union', etc.
-    is_pointer: bool
-    is_array: bool
-    array_size: Optional[int]
-    is_const: bool
-    is_volatile: bool
-    struct_name: Optional[str]
+### 3.3 Type System (`pycc/types.py`)
+
+AuraCompiler uses a structured `CType` class hierarchy for type representation,
+replacing ad-hoc string-based type tracking. All types are dataclasses rooted at
+`CType(kind: TypeKind, quals: Qualifiers)`.
+
+**CType Hierarchy**:
+```
+CType
+├── IntegerType        # char, short, int, long (+ is_unsigned flag)
+├── FloatType          # float, double
+├── PointerType        # pointee: CType
+├── ArrayType          # element: CType, size: int
+├── FunctionTypeCType  # return_type, param_types, is_variadic
+├── StructType         # tag: str
+└── EnumType           # tag: str
 ```
 
-### 3.4 Symbol Table Entry (illustrative)
+**Type Classification Helpers**: `is_integer()`, `is_floating()`, `is_arithmetic()`,
+`is_scalar()`, `is_object()`, `is_function()`, `is_incomplete()`, `is_modifiable_lvalue()`.
 
-This is a **conceptual sketch** of the metadata AuraCompiler tracks for declared objects.
-The concrete representation may differ from this document and is implemented in `pycc/semantics.py`.
+**Integer Promotion & Usual Arithmetic Conversions (UAC)**: Implemented per C89
+rules — `char`/`short` promote to `int`; binary operands are converted to a
+common type following the standard rank-based rules.
 
-```python
-@dataclass
-class Symbol:
-    name: str
-    type: Type
-    kind: str           # 'variable', 'function', 'typedef', etc.
-    scope: int          # Scope depth
-    offset: int         # Frame offset (locals) when applicable
-    storage: str        # 'auto' | 'static' | 'extern' | ... (subset)
-    initializer: Optional[Expression]
+**Bridge Functions**: `ast_type_to_ctype()` converts parser-produced `ast_nodes.Type`
+objects into `CType` instances for use in IR generation and codegen.
+
+### 3.4 TypedSymbolTable (`pycc/types.py`)
+
+`TypedSymbolTable` is the centralized symbol-to-CType mapping shared between
+IR generation and code generation. It replaces the old string-based `_var_types`
+dictionaries that each phase maintained independently.
+
+**Key Design**:
+- All typedefs are resolved to the underlying concrete type at insertion time
+  (via recursive resolution through `sema_ctx.typedefs`).
+- Scope support: `push_scope()` / `pop_scope(func_name)` during IR generation.
+- Per-function archival: when a function scope is popped, its symbols are
+  archived under the function name. Codegen calls `activate_function(name)` to
+  restore the correct local symbol types when processing each function's IR.
+- Lookup order: active scopes (innermost first) → archived locals → globals.
+
 ```
+IR Generation                          Code Generation
+─────────────                          ───────────────
+push_scope()                           activate_function("foo")
+  insert("x", IntegerType(INT))          lookup("x") → IntegerType(INT)
+  insert("p", PointerType(CHAR))         lookup("p") → PointerType(CHAR)
+pop_scope(func_name="foo")
+```
+
+For future architecture plans (e.g., removing the legacy `_var_types` fallback),
+see `next_step.md` in the project root.
 
 ### 3.5 IR Instruction
 ```python
@@ -382,27 +407,26 @@ class IRInstruction:
 
 ## 4. Type System
 
-**Primitive Types**:
-- void
-- char (8-bit)
-- short (16-bit)
-- int (32-bit)
-- long (64-bit)
-- long long (64-bit)
-- float (32-bit IEEE 754)
-- double (64-bit IEEE 754)
-- Qualifiers: const, volatile, restrict
+**Primitive Types** (mapped to `IntegerType` / `FloatType`):
+- void (`TypeKind.VOID`)
+- char (8-bit), short (16-bit), int (32-bit), long (64-bit)
+- unsigned variants via `IntegerType.is_unsigned`
+- float (32-bit IEEE 754), double (64-bit IEEE 754)
+- Qualifiers: `Qualifiers(const, volatile)` — attached to every `CType`
 
 **Derived Types**:
-- Pointers: int*, char**
-- Arrays: int[10], float[5][3]
-- Functions: int (*func)(int, int)
-- Structures: struct Point { int x; int y; }
-- Unions: union Data { int i; float f; }
+- `PointerType`: `int*`, `char**` — recursive `pointee` field
+- `ArrayType`: `int[10]`, `float[5][3]` — `element` + `size`
+- `FunctionTypeCType`: `int (*func)(int, int)` — `return_type` + `param_types`
+- `StructType` / `EnumType`: identified by `tag` string
+
+**Typedef Resolution**: All typedef names are resolved to concrete `CType`
+instances at `TypedSymbolTable.insert()` time. This ensures that downstream
+phases (IR gen, codegen) never encounter unresolved typedef names.
 
 **Type Conversions**:
-- Implicit conversions (int to float, char to int, etc.)
-- Explicit casts: (type)expression
+- Implicit: integer promotion (char/short → int), UAC for binary operators
+- Explicit: `(type)expression` casts
 
 ## 5. Error Handling
 
