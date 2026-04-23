@@ -841,6 +841,12 @@ class Parser:
                 continue
             break
 
+        # After consuming leading qualifiers (const/volatile) and integer
+        # modifiers (unsigned/signed/short/long), the *current* token is the
+        # actual type keyword.  All subsequent type-kind checks must use
+        # self.current_token, not the stale `tok` saved at method entry.
+        # `tok` is only retained for source-location fallback.
+
         # builtin + sized integer forms
         if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "float", "double", "__builtin_va_list"}:
             base_tok = self.current_token
@@ -880,32 +886,40 @@ class Parser:
         # `const GLvoid *p` where const was consumed but GLvoid is the type.
         if saw_any:
             cur = self.current_token
-            if cur and cur.type == TokenType.IDENTIFIER and cur.value in self._typedefs:
+            # After qualifiers, the next token may be struct/union/enum/typedef.
+            # Fall through to those branches instead of defaulting to int.
+            if cur and cur.type == TokenType.KEYWORD and cur.value in {"struct", "union", "enum"}:
+                pass  # fall through to enum/struct/union handling below
+            elif cur and cur.type == TokenType.IDENTIFIER and cur.value in self._typedefs:
                 self.advance()
                 t = Type(base=cur.value, line=cur.line, column=cur.column)
                 t.is_const = is_const
                 t.is_volatile = is_volatile
                 return t
-            if tok is None:
-                raise ParserError("Expected type specifier", tok)
-            t = Type(base="int", line=tok.line, column=tok.column)
-            t.is_const = is_const
-            t.is_volatile = is_volatile
-            t.is_unsigned = is_unsigned
-            t.is_signed = is_signed
-            if size_kw in {"short", "long"}:
-                t.base = f"{size_kw} int"
-            # Normalize for downstream string checks.
-            if t.base == "int" and is_unsigned:
-                t.base = "unsigned int"
-            if t.base == "short int" and is_unsigned:
-                t.base = "unsigned short"
-            if t.base == "long int" and is_unsigned:
-                t.base = "unsigned long"
-            return t
+            else:
+                # Bare 'unsigned', 'long', 'const int' (already handled above), etc.
+                if tok is None:
+                    raise ParserError("Expected type specifier", tok)
+                t = Type(base="int", line=tok.line, column=tok.column)
+                t.is_const = is_const
+                t.is_volatile = is_volatile
+                t.is_unsigned = is_unsigned
+                t.is_signed = is_signed
+                if size_kw in {"short", "long"}:
+                    t.base = f"{size_kw} int"
+                # Normalize for downstream string checks.
+                if t.base == "int" and is_unsigned:
+                    t.base = "unsigned int"
+                if t.base == "short int" and is_unsigned:
+                    t.base = "unsigned short"
+                if t.base == "long int" and is_unsigned:
+                    t.base = "unsigned long"
+                return t
 
         # enum type specifier: `enum Tag { A=1, B, ... }` / `enum Tag` / `enum { ... }`
-        if tok.type == TokenType.KEYWORD and tok.value == "enum":
+        # Use self.current_token (not tok) because qualifiers may have been consumed.
+        cur = self.current_token
+        if cur and cur.type == TokenType.KEYWORD and cur.value == "enum":
             self.advance()
             tag_tok = None
             if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
@@ -935,17 +949,22 @@ class Parser:
                     EnumDecl(
                         name=None if tag_tok is None else tag_tok.value,
                         enumerators=members,
-                        line=tok.line,
-                        column=tok.column,
+                        line=cur.line,
+                        column=cur.column,
                     )
                 )
 
             tag_name = tag_tok.value if tag_tok else "<anonymous>"
-            return Type(base=f"enum {tag_name}", line=tok.line, column=tok.column)
+            t = Type(base=f"enum {tag_name}", line=cur.line, column=cur.column)
+            t.is_const = is_const
+            t.is_volatile = is_volatile
+            return t
 
         # struct/union type specifier: `struct Tag { ... }` / `struct Tag` / `struct { ... }`
-        if tok.type == TokenType.KEYWORD and tok.value in {"struct", "union"}:
-            kind = tok.value
+        # Use self.current_token (not tok) because qualifiers may have been consumed.
+        cur2 = self.current_token
+        if cur2 and cur2.type == TokenType.KEYWORD and cur2.value in {"struct", "union"}:
+            kind = cur2.value
             self.advance()
             tag_tok = None
             if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
@@ -1077,7 +1096,9 @@ class Parser:
 
             # record a textual type name for now: e.g. "struct Point"
             tag_name = tag_tok.value if tag_tok else "<anonymous>"
-            base_ty = Type(base=f"{kind} {tag_name}", line=tok.line, column=tok.column)
+            base_ty = Type(base=f"{kind} {tag_name}", line=cur2.line, column=cur2.column)
+            base_ty.is_const = is_const
+            base_ty.is_volatile = is_volatile
             # Attach members to the Type node for anonymous structs so
             # typedef processing can register the layout.
             if members is not None and tag_tok is None:
