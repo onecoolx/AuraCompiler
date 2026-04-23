@@ -714,9 +714,34 @@ def main(argv: Optional[List[str]] = None) -> int:
                 except OSError:
                     pass
         else:
+            src = args.source[0]
+            ext = os.path.splitext(src)[1]
+            # If the input is already a compiled object or archive, skip
+            # compilation and link directly. This supports CMake's separate
+            # compile-then-link workflow: pycc -c foo.c -o foo.o; pycc foo.o -o foo
+            if ext in (".o", ".a"):
+                link_extra: List[str] = []
+                for d in args.link_dirs:
+                    link_extra += ["-L", d]
+                for lib in args.link_libs:
+                    link_extra.append(f"-l{lib}")
+                for wl in getattr(args, "wl_args", []):
+                    link_extra.append(f"-Wl,{wl}")
+                if getattr(args, "shared", False):
+                    link_cmd = ["gcc", "-shared", "-o", args.output, src] + link_extra
+                else:
+                    link_cmd = ["gcc", "-no-pie", "-o", args.output, src] + link_extra
+                if args.verbose:
+                    print(f"[pycc] link: {' '.join(link_cmd)}")
+                link = subprocess.run(link_cmd)
+                if link.returncode != 0:
+                    print("Error: link failed")
+                    return 1
+                print("Done:", args.output)
+                return 0
             if args.verbose:
-                print(f"[pycc] compile: {args.source[0]} -> {args.output}")
-            result = compiler.compile_file(args.source[0], args.output)
+                print(f"[pycc] compile: {src} -> {args.output}")
+            result = compiler.compile_file(src, args.output)
         if not result.success:
             for e in result.errors:
                 print("Error:", e)
