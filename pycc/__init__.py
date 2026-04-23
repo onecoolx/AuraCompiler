@@ -16,6 +16,7 @@ from .ir import IRGenerator
 from .optimizer import Optimizer
 from .codegen import CodeGenerator
 from .compiler import Compiler
+from .toolchain import Toolchain
 
 __all__ = [
     'Lexer',
@@ -26,4 +27,5 @@ __all__ = [
     'Optimizer',
     'CodeGenerator',
     'Compiler',
+    'Toolchain',
 ]

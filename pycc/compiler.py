@@ -20,6 +20,7 @@ from pycc.ir import IRGenerator
 from pycc.optimizer import Optimizer
 from pycc.codegen import CodeGenerator
 from pycc.gcc_extensions import strip_gcc_extensions
+from pycc.toolchain import Toolchain
 
 
 @dataclass
@@ -62,9 +63,8 @@ class Compiler:
         self._pp_defines = dict(defines or {})
         self._use_system_cpp = use_system_cpp
 
-        # Toolchain defaults (binutils).
-        self.assembler = os.environ.get("PYCC_AS", "as")
-        self.linker = os.environ.get("PYCC_LD", "ld")
+        # Toolchain (assembler + linker).
+        self._toolchain = Toolchain()
     
     def compile_file(
         self,
@@ -326,24 +326,8 @@ class Compiler:
                 obj_paths.append(obj_path)
 
             # Link all objects into the final executable.
-            # We reuse the same default link strategy as single-file mode.
-            cmd: List[str] = [self.linker, "-o", output_file]
-            cmd.extend(obj_paths)
-            # Add libc/crt/etc.
-            # Use a dummy object path just to compute the full cmd, then swap.
-            # (This keeps link behavior identical to the single-TU path.)
-            link_cmd = self._default_link_cmd(o_path=obj_paths[0], out_path=output_file)
-            # link_cmd structure: [ld, -o, out, ...crt..., o_path, ...libs...]
-            # Replace the single o_path occurrence with all obj_paths.
-            try:
-                o_idx = link_cmd.index(obj_paths[0])
-            except ValueError:
-                # Fallback: just append objects.
-                final_cmd = link_cmd + obj_paths[1:]
-            else:
-                final_cmd = link_cmd[:o_idx] + obj_paths + link_cmd[o_idx + 1 :]
-
-            self._run(final_cmd, "link")
+            link_cmd = self._toolchain.build_link_cmd(obj_paths, output_file)
+            self._toolchain.run_link(link_cmd)
 
             return CompilationResult(success=True, output_file=output_file)
         except (IOError, subprocess.CalledProcessError) as e:
@@ -531,7 +515,7 @@ class Compiler:
                     try:
                         with open(s_path, 'w') as f:
                             f.write(assembly)
-                        self._run([self.assembler, "-o", out, s_path], "assemble")
+                        self._toolchain.run_assemble(s_path, out)
                     except (IOError, subprocess.CalledProcessError) as e:
                         return CompilationResult(success=False, errors=[f"Assembling failed: {e}"])
 
@@ -572,7 +556,7 @@ class Compiler:
                             except OSError as e:
                                 return CompilationResult(success=False, errors=[f"Failed to write assembly output: {e}"])
 
-                        self._run([self.assembler, "-o", o_path, s_path], "assemble")
+                        self._toolchain.run_assemble(s_path, o_path)
 
                         # Optionally keep a copy of the generated object.
                         obj_out = os.environ.get("PYCC_OBJECT_OUT")
@@ -582,8 +566,8 @@ class Compiler:
                             except OSError as e:
                                 return CompilationResult(success=False, errors=[f"Failed to write object output: {e}"])
 
-                        link_cmd = self._default_link_cmd(o_path=o_path, out_path=out)
-                        self._run(link_cmd, "link")
+                        link_cmd = self._toolchain.build_link_cmd([o_path], out)
+                        self._toolchain.run_link(link_cmd)
                     except (IOError, subprocess.CalledProcessError) as e:
                         if isinstance(e, subprocess.CalledProcessError):
                             detail = getattr(e, "stderr", None) or getattr(e, "output", None)
@@ -605,150 +589,6 @@ class Compiler:
             warnings=warnings
         )
 
-    def _run(self, cmd: List[str], what: str) -> None:
-        p = subprocess.run(cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if p.returncode != 0:
-            msg = p.stderr.strip() or p.stdout.strip() or "(no output)"
-            raise subprocess.CalledProcessError(p.returncode, cmd, output=p.stdout, stderr=msg)
-
-    def _default_link_cmd(self, o_path: str, out_path: str) -> List[str]:
-        """Return a default `ld` command.
-
-        Strategy:
-        - Prefer glibc dev setup using `ld --dynamic-linker ...` and `-lc`.
-        - If glibc dev files aren't present, try a best-effort newlib layout.
-        - If neither looks usable, raise a helpful error.
-        """
-        as_path = shutil.which("as")
-        ld_path = shutil.which(self.linker)
-        if not as_path or not ld_path:
-            raise RuntimeError("binutils not found: please install 'as' and 'ld'")
-
-        # Detect platform dynamic linker (glibc)
-        dyn_linker_candidates = [
-            "/lib64/ld-linux-x86-64.so.2",
-            "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
-            "/lib/ld-linux-x86-64.so.2",
-        ]
-        dyn_linker = next((p for p in dyn_linker_candidates if os.path.exists(p)), None)
-
-        # Common glibc CRT objects
-        crt1_candidates = [
-            "/usr/lib/x86_64-linux-gnu/crt1.o",
-            "/usr/lib64/crt1.o",
-            "/usr/lib/crt1.o",
-        ]
-        crti_candidates = [
-            "/usr/lib/x86_64-linux-gnu/crti.o",
-            "/usr/lib64/crti.o",
-            "/usr/lib/crti.o",
-        ]
-        crtn_candidates = [
-            "/usr/lib/x86_64-linux-gnu/crtn.o",
-            "/usr/lib64/crtn.o",
-            "/usr/lib/crtn.o",
-        ]
-        crtbegin_candidates = [
-            "/usr/lib/gcc/x86_64-linux-gnu",  # prefix only; probed below
-            "/usr/lib/gcc/x86_64-pc-linux-gnu",
-            "/usr/lib/gcc/x86_64-linux-gnu",
-        ]
-
-        def _first_existing(paths: List[str]) -> Optional[str]:
-            return next((p for p in paths if os.path.exists(p)), None)
-
-        crt1 = _first_existing(crt1_candidates)
-        crti = _first_existing(crti_candidates)
-        crtn = _first_existing(crtn_candidates)
-
-        # Probe for crtbegin/crtend under gcc libdir if present.
-        crtbegin = None
-        crtend = None
-        for prefix in crtbegin_candidates:
-            if not os.path.isdir(prefix):
-                continue
-            # choose highest version directory
-            try:
-                vers = sorted([d for d in os.listdir(prefix) if os.path.isdir(os.path.join(prefix, d))])
-            except Exception:
-                continue
-            for v in reversed(vers):
-                cb = os.path.join(prefix, v, "crtbegin.o")
-                ce = os.path.join(prefix, v, "crtend.o")
-                if os.path.exists(cb) and os.path.exists(ce):
-                    crtbegin = cb
-                    crtend = ce
-                    break
-            if crtbegin and crtend:
-                break
-
-        # If glibc dev bits look present, link like a normal ELF executable.
-        if dyn_linker and crt1 and crti and crtn and crtbegin and crtend:
-            # Library search dirs (best-effort)
-            libdirs = [
-                "/lib/x86_64-linux-gnu",
-                "/usr/lib/x86_64-linux-gnu",
-                "/lib64",
-                "/usr/lib64",
-                "/lib",
-                "/usr/lib",
-            ]
-            # Also include GCC runtime library dirs so `-lgcc`/`-lgcc_s` can resolve.
-            gcc_libdirs: List[str] = []
-            for prefix in [
-                "/usr/lib/gcc/x86_64-linux-gnu",
-                "/usr/lib/gcc/x86_64-pc-linux-gnu",
-                "/usr/lib/gcc/x86_64-linux-gnu",
-            ]:
-                if not os.path.isdir(prefix):
-                    continue
-                try:
-                    vers = sorted([d for d in os.listdir(prefix) if os.path.isdir(os.path.join(prefix, d))])
-                except Exception:
-                    continue
-                for v in reversed(vers):
-                    d = os.path.join(prefix, v)
-                    if os.path.isdir(d):
-                        gcc_libdirs.append(d)
-                        break
-            libdirs = gcc_libdirs + libdirs
-
-            cmd: List[str] = [
-                self.linker,
-                "-o",
-                out_path,
-                "-dynamic-linker",
-                dyn_linker,
-                crt1,
-                crti,
-                crtbegin,
-                o_path,
-            ]
-            for d in libdirs:
-                if os.path.isdir(d):
-                    cmd += ["-L", d]
-            cmd += ["-lc", "-lgcc", "-lgcc_s", crtend, crtn]
-            return cmd
-
-        # Fallback: try newlib-ish layout (static) if present.
-        # Note: this is best-effort; newlib is commonly used with cross toolchains.
-        newlib_candidates = [
-            "/usr/lib/libc.a",
-            "/usr/lib64/libc.a",
-            "/usr/x86_64-unknown-elf/lib/libc.a",
-            "/usr/local/x86_64-unknown-elf/lib/libc.a",
-        ]
-        libc_a = _first_existing(newlib_candidates)
-        if libc_a:
-            libdir = os.path.dirname(libc_a)
-            cmd = [self.linker, "-o", out_path, o_path, "-L", libdir, "-lc"]
-            return cmd
-
-        raise RuntimeError(
-            "No usable C runtime found for linking. Install a C development runtime (glibc-dev / libc6-dev), "
-            "or install a newlib toolchain."
-        )
-    
     def get_tokens(self, source_code: str) -> List[Token]:
         """Get tokens from source code"""
         lexer = Lexer(source_code)

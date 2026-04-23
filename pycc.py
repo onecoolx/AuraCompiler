@@ -20,6 +20,7 @@ import subprocess
 from pycc.preprocessor import Preprocessor
 
 from pycc.compiler import Compiler
+from pycc.toolchain import Toolchain
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -720,22 +721,19 @@ def main(argv: Optional[List[str]] = None) -> int:
             # compilation and link directly. This supports CMake's separate
             # compile-then-link workflow: pycc -c foo.c -o foo.o; pycc foo.o -o foo
             if ext in (".o", ".a"):
-                link_extra: List[str] = []
-                for d in args.link_dirs:
-                    link_extra += ["-L", d]
-                for lib in args.link_libs:
-                    link_extra.append(f"-l{lib}")
-                for wl in getattr(args, "wl_args", []):
-                    link_extra.append(f"-Wl,{wl}")
-                if getattr(args, "shared", False):
-                    link_cmd = ["gcc", "-shared", "-o", args.output, src] + link_extra
-                else:
-                    link_cmd = ["gcc", "-no-pie", "-o", args.output, src] + link_extra
-                if args.verbose:
-                    print(f"[pycc] link: {' '.join(link_cmd)}")
-                link = subprocess.run(link_cmd)
-                if link.returncode != 0:
-                    print("Error: link failed")
+                try:
+                    tc = Toolchain()
+                    link_cmd = tc.build_link_cmd(
+                        [src], args.output,
+                        extra_libs=args.link_libs or None,
+                        extra_lib_dirs=args.link_dirs or None,
+                        shared=getattr(args, "shared", False),
+                    )
+                    if args.verbose:
+                        print(f"[pycc] link: {' '.join(link_cmd)}")
+                    tc.run_link(link_cmd)
+                except Exception as e:
+                    print(f"Error: link failed: {e}")
                     return 1
                 print("Done:", args.output)
                 return 0
@@ -772,7 +770,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     obj_paths: List[str] = []
-    link_extra: List[str] = []
     with tempfile.TemporaryDirectory(prefix="pycc_mf_") as td:
         for i, src in enumerate(args.source):
             ext = os.path.splitext(src)[1]
@@ -790,25 +787,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                 return 1
             obj_paths.append(obj)
 
-        # Build linker flags from -L and -l
-        for d in args.link_dirs:
-            link_extra += ["-L", d]
-        for lib in args.link_libs:
-            link_extra.append(f"-l{lib}")
-        # Pass -Wl, options to linker
-        for wl in getattr(args, "wl_args", []):
-            link_extra.append(f"-Wl,{wl}")
-
-        if getattr(args, "shared", False):
-            link_cmd = ["gcc", "-shared", "-o", args.output] + obj_paths + link_extra
-        else:
-            link_cmd = ["gcc", "-no-pie", "-o", args.output] + obj_paths + link_extra
-        # Link using system gcc.
-        if args.verbose:
-            print(f"[pycc] link: {' '.join(link_cmd)}")
-        link = subprocess.run(link_cmd)
-        if link.returncode != 0:
-            print("Error: link failed")
+        # Link all objects using Toolchain (ld-based, no gcc dependency).
+        try:
+            tc = Toolchain()
+            link_cmd = tc.build_link_cmd(
+                obj_paths, args.output,
+                extra_libs=args.link_libs or None,
+                extra_lib_dirs=args.link_dirs or None,
+                shared=getattr(args, "shared", False),
+            )
+            if args.verbose:
+                print(f"[pycc] link: {' '.join(link_cmd)}")
+            tc.run_link(link_cmd)
+        except Exception as e:
+            print(f"Error: link failed: {e}")
             return 1
 
     print("Done:", args.output)
