@@ -309,7 +309,7 @@ class IRInstruction:
     label: Optional[str] = None
     args: Optional[List[str]] = None
     meta: Optional[dict] = None
-    # CType for the result operand (optional, supports incremental migration)
+    # CType for the result operand (optional).
     result_type: Optional[CType] = None
 
     def __post_init__(self) -> None:
@@ -340,22 +340,12 @@ class IRGenerator:
         self.label_counter = 0
         self._break_stack = []
         self._continue_stack = []
-        # Multi-dimensional arrays are not yet supported in the core runtime model.
-        # Keep placeholders (unused) for the upcoming milestone.
         self._local_array_dims = {}
-        # Map from temp/symbol -> pointer arithmetic step in bytes.
-        # Used for pointer-to-row (e.g. char (*p)[4]) where (p+1) advances by
-        # sizeof(row) rather than sizeof(char).
+        # Per-temp/symbol pointer arithmetic step override (bytes).
+        # Used for pointer-to-row decay where (p+1) advances by sizeof(row).
         self._ptr_step_bytes: dict[str, int] = {}
-        # Pointer arithmetic scaling for pointer-to-array decay is carried via
-        # IRInstruction.meta (see Identifier lowering).
-
-        # Enum constants are compile-time integers; record them so Identifier
-        # lowering can replace them with immediates.
         self._enum_constants: dict[str, int] = {}
-        # Track local array symbols per function to implement array-to-pointer decay.
         self._local_arrays: set[str] = set()
-        # Initialize typed symbol table for CType tracking (incremental migration).
         if self._sema_ctx is not None:
             self._sym_table = TypedSymbolTable(self._sema_ctx)
         else:
@@ -1651,25 +1641,15 @@ class IRGenerator:
         return t
 
     def _new_temp_typed(self, ctype: CType) -> str:
-        """Create a new temp variable and register its CType.
-
-        Dual-populates both _sym_table (CType) and _var_types (string)
-        for backward compatibility during incremental migration.
-        """
+        """Create a new temp and register its CType in both _sym_table and _var_types."""
         name = self._new_temp()
         if self._sym_table:
             self._sym_table.insert(name, ctype)
-        # Compat: also update old _var_types
         self._var_types[name] = ctype_to_ir_type(ctype)
         return name
 
     def _pointee_size_from_ctype(self, operand: str) -> Optional[int]:
-        """Extract pointee element size from a pointer CType via the symbol table.
-
-        Returns the byte size of the pointee type, or None if the operand
-        is not a pointer or the symbol table is unavailable.
-        Used for pointer arithmetic scaling and array indexing.
-        """
+        """Return the byte size of the pointee type for a pointer operand, or None."""
         if not self._sym_table:
             return None
         ct = self._sym_table.lookup(operand)
@@ -3736,8 +3716,7 @@ class IRGenerator:
                 # variables here.  The cast result should use a new temp if
                 # the caller needs a differently-typed value.  Modifying the
                 # source operand's CType in the symbol table would violate
-                # Requirement 5.1.  The _var_types update below is kept only
-                # for backward compatibility during incremental migration.
+                # Requirement 5.1.  The _var_types update is kept for compat.
                 cast_ty = None
                 if getattr(dst_ty, "is_pointer", False):
                     cast_ty = dst_str if "*" in dst_str else f"{dst_str}*"
@@ -3763,7 +3742,6 @@ class IRGenerator:
                     else:
                         self._var_types[v] = cast_ty
                 else:
-                    # Temp variable: update both _var_types and _sym_table.
                     self._var_types[v] = cast_ty
                     if self._sym_table and _cast_dst_ctype is not None:
                         self._sym_table.insert(v, _cast_dst_ctype)

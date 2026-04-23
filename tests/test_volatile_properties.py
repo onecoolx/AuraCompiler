@@ -2,9 +2,10 @@
 
 **Validates: Requirements 6.1, 6.2, 6.3**
 
-Property 9: volatile 访问生成内存指令
-For any volatile 限定的变量在循环中被读取或写入 N 次，生成的汇编代码中应包含
-至少 N 条对应的内存加载或存储指令（不被优化消除或合并）。
+Property 9: volatile access generates memory instructions
+For any volatile-qualified variable read or written N times in a loop, the
+generated assembly should contain at least N corresponding memory load or store
+instructions (not optimized away or merged).
 
 Testing approach: use Hypothesis to generate a random count N (1-20),
 generate C code with a volatile variable written N times (as N separate
@@ -52,11 +53,11 @@ def _generate_volatile_writes(n: int) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Property 9: volatile 访问生成内存指令
+# Property 9: volatile access generates memory instructions
 # ---------------------------------------------------------------------------
 
 class TestVolatileAccessGeneratesMemoryInstructions:
-    """Property 9: volatile 访问生成内存指令
+    """Property 9: volatile access generates memory instructions
 
     **Validates: Requirements 6.1, 6.2, 6.3**
     """

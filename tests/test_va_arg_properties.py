@@ -2,9 +2,11 @@
 
 **Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5**
 
-Property 5: va_arg 顺序提取正确性
-For any 整数参数序列（长度 1 到 10，覆盖寄存器传递和栈溢出两种路径），
-传递给可变参数函数后，通过 va_arg 按顺序提取的每个值应与传入的对应参数值相等。
+Property 5: va_arg sequential extraction correctness
+For any integer argument sequence (length 1 to 10, covering both register
+passing and stack overflow paths), after passing to a variadic function,
+each value extracted sequentially via va_arg should equal the corresponding
+argument value passed in.
 
 Testing approach: use Hypothesis to generate a list of 1-10 integer values
 (range 0-100), generate C code with a variadic function that extracts N args
@@ -83,11 +85,11 @@ def _compile_and_run(tmp_path, code: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Property 5: va_arg 顺序提取正确性
+# Property 5: va_arg sequential extraction correctness
 # ---------------------------------------------------------------------------
 
 class TestVaArgSequentialExtraction:
-    """Property 5: va_arg 顺序提取正确性
+    """Property 5: va_arg sequential extraction correctness
 
     **Validates: Requirements 4.1, 4.2, 4.3, 4.4, 4.5**
     """

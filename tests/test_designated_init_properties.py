@@ -2,17 +2,19 @@
 
 **Validates: Requirements 5.1, 5.2, 5.3, 5.4, 5.5, 5.6**
 
-Property 6: 结构体指定初始化器正确性
-For any 结构体类型和任意成员子集的指定初始化值，使用指定初始化器初始化后，
-被指定的成员应具有指定的值，未被指定的成员应为零值。
+Property 6: Struct designated initializer correctness
+For any struct type and any subset of members with designated initialization values,
+after initialization with designated initializers, designated members should have
+the specified values and undesignated members should be zero.
 
-Property 7: 数组指定初始化器正确性
-For any 数组大小和任意索引子集的指定初始化值，使用指定初始化器初始化后，
-被指定索引处的元素应具有指定的值，未被指定的元素应为零值。
+Property 7: Array designated initializer correctness
+For any array size and any subset of indices with designated initialization values,
+after initialization with designated initializers, designated elements should have
+the specified values and undesignated elements should be zero.
 
-Property 8: 无效指定初始化器拒绝
-For any 无效的成员名（不存在于结构体定义中）或越界的数组索引，
-编译器应产生编译错误而非静默接受。
+Property 8: Invalid designated initializer rejection
+For any invalid member name (not in the struct definition) or out-of-bounds array index,
+the compiler should produce a compilation error rather than silently accepting it.
 
 Testing approach: use Hypothesis to generate random struct/array layouts and
 designated initialization values, compile with pycc, run the executable, and
@@ -216,11 +218,11 @@ def _compile_should_fail(tmp_path, code):
 
 
 # ---------------------------------------------------------------------------
-# Property 6: 结构体指定初始化器正确性
+# Property 6: Struct designated initializer correctness
 # ---------------------------------------------------------------------------
 
 class TestStructDesignatedInitProperties:
-    """Property 6: 结构体指定初始化器正确性
+    """Property 6: Struct designated initializer correctness
 
     **Validates: Requirements 5.1, 5.3, 5.4, 5.5**
     """
@@ -245,11 +247,11 @@ class TestStructDesignatedInitProperties:
 
 
 # ---------------------------------------------------------------------------
-# Property 7: 数组指定初始化器正确性
+# Property 7: Array designated initializer correctness
 # ---------------------------------------------------------------------------
 
 class TestArrayDesignatedInitProperties:
-    """Property 7: 数组指定初始化器正确性
+    """Property 7: Array designated initializer correctness
 
     **Validates: Requirements 5.2, 5.3**
     """
@@ -274,11 +276,11 @@ class TestArrayDesignatedInitProperties:
 
 
 # ---------------------------------------------------------------------------
-# Property 8: 无效指定初始化器拒绝
+# Property 8: Invalid designated initializer rejection
 # ---------------------------------------------------------------------------
 
 class TestInvalidDesignatedInitProperties:
-    """Property 8: 无效指定初始化器拒绝
+    """Property 8: Invalid designated initializer rejection
 
     **Validates: Requirements 5.6**
     """

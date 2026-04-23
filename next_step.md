@@ -66,10 +66,11 @@ Every new type×initializer combination (struct arrays, arrays of pointers to st
 
 **Problem**: Both `IRGenerator._var_types` and `CodeGenerator._var_types` are stringly-typed dictionaries (`Dict[str, str]`) that duplicate type information already available in `TypedSymbolTable`. They exist because `TypedSymbolTable` scopes are popped after IR generation, leaving codegen with no local symbol type information.
 
+**Current state**: The per-function `activate_function` mechanism is implemented — `TypedSymbolTable` now supports `activate_function(name)` to restore a function's local scope for codegen. `CodeGenerator.generate()` calls `sym_table.activate_function()` before processing each function's IR. However, `_var_types` still exists as a fallback because not all codegen paths have been migrated to use `TypedSymbolTable` lookups yet.
+
 **Proposed design**:
-- Change the architecture so that `TypedSymbolTable` preserves per-function scopes across the IR-gen → codegen boundary
-- Options: (a) don't pop scopes — snapshot them into a per-function map before popping; (b) serialize the scope into IR metadata; (c) keep a flat "all locals" dict alongside the scoped table
-- Once codegen can resolve all local symbols via `TypedSymbolTable`, remove `_var_types` from both `IRGenerator` and `CodeGenerator`
+- Incrementally migrate codegen methods (`_get_type`, `_resolve_member_offset`, `_resolve_member_type`, `_type_size_bytes`, etc.) to use `TypedSymbolTable` as the primary type source
+- Once all codegen paths use `TypedSymbolTable`, remove `_var_types` from both `IRGenerator` and `CodeGenerator`
 - Remove all `_str_to_ctype` fallback paths in codegen's `_get_type`
 
 **Scope**: Medium refactor. Depends on the initializer unification (plan 2) being complete first, since the initializer code heavily uses `_var_types`.

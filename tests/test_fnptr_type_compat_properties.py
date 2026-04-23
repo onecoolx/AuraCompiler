@@ -2,9 +2,11 @@
 
 **Validates: Requirements 7.1, 7.2, 7.3**
 
-Property 10: 函数指针类型兼容性检查
-For any 两个函数指针类型，当且仅当它们的返回类型兼容且所有对应参数类型兼容时，
-赋值应被接受；否则编译器应报告类型不兼容错误，指明不匹配的位置。
+Property 10: Function pointer type compatibility checking
+For any two function pointer types, assignment should be accepted if and only if
+their return types are compatible and all corresponding parameter types are
+compatible; otherwise the compiler should report a type incompatibility error
+indicating the mismatch location.
 
 Testing approach: use Hypothesis to generate pairs of function signatures
 (return type + parameter types), then:
@@ -176,11 +178,11 @@ def _compile(tmp_path, code: str):
 
 
 # ---------------------------------------------------------------------------
-# Property 10: 函数指针类型兼容性检查
+# Property 10: Function pointer type compatibility checking
 # ---------------------------------------------------------------------------
 
 class TestFnPtrTypeCompatProperties:
-    """Property 10: 函数指针类型兼容性检查
+    """Property 10: Function pointer type compatibility checking
 
     **Validates: Requirements 7.1, 7.2, 7.3**
     """

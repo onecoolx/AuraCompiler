@@ -2,9 +2,9 @@
 
 **Validates: Requirements 14.3**
 
-Property 15: long double 转换往返一致性
-For any 可精确表示为 double 的浮点值，将其转换为 long double 再转换回 double
-应产生与原始值相等的结果。
+Property 15: long double conversion roundtrip consistency
+For any float value exactly representable as double, converting it to long double
+and back to double should produce a result equal to the original value.
 
 Testing approach: use Hypothesis to generate double-representable float values,
 verify that the IR generator produces correct d2ld and ld2d conversion ops
@@ -53,11 +53,11 @@ exact_int_values = st.integers(min_value=-1000000, max_value=1000000)
 
 
 # ---------------------------------------------------------------------------
-# Property 15: long double 转换往返一致性
+# Property 15: long double conversion roundtrip consistency
 # ---------------------------------------------------------------------------
 
 class TestLongDoubleRoundtripProperties:
-    """Property 15: long double 转换往返一致性
+    """Property 15: long double conversion roundtrip consistency
 
     **Validates: Requirements 14.3**
     """

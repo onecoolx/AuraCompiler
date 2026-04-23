@@ -2,7 +2,7 @@
 
 **Validates: Requirements 2.1, 2.2, 2.3, 2.4, 2.5**
 
-Property 3: 结构体按值参数传递保持成员值
+Property 3: Struct by-value parameter passing preserves member values
 Using Hypothesis, generate random struct layouts with various member types
 and sizes, then verify the classifier invariants hold for all inputs.
 """

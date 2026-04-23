@@ -111,12 +111,12 @@ def _struct_with_members(draw):
 
 
 # ---------------------------------------------------------------------------
-# Property 4: 成员访问类型推断
+# Property 4: Member access type inference
 # Feature: parser-semantics-hardening, Property 4: member access type inference
 # ---------------------------------------------------------------------------
 
 class TestMemberAccessTypeInference:
-    """Property 4: 成员访问类型推断
+    """Property 4: Member access type inference
 
     For any declared struct and its members, calling _expr_type() on a
     MemberAccess (.) or PointerMemberAccess (->) expression should return
@@ -231,12 +231,12 @@ class TestMemberAccessTypeInference:
 
 
 # ---------------------------------------------------------------------------
-# Property 5: 函数调用返回类型推断
+# Property 5: Function call return type inference
 # Feature: parser-semantics-hardening, Property 5: function call return type inference
 # ---------------------------------------------------------------------------
 
 class TestFunctionCallReturnTypeInference:
-    """Property 5: 函数调用返回类型推断
+    """Property 5: Function call return type inference
 
     For any declared function, calling _expr_type() on a FunctionCall
     expression targeting that function should return the function's declared
@@ -290,12 +290,12 @@ class TestFunctionCallReturnTypeInference:
 
 
 # ---------------------------------------------------------------------------
-# Property 6: 间接层级移除
+# Property 6: Indirection level removal
 # Feature: parser-semantics-hardening, Property 6: indirection level removal
 # ---------------------------------------------------------------------------
 
 class TestIndirectionLevelRemoval:
-    """Property 6: 间接层级移除
+    """Property 6: Indirection level removal
 
     For any pointer type expression (pointer_level >= 1), applying ArrayAccess
     or UnaryOp * dereference should result in _expr_type() returning a type
@@ -384,12 +384,12 @@ class TestIndirectionLevelRemoval:
 
 
 # ---------------------------------------------------------------------------
-# Property 7: 取地址增加指针层级
+# Property 7: Address-of increases pointer level
 # Feature: parser-semantics-hardening, Property 7: address-of increases pointer level
 # ---------------------------------------------------------------------------
 
 class TestAddressOfIncreasesPointerLevel:
-    """Property 7: 取地址增加指针层级
+    """Property 7: Address-of increases pointer level
 
     For any expression with a known type, applying UnaryOp & should result
     in _expr_type() returning a type with pointer_level = original + 1.
@@ -438,12 +438,12 @@ class TestAddressOfIncreasesPointerLevel:
 
 
 # ---------------------------------------------------------------------------
-# Property 8: Cast 返回目标类型
+# Property 8: Cast returns target type
 # Feature: parser-semantics-hardening, Property 8: cast returns target type
 # ---------------------------------------------------------------------------
 
 class TestCastReturnsTargetType:
-    """Property 8: Cast 返回目标类型
+    """Property 8: Cast returns target type
 
     For any Cast expression, _expr_type() should return the same type as
     the Cast's to_type field (which is stored as expr.type on Cast nodes).

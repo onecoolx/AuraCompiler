@@ -2,9 +2,11 @@
 
 **Validates: Requirements 12.1, 12.2**
 
-Property 13: #if 整数求值一致性
-For any #if 表达式中的整数运算（包括带后缀的字面量和溢出情况），预处理器应按照
-选定的一致策略（Python 任意精度）求值，且相同表达式在不同上下文中产生相同结果。
+Property 13: #if integer evaluation consistency
+For any integer arithmetic in #if expressions (including suffixed literals and
+overflow cases), the preprocessor should evaluate using a consistent strategy
+(Python arbitrary precision), and the same expression should produce the same
+result in different contexts.
 
 Testing approach: use Hypothesis to generate random #if integer expressions,
 evaluate them both via Python and via the preprocessor, and verify consistency.
@@ -76,11 +78,11 @@ def comparison_expr(draw):
 
 
 # ---------------------------------------------------------------------------
-# Property 13: #if 整数求值一致性
+# Property 13: #if integer evaluation consistency
 # ---------------------------------------------------------------------------
 
 class TestIfEvalProperties:
-    """Property 13: #if 整数求值一致性
+    """Property 13: #if integer evaluation consistency
 
     **Validates: Requirements 12.1, 12.2**
     """

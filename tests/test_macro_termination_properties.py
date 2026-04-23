@@ -2,9 +2,11 @@
 
 **Validates: Requirements 8.3, 9.1, 9.2**
 
-Property 11: 自引用/递归宏展开终止性
-For any 包含自引用或间接递归引用的宏定义集合，预处理器的展开过程应在有限步内终止，
-不产生无限循环，且自引用的宏名在展开结果中保持为普通标识符。
+Property 11: Self-referencing/recursive macro expansion termination
+For any set of macro definitions containing self-references or indirect recursive
+references, the preprocessor expansion process should terminate in finite steps
+without producing infinite loops, and self-referencing macro names should remain
+as plain identifiers in the expansion result.
 
 Testing approach: use Hypothesis to generate random sets of macro definitions
 that include self-references or indirect recursion, then:
@@ -253,11 +255,11 @@ def mixed_recursive_macros(draw):
 
 
 # ---------------------------------------------------------------------------
-# Property 11: 自引用/递归宏展开终止性
+# Property 11: Self-referencing/recursive macro expansion termination
 # ---------------------------------------------------------------------------
 
 class TestMacroTerminationProperties:
-    """Property 11: 自引用/递归宏展开终止性
+    """Property 11: Self-referencing/recursive macro expansion termination
 
     **Validates: Requirements 8.3, 9.1, 9.2**
     """

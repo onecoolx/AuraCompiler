@@ -2,9 +2,10 @@
 
 **Validates: Requirements 13.1, 13.2**
 
-Property 14: 宏展开空白保留往返一致性
-For any 宏展开结果，对输出文本重新进行词法分析应产生与展开结果相同的 token 序列
-（即空白字符正确分隔了所有 token，不存在意外粘连）。
+Property 14: Macro expansion whitespace preservation roundtrip consistency
+For any macro expansion result, re-lexing the output text should produce the
+same token sequence as the expansion result (i.e. whitespace correctly separates
+all tokens with no accidental token pasting).
 
 Testing approach: use Hypothesis to generate random object-like macro
 definitions with multiple tokens, expand them via the token-based
@@ -82,11 +83,11 @@ def replacement_tokens(draw):
 
 
 # ---------------------------------------------------------------------------
-# Property 14: 宏展开空白保留往返一致性
+# Property 14: Macro expansion whitespace preservation roundtrip consistency
 # ---------------------------------------------------------------------------
 
 class TestWhitespaceRoundtripProperties:
-    """Property 14: 宏展开空白保留往返一致性
+    """Property 14: Macro expansion whitespace preservation roundtrip consistency
 
     **Validates: Requirements 13.1, 13.2**
     """

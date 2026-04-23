@@ -2,10 +2,11 @@
 
 **Validates: Requirements 3.1, 3.2, 3.3, 3.4**
 
-Property 4: 结构体按值返回保持成员值
-For any 结构体类型（不论大小是否超过 16 字节，不论成员是否包含浮点类型）
-和任意成员值，函数按值返回结构体后，调用方接收到的每个成员值应与函数内部
-设置的值相等。
+Property 4: Struct by-value return preserves member values
+For any struct type (regardless of whether size exceeds 16 bytes or whether
+members include floating-point types) and any member values, after returning
+the struct by value from a function, each member value received by the caller
+should equal the value set inside the function.
 
 Testing approach: use Hypothesis to generate random struct layouts with
 integer-type members (int, long, short, char), generate C code that defines
@@ -157,7 +158,7 @@ def _compile_and_run(tmp_path, code: str) -> int:
 # ---------------------------------------------------------------------------
 
 class TestStructReturnProperties:
-    """Property 4: 结构体按值返回保持成员值
+    """Property 4: Struct by-value return preserves member values
 
     **Validates: Requirements 3.1, 3.2, 3.3, 3.4**
     """

@@ -2,14 +2,16 @@
 
 **Validates: Requirements 1.1, 1.2, 1.3, 1.4, 1.5**
 
-Property 1: 结构体/联合体按值赋值保持成员值
-For any 结构体或联合体类型（包含任意数量和类型的成员，包括嵌套结构体和联合体）
-和任意成员值，执行 b = a 赋值或 struct S b = a 初始化后，b 的每个字节应与 a
-的对应字节相等。
+Property 1: Struct/union by-value assignment preserves member values
+For any struct or union type (with any number and type of members, including
+nested structs and unions) and any member values, after executing b = a
+assignment or struct S b = a initialization, every byte of b should equal
+the corresponding byte of a.
 
-Property 2: 结构体参数值语义（调用方隔离）
-For any 结构体类型和任意成员值，将结构体按值传递给函数后，无论被调用函数如何
-修改其参数副本，调用方的原始结构体的所有成员值应保持不变。
+Property 2: Struct parameter value semantics (caller isolation)
+For any struct type and any member values, after passing a struct by value
+to a function, regardless of how the callee modifies its parameter copy,
+all member values of the caller's original struct should remain unchanged.
 
 Testing approach: use Hypothesis to generate random struct/union layouts with
 integer-type members (int, long, short, char), generate C code that exercises
@@ -250,11 +252,11 @@ def _compile_and_run(tmp_path, code: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Property 1: 结构体/联合体按值赋值保持成员值
+# Property 1: Struct/union by-value assignment preserves member values
 # ---------------------------------------------------------------------------
 
 class TestStructAssignProperties:
-    """Property 1: 结构体/联合体按值赋值保持成员值
+    """Property 1: Struct/union by-value assignment preserves member values
 
     **Validates: Requirements 1.1, 1.2, 1.3, 1.4**
     """
@@ -328,11 +330,11 @@ class TestStructAssignProperties:
 
 
 # ---------------------------------------------------------------------------
-# Property 2: 结构体参数值语义（调用方隔离）
+# Property 2: Struct parameter value semantics - caller isolation
 # ---------------------------------------------------------------------------
 
 class TestStructCallerIsolationProperties:
-    """Property 2: 结构体参数值语义（调用方隔离）
+    """Property 2: Struct parameter value semantics - caller isolation
 
     **Validates: Requirements 1.5**
     """

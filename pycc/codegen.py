@@ -3,18 +3,18 @@
 Produces assembly (.s) from IR, supporting integer and SSE/SSE2 float ops.
 
 Supported IR ops (see `pycc.ir`):
-- func_begin/func_end
-- decl/param
+- func_begin/func_end, decl/param
 - mov, unop, binop
 - label, jmp, jz, jnz
 - call, ret
 - str_const
-- load_index (int arrays)
-
-Assumptions (current stage):
-- integers are 64-bit in registers (we use `movq`/`cmpq` etc)
-- locals are stack allocated, 8-byte aligned
-- arrays are stack allocated as 8-byte elements
+- load_index, store_index, addr_index
+- load_member, store_member, addr_of_member (struct/union access)
+- store_member_ptr, load_member_ptr, addr_of_member_ptr (pointer-to-struct)
+- fmov, fadd, fsub, fmul, fdiv, fcmp (SSE float ops)
+- i2f, i2d, f2i, d2i, f2d, d2f (type conversions)
+- gdef, gdef_blob, gdef_struct, gdef_float, gdef_ptr_array (globals)
+- struct_copy, deref_load (aggregate ops)
 """
 
 from __future__ import annotations
@@ -271,23 +271,10 @@ class CodeGenerator:
         self.assembly_lines = []
         self._string_pool = {}
         self._string_counter = 0
-        # Best-effort type table across the whole function. This is needed for
-        # temps like `%t0` produced by `addr_index` so later ops (load_member)
-        # know it is a pointer value.
-        #
-        # NOTE: _var_types CANNOT be removed yet (task 7.1 deferred).
-        # TypedSymbolTable scopes are popped at the end of IR generation
-        # (IRGenerator._gen_function calls _sym_table.pop_scope()), so by the
-        # time codegen runs, only global-scope entries remain in the symbol
-        # table.  All function-local symbols (%tN temps, @local_var locals,
-        # function parameters) are NOT resolvable via _sym_table.lookup()
-        # during codegen.  _var_types is the only source of type information
-        # for these symbols.
-        #
-        # To remove _var_types, the architecture must change so that
-        # TypedSymbolTable preserves per-function scopes across the IR-gen ->
-        # codegen boundary (e.g. by not popping scopes, or by snapshotting
-        # them into a per-function map before popping).
+        # String-based type table for temps and locals. TypedSymbolTable now
+        # preserves per-function scopes via _func_locals / activate_function(),
+        # but _var_types is still used as a fallback by many codegen paths.
+        # Removal is tracked in next_step.md plan 3.
         self._var_types: Dict[str, str] = {}
         # Optional per-temp pointer arithmetic step overrides (bytes).
         # Populated from IRInstruction.meta (e.g. for pointer-to-array decay).
@@ -515,17 +502,12 @@ class CodeGenerator:
                                 self._fn_ret_ty = rest
                 except Exception:
                     self._fn_ret_ty = ""
-                # Seed best-effort type info for temps/symbols used in this function.
-                # IR sometimes annotates types via prior "decl" ops for locals,
-                # but temps like %t0 (from addr_index) may never appear in decls.
+                # Pre-scan: seed _var_types for decls and pointer-producing ops.
                 j = i + 1
                 while j < len(instructions) and instructions[j].op != "func_end":
                     d = instructions[j]
                     if d.op == "decl" and d.result and d.operand1:
                         self._var_types[d.result] = str(d.operand1)
-                    # If the IR uses a temp as the result of addr_index, it is a pointer value.
-                    # Minimal fallback: set "ptr" so codegen knows it's a pointer.
-                    # Full type info is available via _get_type() -> symbol table.
                     if d.op == "addr_index" and d.result:
                         if d.result not in self._var_types:
                             self._var_types[d.result] = "ptr"
@@ -533,20 +515,9 @@ class CodeGenerator:
                         if d.result not in self._var_types:
                             self._var_types[d.result] = "ptr"
                     j += 1
-                # collect decls/params (and optional func_ret marker) until the
-                # first non-prologue instruction. IR commonly emits:
-                #   func_begin
-                #   func_ret
-                #   param...
-                # so we must skip func_ret when building the prologue decl list.
-                #
-                # IMPORTANT: collect ALL decl/param instructions in the entire
-                # function body (up to func_end), not just the ones at the top.
-                # C89/C99 allows declarations after statements, and the IR
-                # generator emits decl instructions at the point of declaration.
-                # If we only collect top-of-function decls, later struct locals
-                # get allocated via _ensure_local's late-local path which places
-                # them after the 4KB spill area, causing stack frame corruption.
+                # Collect ALL decl/param instructions in the function body
+                # (not just top-of-function). C89 allows declarations after
+                # statements, and IR emits decl at the point of declaration.
                 body_start = i + 1
                 decls: List[IRInstruction] = []
                 # Skip initial prologue-only instructions (func_ret, param, decl)
@@ -658,47 +629,11 @@ class CodeGenerator:
         # the prologue scan.
         return sym in self._locals
 
-    def _resolve_member_offset(self, base: str, member: str) -> int:
-        """Resolve struct/union member offset in bytes.
-
-        Prefers semantic layout (sema_ctx.layouts) when available; falls back to
-        per-function discovered offsets map.
-        """
-
-        # First try semantic layouts using base type info.
-        ty = self._var_types.get(base)
-        if isinstance(ty, str) and ty.strip().endswith("*"):
-            ty = ty.strip()[:-1].strip()
-        if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@") and self._sema_ctx is not None:
-            ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
-
-        # If `base` is a temp pointer (e.g. from addr_of_member), fall back to
-        # its recorded type.
-        if (ty is None or ty == "") and isinstance(base, str) and base.startswith("%t"):
-            ty = self._var_types.get(base)
-            if isinstance(ty, str) and ty.strip().endswith("*"):
-                ty = ty.strip()[:-1].strip()
-
-        if isinstance(ty, str) and self._sema_ctx is not None:
-            resolved_ty = self._resolve_type(ty)
-            layout = getattr(self._sema_ctx, "layouts", {}).get(resolved_ty)
-            if layout is not None:
-                off = layout.member_offsets.get(member)
-                if isinstance(off, int):
-                    return off
-
-        # Fall back to per-function cached offsets.
-        off2 = self._member_offsets.get((base, member))
-        if isinstance(off2, int):
-            return off2
-        return 0
-
     def _resolve_member_type(self, base: str, member: str) -> Optional[str]:
-        """Best-effort resolve the declared type of a struct/union member.
+        """Resolve the declared type of a struct/union member.
 
         Uses CType from symbol table when available, falls back to string-based
         semantic information (sema_ctx.layouts + sema_ctx.global_types).
-
         Returns a type string (e.g. "signed char") or None.
         """
 
@@ -724,9 +659,8 @@ class CodeGenerator:
             ty = ty.strip()[:-1].strip()
         if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@"):
             ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
-        # If `base` is a temp holding a pointer into a struct/union (e.g. result
-        # of addr_of_member/addr_of_member_ptr), consult its recorded type.
-        # Those are stored as "<ty>*" in `_var_types`.
+        # Temps holding struct pointers (from addr_of_member etc.) are stored
+        # as "<ty>*" in _var_types.
         if (ty is None or ty == "") and isinstance(base, str) and base.startswith("%t"):
             ty = self._var_types.get(base)
             if isinstance(ty, str) and ty.strip().endswith("*"):
@@ -753,19 +687,8 @@ class CodeGenerator:
         self._locals = {}
         self._arrays = {}
         self._member_offsets = {}
-        # `_var_types` is initialized once per `generate()` call.
-        # Stack frame invariant:
-        # - declared locals are assigned fixed slots first
-        # - a fixed spill region for IR temps (%t*) is reserved below locals
-        # - any late-discovered locals are allocated below the spill region
-        #
-        # `_spill_capacity/_spill_used` are initialized in `generate()` for each
-        # function; do not reset them here.
 
-        # Assign stack slots.
-        # IMPORTANT: even if a variable's logical type is smaller (char/short/int),
-        # we must keep each stack slot at least 8 bytes to avoid overlapping
-        # locals when using simple "one offset per symbol" addressing.
+        # Assign stack slots (minimum 8 bytes each to avoid overlap).
         offset = 0
         for d in decls:
             if not d.result:
@@ -1653,8 +1576,6 @@ class CodeGenerator:
             if off:
                 self._emit(f"  addq ${off}, %rax")
             self._store_result(ins.result, "%rax")
-            # best-effort propagate pointer type: if base is a struct/union symbol,
-            # treat result as pointer-to-member's scalar size is handled on load/store.
             return
 
         if op == "load_member":
@@ -2599,12 +2520,9 @@ class CodeGenerator:
             return
 
         if op == "load_index":
-            # int array indexing: result = base[index]
+            # Array/pointer indexing: result = base[index]
             base = ins.operand1 or ""
             idx = ins.operand2
-            # Determine element size using best-effort type info.
-            # - For pointer variables, use pointee size.
-            # - For arrays, use base element size.
             elem_sz = 4
 
             # CType-based path: use symbol table to determine element size
@@ -2685,9 +2603,7 @@ class CodeGenerator:
             elif isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
             elif isinstance(base_ty, str):
-                # Global fixed-size arrays are currently tracked as just their
-                # element type (e.g. "char"); use that to pick element size.
-                # This is best-effort until we add explicit global array types.
+                # Global fixed-size arrays are tracked as their element type.
                 elem_sz = self._type_size_bytes(base_ty.strip())
             elif isinstance(base, str) and base.startswith("%t"):
                 # For temps used as addresses, consult `_var_types` to infer pointee size.
@@ -3404,10 +3320,8 @@ class CodeGenerator:
         if operand.isidentifier() and self._is_local(f"@{operand}"):
             operand = f"@{operand}"
         if operand.startswith("%t"):
-            # temps are also stack allocated lazily
             off = self._ensure_local(operand)
-            # Best-effort: if we know the temp's type and it is narrower than
-            # 64-bit, load it with correct width/extension.
+            # Load with correct width based on type info.
             ty = self._var_types.get(operand, "")
             b = ty.strip() if isinstance(ty, str) else ""
             # IMPORTANT: pointer temps are 8-byte values.
@@ -3568,7 +3482,7 @@ class CodeGenerator:
         self._emit(f"  movq $0, {reg}")
 
     def _as_unsigned_type(self, ty: object) -> bool:
-        """Best-effort unsigned-ness check for the project's stringly-typed types."""
+        """Check if a type is unsigned."""
         if ty is None:
             return False
         if isinstance(ty, str):
@@ -3580,46 +3494,8 @@ class CodeGenerator:
             return b.startswith("unsigned ")
         return bool(getattr(ty, "is_unsigned", False))
 
-    def _type_size_bytes(self, ty: object) -> int:
-        """Best-effort sizeof for our stringly-typed scalar/pointer types."""
-        if ty is None:
-            return 8
-        if isinstance(ty, str):
-            b = self._resolve_type(ty)
-        else:
-            base = getattr(ty, "base", None)
-            b = self._resolve_type(base.strip()) if isinstance(base, str) else ""
-            if getattr(ty, "is_pointer", False):
-                return 8
-        if not b:
-            return 8
-        # pointers
-        if "*" in b:
-            return 8
-        # structs/unions
-        if (b.startswith("struct ") or b.startswith("union ")) and self._sema_ctx is not None:
-            layout = getattr(self._sema_ctx, "layouts", {}).get(b)
-            if layout is not None:
-                try:
-                    return int(getattr(layout, "size"))
-                except Exception:
-                    return 8
-        # integers
-        if b in {"char", "unsigned char", "signed char"}:
-            return 1
-        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
-            return 2
-        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
-            return 4
-        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
-            return 8
-        return 8
-
     def _pointee_size_bytes(self, ptr_ty: object) -> int:
-        """Return element size for T* types when we can recognize T.
-
-        Note: current type strings are normalized like "unsigned long" / "int*" / "char*".
-        """
+        """Return element size for T* pointer types."""
         if ptr_ty is None:
             return 8
         if isinstance(ptr_ty, str):
@@ -3649,7 +3525,7 @@ class CodeGenerator:
         return 8
 
     def _pointee_is_unsigned(self, ptr_ty: object) -> bool:
-        """Best-effort unsignedness for T* pointer types."""
+        """Check unsignedness for T* pointer types."""
         if ptr_ty is None:
             return False
         if isinstance(ptr_ty, str):
@@ -3669,7 +3545,7 @@ class CodeGenerator:
             return
         if result.startswith("%t"):
             off = self._ensure_local(result)
-            # Store temps with width based on best-effort type info.
+            # Store with correct width based on type info.
             ty = self._var_types.get(result, "")
             b = ty.strip() if isinstance(ty, str) else ""
             if b == "char" or b.startswith("char ") or b == "unsigned char" or b.startswith("unsigned char"):
@@ -3819,10 +3695,9 @@ class CodeGenerator:
         return off
 
     def _type_size_bytes(self, ty: str) -> int:
-        """Best-effort size (bytes) for a type string.
+        """Return size in bytes for a type string.
 
-        Uses CType for struct/union layout lookup when the string-based
-        _resolve_type produces a struct/union tag. Falls back to string
+        Uses CType for struct/union layout lookup, falls back to string
         matching for scalars and pointers.
         """
         b = self._resolve_type(ty)

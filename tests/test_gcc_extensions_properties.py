@@ -86,12 +86,12 @@ _float_type = st.sampled_from(list(_FLOAT_MAP.keys()))
 
 
 # ---------------------------------------------------------------------------
-# Property 9: __attribute__ 嵌套括号移除
+# Property 9: __attribute__ nested paren removal
 # Feature: parser-semantics-hardening, Property 9: __attribute__ nested paren removal
 # ---------------------------------------------------------------------------
 
 class TestAttributeNestedParenRemoval:
-    """Property 9: __attribute__ 嵌套括号移除
+    """Property 9: __attribute__ nested paren removal
 
     For any text containing __attribute__((...)) with arbitrary nesting depth,
     the output should not contain __attribute__ and non-attribute text should
@@ -159,12 +159,12 @@ class TestAttributeNestedParenRemoval:
 
 
 # ---------------------------------------------------------------------------
-# Property 10: 简单 GCC 关键字移除
+# Property 10: Simple GCC keyword removal
 # Feature: parser-semantics-hardening, Property 10: simple GCC keyword removal
 # ---------------------------------------------------------------------------
 
 class TestSimpleGccKeywordRemoval:
-    """Property 10: 简单 GCC 关键字移除
+    """Property 10: Simple GCC keyword removal
 
     For any text containing __extension__, __inline, __inline__, __restrict,
     or __restrict__, the output should not contain these keywords and remaining
@@ -231,12 +231,12 @@ class TestSimpleGccKeywordRemoval:
 
 
 # ---------------------------------------------------------------------------
-# Property 11: Float 类型替换
+# Property 11: Float type replacement
 # Feature: parser-semantics-hardening, Property 11: Float type replacement
 # ---------------------------------------------------------------------------
 
 class TestFloatTypeReplacement:
-    """Property 11: Float 类型替换
+    """Property 11: Float type replacement
 
     For any text containing _Float128, _Float64, _Float32, _Float64x, or
     _Float32x, they should be replaced with corresponding standard C types.
@@ -310,12 +310,12 @@ class TestFloatTypeReplacement:
 
 
 # ---------------------------------------------------------------------------
-# Property 12: 非扩展文本恒等性
+# Property 12: Non-extension text identity
 # Feature: parser-semantics-hardening, Property 12: non-extension text identity
 # ---------------------------------------------------------------------------
 
 class TestNonExtensionTextIdentity:
-    """Property 12: 非扩展文本恒等性
+    """Property 12: Non-extension text identity
 
     For any C89 text that does NOT contain any GCC extension keywords,
     strip_gcc_extensions(text) should return the input unchanged.

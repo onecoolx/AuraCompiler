@@ -2,9 +2,10 @@
 
 **Validates: Requirements 10.1, 10.2**
 
-Property 12: 字符串化运算符转义正确性
-For any 包含特殊字符（制表符、换行符、反斜杠、双引号）的宏参数，
-# 字符串化运算符应在输出字符串中正确添加转义前缀，使结果为合法的 C 字符串字面量。
+Property 12: Stringize operator escape correctness
+For any macro argument containing special characters (tab, newline, backslash, double-quote),
+the # stringize operator should correctly add escape prefixes in the output string,
+producing a valid C string literal.
 
 Testing approach: use Hypothesis to generate random token sequences containing
 special characters, feed them to MacroExpander._stringize, and verify the
@@ -85,11 +86,11 @@ def ident_with_special_chars(draw):
 
 
 # ---------------------------------------------------------------------------
-# Property 12: 字符串化运算符转义正确性
+# Property 12: Stringize operator escape correctness
 # ---------------------------------------------------------------------------
 
 class TestStringizeEscapeProperties:
-    """Property 12: 字符串化运算符转义正确性
+    """Property 12: Stringize operator escape correctness
 
     **Validates: Requirements 10.1, 10.2**
     """

@@ -89,12 +89,12 @@ _fp_inner_type = st.sampled_from(["int", "char", "long", "double", "void *"])
 
 
 # ---------------------------------------------------------------------------
-# Property 1: 未命名参数产生 name=None
+# Property 1: Unnamed parameters produce name=None
 # Feature: parser-semantics-hardening, Property 1: unnamed params produce name=None
 # ---------------------------------------------------------------------------
 
 class TestUnnamedParamNameNone:
-    """Property 1: 未命名参数产生 name=None
+    """Property 1: Unnamed parameters produce name=None
 
     For any valid C89 type specifier (with any pointer level), when parsed
     as an unnamed parameter in a function prototype, the resulting Declaration
@@ -167,12 +167,12 @@ class TestUnnamedParamNameNone:
 
 
 # ---------------------------------------------------------------------------
-# Property 2: 未命名函数指针参数正确解析
+# Property 2: Unnamed function pointer parameters parsed correctly
 # Feature: parser-semantics-hardening, Property 2: unnamed function pointer params
 # ---------------------------------------------------------------------------
 
 class TestUnnamedFunctionPointerParam:
-    """Property 2: 未命名函数指针参数正确解析
+    """Property 2: Unnamed function pointer parameters parsed correctly
 
     For any valid function pointer signature ret (*)(param_types...),
     when parsed as an unnamed parameter, the resulting Declaration should
@@ -263,7 +263,7 @@ class TestUnnamedFunctionPointerParam:
 
 
 # ---------------------------------------------------------------------------
-# Property 3: 混合参数顺序保持
+# Property 3: Mixed parameter order preserved
 # Feature: parser-semantics-hardening, Property 3: mixed parameter order preserved
 # ---------------------------------------------------------------------------
 
@@ -338,7 +338,7 @@ def _mixed_param_list(draw):
 
 
 class TestMixedParameterOrderPreserved:
-    """Property 3: 混合参数顺序保持
+    """Property 3: Mixed parameter order preserved
 
     For any parameter list containing a mix of named and unnamed parameters,
     the parsed Declaration list should maintain the same order as the source,
