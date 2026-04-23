@@ -2189,6 +2189,43 @@ class Parser:
         if tok is None:
             raise ParserError("Unexpected end of input")
 
+        # ── GCC extension: __builtin_va_arg(ap, type) ──────────────────
+        # When using system cpp (gcc -E), the standard va_arg(ap, T) macro
+        # is expanded to __builtin_va_arg(ap, T).  Unlike a normal function
+        # call, the second argument is a *type name*, not an expression.
+        # We parse it here and rewrite to the internal __builtin_va_arg_int
+        # call that codegen already understands.
+        if (tok.type == TokenType.IDENTIFIER
+                and tok.value == "__builtin_va_arg"):
+            self.advance()  # consume '__builtin_va_arg'
+            self._expect(TokenType.LPAREN, "Expected '(' after __builtin_va_arg")
+            ap_expr = self._parse_assignment()
+            self._expect(TokenType.COMMA, "Expected ',' in __builtin_va_arg")
+            # Parse the type argument (second arg is a type name, not expr).
+            _va_type = self._parse_type_specifier()
+            while self._match(TokenType.STAR):
+                _va_type.pointer_level = int(getattr(_va_type, "pointer_level", 0)) + 1
+                _va_type._normalize_pointer_state()
+            self._expect(TokenType.RPAREN, "Expected ')' after __builtin_va_arg")
+            # Rewrite to __builtin_va_arg_int(ap) — the internal form that
+            # codegen handles.  Currently only GP (int/long/pointer) types
+            # are supported; float va_arg would need a separate builtin.
+            fn = Identifier(name="__builtin_va_arg_int",
+                            line=tok.line, column=tok.column)
+            return FunctionCall(function=fn, arguments=[ap_expr],
+                                line=tok.line, column=tok.column)
+
+        # ── GCC extension: __builtin_va_end(ap) ───────────────────────
+        # System cpp expands va_end(ap) to __builtin_va_end(ap).
+        # This is already handled as a normal function call by codegen,
+        # but we need to make sure the identifier passes through.
+        # (No special parsing needed — falls through to generic IDENTIFIER.)
+
+        # ── GCC extension: __builtin_va_start(ap, last) ───────────────
+        # System cpp expands va_start(ap, last) to __builtin_va_start(ap).
+        # Also handled as a normal function call by codegen.
+        # (No special parsing needed — falls through to generic IDENTIFIER.)
+
         if tok.type == TokenType.IDENTIFIER:
             self.advance()
             return Identifier(name=tok.value, line=tok.line, column=tok.column)

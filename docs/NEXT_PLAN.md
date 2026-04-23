@@ -261,3 +261,47 @@ def _parse_type_specifier(self) -> Type:
 **Prerequisites**: None. Can be done independently.
 
 **Scope**: Medium refactor. `_parse_type_specifier` is ~200 lines today; expected ~150 lines after refactoring (main method + `_build_type_from_specifiers` + extracted `_parse_struct_or_union_specifier`/`_parse_enum_specifier`). Requires full test suite validation.
+
+
+## 6. Preprocessor performance: enable processing large source files without system cpp
+
+**Problem**: The built-in Python preprocessor cannot handle large source files like sqlite3.c (250K lines). It times out after 5+ minutes, while `gcc -E` completes in 2-3 seconds. This forces pycc to use `use_system_cpp=True` by default, which introduces GCC-specific builtin expansions (`__builtin_va_arg`, `__builtin_va_start`, etc.) that the parser must then handle as special cases.
+
+**Root cause**: The preprocessor is implemented in pure CPython, which is inherently slow for character-level text processing. Likely contributing factors include:
+- O(n²) string concatenation patterns (`+=` instead of list-based building)
+- Repeated regex compilation or backtracking in macro expansion
+- Inefficient token scanning (character-by-character in Python)
+- Deep recursion in macro expansion without memoization
+
+**Proposed optimization path** (in order of effort vs. impact):
+
+1. **Algorithm/data structure audit** (low effort, high impact)
+   - Profile the preprocessor on a medium-sized file (e.g. 10K lines) to identify hotspots
+   - Replace `str +=` patterns with `list.append` + `''.join`
+   - Pre-compile all regex patterns
+   - Use `dict`/`set` lookups instead of linear scans in macro tables and hidesets
+   - Minimize redundant string copies in token pasting and stringization
+
+2. **PyPy compatibility** (zero effort, 5-20x speedup)
+   - Verify pycc runs correctly under PyPy3 (no C extension dependencies)
+   - Add a `#!/usr/bin/env pypy3` shebang option or document PyPy usage
+   - PyPy's JIT is particularly effective for the kind of tight loops in preprocessor code
+   - Target: sqlite3.c preprocessing in under 30 seconds
+
+3. **mypyc compilation** (medium effort, 3-10x speedup)
+   - Add type annotations to `preprocessor.py` (and `lexer.py` if needed)
+   - Compile with mypyc to produce a C extension module
+   - No logic changes required, just annotations
+   - Can be done incrementally (annotate hottest functions first)
+
+4. **C rewrite of preprocessor core** (high effort, 100x+ speedup)
+   - Rewrite the token scanner and macro expander in C
+   - Expose via `ctypes`/`cffi` with the same Python API
+   - The preprocessor has a clean text-in/text-out interface, making it ideal for C rewrite
+   - This would make `use_system_cpp` unnecessary, eliminating all GCC builtin compatibility issues
+
+**Success criteria**: Preprocess sqlite3.c (250K lines, ~30 `#include` expansions) in under 10 seconds on a typical development machine, without depending on system gcc.
+
+**Prerequisites**: None. Can be done independently of other refactoring plans.
+
+**Scope**: Varies by approach. Algorithm audit is a small task (1-2 days). PyPy validation is trivial. mypyc is medium (1 week). C rewrite is large (2-3 weeks).
