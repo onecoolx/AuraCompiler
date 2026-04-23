@@ -995,9 +995,55 @@ class Parser:
                             continue
 
                     # Function pointer member: int (*name)(params);
+                    # Also handles nested function pointers that return a
+                    # function pointer, e.g.:
+                    #   void (*(*xDlSym)(sqlite3_vfs*, void*, const char*))(void);
+                    # The pattern is: `(` `*` followed by either:
+                    #   - IDENTIFIER  → simple fnptr: `(*name)(params)`
+                    #   - `(`         → nested fnptr: `(*(*name)(inner_params))(outer_params)`
                     if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
                         self.advance()  # consume '('
                         self.advance()  # consume '*'
+
+                        # Nested function pointer: (*(*name)(inner))(outer)
+                        if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
+                            self.advance()  # consume inner '('
+                            self.advance()  # consume inner '*'
+                            mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                            self._expect(TokenType.RPAREN, "Expected ')'")
+                            # Consume inner parameter list
+                            if self._match(TokenType.LPAREN):
+                                depth = 1
+                                while self.current_token and depth > 0:
+                                    if self._at(TokenType.LPAREN):
+                                        depth += 1
+                                    elif self._at(TokenType.RPAREN):
+                                        depth -= 1
+                                        if depth == 0:
+                                            break
+                                    self.advance()
+                                self._expect(TokenType.RPAREN, "Expected ')'")
+                            self._expect(TokenType.RPAREN, "Expected ')' after nested declarator")
+                            # Consume outer parameter list
+                            if self._match(TokenType.LPAREN):
+                                depth = 1
+                                while self.current_token and depth > 0:
+                                    if self._at(TokenType.LPAREN):
+                                        depth += 1
+                                    elif self._at(TokenType.RPAREN):
+                                        depth -= 1
+                                        if depth == 0:
+                                            break
+                                    self.advance()
+                                self._expect(TokenType.RPAREN, "Expected ')'")
+                            fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
+                                         line=mem_ty.line, column=mem_ty.column)
+                            fp_ty._normalize_pointer_state()
+                            self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
+                            members.append(Declaration(name=mem_name.value, type=fp_ty,
+                                                       line=mem_name.line, column=mem_name.column))
+                            continue
+
                         mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
                         self._expect(TokenType.RPAREN, "Expected ')'")
                         # Consume parameter list
@@ -1145,6 +1191,9 @@ class Parser:
                 break
 
             base_type = self._parse_type_specifier()
+            # C allows post-type qualifiers: `char const *` == `const char *`.
+            # Consume trailing qualifiers before looking for pointer stars.
+            self._skip_pointer_qualifiers()
             while self._match(TokenType.STAR):
                 new_level = int(getattr(base_type, "pointer_level", 0) or 0) + 1
                 base_type = Type(base=base_type.base, is_pointer=True,
