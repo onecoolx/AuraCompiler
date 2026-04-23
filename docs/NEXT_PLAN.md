@@ -192,3 +192,73 @@ This is a large refactoring that should be done incrementally:
 ### Scope
 
 Large refactoring. Should be broken into 3-5 standalone specs, one per phase. Estimated 2000-3000 lines of new code, replacing ~1500 lines of current IR generation and ~2000 lines of current codegen. The overall line count may increase slightly due to the additional abstraction layers, but each layer will be significantly simpler and more maintainable than the current monolithic design.
+
+
+## 5. 重构 `_parse_type_specifier` 为无序声明说明符收集器
+
+**问题**：当前 `_parse_type_specifier` 的架构假设声明说明符（declaration specifiers）是有序的——先消费限定符（`const`/`volatile`），再用 if/elif 链匹配类型关键字（`int`/`struct`/`enum`/typedef-name）。但 C 标准规定声明说明符是无序集合，以下写法全部合法且等价：
+
+```c
+const struct Foo *p;
+struct Foo const *p;
+volatile unsigned long x;
+long unsigned volatile x;
+const enum Color c;
+```
+
+当前实现的具体缺陷：
+
+1. 方法入口保存 `tok = self.current_token`，while 循环消费限定符后，后续分支仍用 `tok`（已过时）做判断。这导致 `const struct Foo` 被误解析为 `const int`（`saw_any` 兜底分支假设隐含 int）。
+2. 修复后虽然 enum/struct/union 分支改用了 `self.current_token`，但 `tok` 变量仍然存在于方法中，`saw_any` 分支通过 `pass` fall-through 到下面的分支，控制流不直观。未来新增类型分支时容易再次用错 `tok`。
+3. 限定符（`const`/`volatile`）和类型修饰符（`unsigned`/`signed`/`short`/`long`）在同一个 while 循环中处理，但类型关键字（`int`/`struct`/`enum`）在循环外用 if/elif 处理。这种分裂导致组合处理不一致。
+
+**正确的架构**：
+
+用一个统一的 while 循环收集所有声明说明符，循环结束后根据收集结果一次性构造 Type：
+
+```python
+def _parse_type_specifier(self) -> Type:
+    quals = set()        # {'const', 'volatile'}
+    sign = None          # 'signed' | 'unsigned' | None
+    size = None          # 'short' | 'long' | None
+    base = None          # 'int' | 'char' | 'void' | 'float' | 'double' | None
+    tag_type = None      # ('struct', tag, members) | ('union', tag, members) | ('enum', tag, members)
+    typedef_name = None  # str | None
+
+    while self.current_token:
+        v = self.current_token.value
+        if v in {'const', 'volatile'}:
+            quals.add(v)
+            self.advance()
+        elif v in {'unsigned', 'signed'}:
+            sign = v
+            self.advance()
+        elif v in {'short', 'long'}:
+            size = v
+            self.advance()
+        elif v in {'int', 'char', 'void', 'float', 'double'}:
+            base = v
+            self.advance()
+        elif v in {'struct', 'union'}:
+            tag_type = self._parse_struct_or_union_specifier()
+        elif v == 'enum':
+            tag_type = self._parse_enum_specifier()
+        elif self.current_token.type == IDENTIFIER and v in self._typedefs:
+            typedef_name = v
+            self.advance()
+        else:
+            break
+
+    # 根据收集结果构造 Type（一次性，无分支遗漏）
+    return self._build_type_from_specifiers(quals, sign, size, base, tag_type, typedef_name)
+```
+
+**好处**：
+- 消除 `tok` 变量和 `saw_any` 标志，不再有"过时 token"问题
+- 所有说明符组合自动支持，无需为每种排列写分支
+- `struct`/`union`/`enum` 解析提取为独立方法，职责清晰
+- 未来新增类型关键字（如 `_Bool`、`long long`、`_Complex`）只需在 while 循环中加一个 elif
+
+**前置条件**：无。可独立进行。
+
+**规模**：中等重构。`_parse_type_specifier` 约 200 行，重构后预计 150 行（主方法 + `_build_type_from_specifiers` + 提取的 `_parse_struct_or_union_specifier`/`_parse_enum_specifier`）。需要全量测试验证。
