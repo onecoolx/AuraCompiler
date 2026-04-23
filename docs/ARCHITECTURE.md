@@ -390,7 +390,7 @@ pop_scope(func_name="foo")
 ```
 
 For future architecture plans (e.g., removing the legacy `_var_types` fallback),
-see `next_step.md` in the project root.
+see `docs/NEXT_PLAN.md` for the full roadmap.
 
 ### 3.5 IR Instruction
 ```python

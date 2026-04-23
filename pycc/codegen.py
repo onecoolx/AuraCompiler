@@ -274,7 +274,7 @@ class CodeGenerator:
         # String-based type table for temps and locals. TypedSymbolTable now
         # preserves per-function scopes via _func_locals / activate_function(),
         # but _var_types is still used as a fallback by many codegen paths.
-        # Removal is tracked in next_step.md plan 3.
+        # Removal is tracked in docs/NEXT_PLAN.md plan 3.
         self._var_types: Dict[str, str] = {}
         # Optional per-temp pointer arithmetic step overrides (bytes).
         # Populated from IRInstruction.meta (e.g. for pointer-to-array decay).

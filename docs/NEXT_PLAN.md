@@ -1,4 +1,7 @@
-# Next Step Plans
+# AuraCompiler — Next Major Refactoring Plan
+
+> This document tracks planned architectural improvements for the next development phase.
+> Updated after each major version milestone. Current baseline: cJSON 1.7.19 test suite passing, 1754 pycc tests passing.
 
 ## 1. Unify type size computation into a target-aware abstraction
 
@@ -66,7 +69,7 @@ Every new type×initializer combination (struct arrays, arrays of pointers to st
 
 **Problem**: Both `IRGenerator._var_types` and `CodeGenerator._var_types` are stringly-typed dictionaries (`Dict[str, str]`) that duplicate type information already available in `TypedSymbolTable`. They exist because `TypedSymbolTable` scopes are popped after IR generation, leaving codegen with no local symbol type information.
 
-**Current state**: The per-function `activate_function` mechanism is implemented — `TypedSymbolTable` now supports `activate_function(name)` to restore a function's local scope for codegen. `CodeGenerator.generate()` calls `sym_table.activate_function()` before processing each function's IR. However, `_var_types` still exists as a fallback because not all codegen paths have been migrated to use `TypedSymbolTable` lookups yet.
+**Current state**: The per-function `activate_function` mechanism is implemented and active — `TypedSymbolTable` supports `activate_function(name)` to restore a function's local scope for codegen, and `CodeGenerator.generate()` calls it before processing each function's IR. However, `_var_types` still exists as a fallback because not all codegen paths have been migrated to use `TypedSymbolTable` lookups yet. The dead first `_type_size_bytes(object)` duplicate in codegen has been removed; the surviving `_type_size_bytes(str)` is the canonical version.
 
 **Proposed design**:
 - Incrementally migrate codegen methods (`_get_type`, `_resolve_member_offset`, `_resolve_member_type`, `_type_size_bytes`, etc.) to use `TypedSymbolTable` as the primary type source
