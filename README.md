@@ -1,186 +1,199 @@
 # AuraCompiler
 
-Practical **C89/ANSI C** compiler in **Python**.
+Practical **C89/ANSI C** compiler written in **Python**, targeting **x86-64 SysV Linux**.
 
-Generates **x86-64 SysV** assembly and uses **binutils `as`/`ld`** to produce ELF executables.
+Compiles real-world C projects (cJSON 1.7.19 test suite passes) using only **binutils `as`/`ld`** — no gcc dependency for linking.
 
-## Features (current)
+## Current Status
 
-- **C89 subset** with growing coverage, validated by `pytest`
-- **Classic Compiler Architecture**: 
-  - Lexical Analysis (Tokenization)
-  - Syntax Analysis (AST Construction)
-  - Semantic Analysis (Type Checking & Symbol Resolution)
-  - IR Generation (minimal TAC-like instruction list)
-  - Optimizer (currently minimal)
-  - Code Generation (x86-64 Assembly)
-  - Assemble/link via `as`/`ld`
-- **Pure Python Implementation**: No external compiler dependencies (except for final linking)
-- **Comprehensive Error Reporting**: Detailed error messages with file/line/column information
+- **1771 pytest tests** passing
+- **cJSON 1.7.19** compiles and passes its test suite
+- **CMake compatible** — works as a drop-in `CC` for CMake projects
 
-### Implemented language features (high level)
+## Features
 
-- Declarations: globals/locals, `static`/`extern`, function prototypes + definitions, multi-declarator (`int a, b;`)
-- Types: `int`, `char`, `short`, `long` (signed/unsigned), `float`, `double`, `long double`, pointers, arrays, `typedef`
-- Aggregates: `struct`/`union` (layout + member access `.` / `->`, bit-fields, by-value assignment/param/return, `typedef struct {} T;`)
-- Control flow: `if/else`, `for`, `while`, `do/while`, `switch/case/default`, `break/continue`, `goto`/labels
-- Expressions: arithmetic/bitwise/compare, assignment, `++`/`--` (pre/post), calls, `?:`, `&`, member access
-- Operators: `sizeof` (incl. struct/union), C-style cast `(type)expr`, comma operator
-- Enums: `enum` definitions + enumerator constants
-- Floating point: `float`/`double` (SSE/SSE2), `long double` (x87 FPU), int↔float casts, function params/return
-- Designated initializers: `.member = val`, `[index] = val`, nested, mixed with sequential
-- Variadic functions: `va_start`/`va_arg`/`va_end` builtins for user-defined variadic functions
-- Volatile: `volatile` qualifier with codegen memory-access enforcement
-- Function pointers: full type compatibility checks (param types + return type)
-- Preprocessor: `#include`, `#define` (object/function-like), `#if`/`#ifdef`/`#ifndef`/`#else`/`#elif`/`#endif`, `#line`, `#error`, `#warning`, `#pragma once`, variadic macros, `#`/`##` operators, hide-set algorithm
-- Preprocessor: `#define`/`#undef`, `#include`, `#if`/`#ifdef`/`#elif`/`#else`, `#`/`##`, `#line`, trigraphs
-- String literals: adjacent concatenation (`"ab" "cd"`), wide chars (`L'x'`, `L"str"`)
+### Language Support (C89 subset)
+
+- **Types**: `int`, `char`, `short`, `long` (signed/unsigned), `float`, `double`, `long double`, `void`, pointers, arrays, `typedef`, `enum`
+- **Aggregates**: `struct`/`union` with layout, member access (`.`/`->`), nested structs, bit-fields, by-value assignment/param/return
+- **Control flow**: `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `break`/`continue`, `goto`/labels
+- **Expressions**: arithmetic, bitwise, comparison, assignment, `++`/`--` (pre/post), function calls, `?:`, `sizeof`, cast, comma operator
+- **Compound assignment on members**: `p->val += n`, `s.val++` (full load-op-store semantics)
+- **Designated initializers**: `.member = val`, `[index] = val`, nested, mixed with sequential
+- **Struct array initializers**: `struct S arr[N] = {{...}, {...}}`
+- **Floating point**: SSE/SSE2 for `float`/`double`, x87 for `long double`, implicit int↔float conversion in function calls
+- **Variadic functions**: `va_start`/`va_arg`/`va_end` (SysV AMD64 ABI)
+- **Volatile**: `volatile` qualifier with memory-access enforcement
+- **Function pointers**: type compatibility checks, indirect calls through struct members
+- **String literals**: adjacent concatenation, wide chars (`L'x'`, `L"str"`)
+
+### Preprocessor
+
+- `#include` (with search paths), `#define`/`#undef` (object/function-like macros)
+- `#if`/`#ifdef`/`#ifndef`/`#elif`/`#else`/`#endif`, `#line`, `#error`, `#warning`
+- `#pragma once`, variadic macros, `#`/`##` operators, hide-set algorithm
+- Trigraph support
+- System preprocessor mode (`gcc -E`) for full glibc header compatibility
+
+### Compiler Architecture
+
+```
+Source (.c) → Lexer → Parser → Semantic Analyzer → IR Generator → Optimizer → Code Generator → as → ld → ELF
+```
+
+- **Type System**: Structured `CType` hierarchy (`IntegerType`, `PointerType`, `StructType`, etc.) with typedef resolution, integer promotion, and usual arithmetic conversions
+- **TypedSymbolTable**: Centralized symbol-to-CType mapping shared between IR generation and codegen, with per-function scope archival
+- **Toolchain**: Independent `as`/`ld` integration with automatic CRT and library path probing (no gcc dependency)
+
+### Toolchain Independence
+
+AuraCompiler depends only on:
+- **`as`** (GNU assembler) — for assembling generated x86-64 assembly
+- **`ld`** (GNU linker) — for linking with glibc CRT files
+- **glibc-dev** (or equivalent) — for C runtime startup files and standard library
+
+No dependency on `gcc` or `clang` for compilation or linking.
 
 ## Project Structure
 
 ```
-pycc/
-├── pycc/                          # Main package
-│   ├── __init__.py
-│   ├── lexer.py                  # Tokenization
-│   ├── parser.py                 # Syntax analysis & AST
-│   ├── ast_nodes.py              # AST node definitions
-│   ├── types.py                  # Structured C89 type system (CType)
-│   ├── semantics.py              # Semantic analysis & type checking
-│   ├── ir.py                     # Intermediate representation (3-address code)
-│   ├── optimizer.py              # IR optimization passes
-│   ├── codegen.py                # x86-64 code generation (incl. SSE/SSE2)
-│   ├── preprocessor.py           # C preprocessor (built-in + PPToken engine)
-│   └── compiler.py               # Main compiler driver
-├── tests/                         # Test suite
-│   ├── test_lexer.py
-│   ├── test_parser.py
-│   ├── test_semantics.py
-│   ├── test_codegen.py
-│   ├── test_integration.py
-│   └── testcases/                # C source test files
-├── examples/                      # Example programs
-│   ├── hello.c
-│   ├── factorial.c
-│   └── fibonacci.c
+├── pycc.py                        # CLI driver
+├── pycc/                          # Compiler package
+│   ├── lexer.py                   # Tokenization
+│   ├── parser.py                  # Recursive descent parser → AST
+│   ├── ast_nodes.py               # AST node definitions
+│   ├── types.py                   # CType hierarchy + TypedSymbolTable
+│   ├── semantics.py               # Type checking, symbol resolution
+│   ├── ir.py                      # 3-address code IR generation
+│   ├── optimizer.py               # IR optimization passes
+│   ├── codegen.py                 # x86-64 SysV code generation
+│   ├── toolchain.py               # Assembler/linker discovery and invocation
+│   ├── preprocessor.py            # Built-in C preprocessor
+│   ├── builtins.py                # GCC builtin function registry
+│   ├── compiler.py                # Compilation pipeline orchestrator
+│   └── gcc_extensions.py          # System header compatibility
+├── tests/                         # 1771 pytest tests
+├── examples/                      # Example C programs
 ├── docs/                          # Documentation
-│   ├── ARCHITECTURE.md           # Detailed architecture design
-│   └── DEVELOPMENT_PLAN.md       # Development plan & roadmap
-└── requirements.txt              # Python dependencies
+│   ├── ARCHITECTURE.md            # Detailed architecture design
+│   ├── PROJECT_SUMMARY.md         # Project introduction
+│   ├── C89_ROADMAP.md             # Language feature roadmap
+│   ├── C89_CONFORMANCE_MATRIX.md  # C89 conformance tracking
+│   ├── FEATURE_TRACKER.md         # Feature status
+│   ├── NEXT_PLAN.md               # Next major refactoring plan
+│   └── ...
+└── requirements.txt               # Python dependencies (pytest)
 ```
 
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/pycc.git
-cd pycc
+git clone https://github.com/AuraCompiler/AuraCompiler.git
+cd AuraCompiler
 pip install -r requirements.txt
+```
+
+Prerequisites (Linux):
+```bash
+# Debian/Ubuntu
+sudo apt install binutils libc6-dev
+
+# Fedora/RHEL
+sudo dnf install binutils glibc-devel
 ```
 
 ## Usage
 
 ```bash
+# Compile to executable
+./pycc.py input.c -o output
+
+# Compile to object file
+./pycc.py -c input.c -o input.o
+
+# Link object file to executable (CMake workflow)
+./pycc.py input.o -o output
+
+# Compile multiple files
+./pycc.py a.c b.c -o output -lm
+
 # Compile to assembly
-python pycc.py -o output.s input.c
+./pycc.py -S input.c -o output.s
 
-# Compile to object
-python pycc.py -o output.o input.c
+# Preprocess only
+./pycc.py -E input.c
 
-# Compile + link to executable
-python pycc.py -o a.out input.c
+# Build shared library
+./pycc.py -shared -o libfoo.so foo.o -Wl,-soname,libfoo.so.1
 
-# Preprocess only (emit preprocessed C to stdout)
-python pycc.py -E input.c
-
-# Prefer system preprocessor (recommended for glibc headers)
-python pycc.py --use-system-cpp -o a.out input.c
+# Verbose output
+./pycc.py -v input.c -o output
 ```
 
-Preprocessor-related options:
+### CMake Integration
 
-- `-E` preprocess only (write to stdout or `-o`)
-- `--use-system-cpp` preprocess via system `gcc -E` (recommended for system headers)
-- `-I DIR` add include directory (affects both preprocessors)
-- `-D NAME[=VALUE]` / `-U NAME` define/undefine macros
+```cmake
+set(CMAKE_C_COMPILER /path/to/pycc.py)
+```
 
-Toolchain overrides:
+### Environment Variables
 
-- `PYCC_AS=...` override assembler (default: `as`)
-- `PYCC_LD=...` override linker (default: `ld`)
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PYCC_AS` | `as` | Override assembler path |
+| `PYCC_LD` | `ld` | Override linker path |
 
-## Quick Start
+## API Usage
 
 ```python
 from pycc.compiler import Compiler
 
-compiler = Compiler()
-result = compiler.compile_file("example.c", output="example.s")
+compiler = Compiler(optimize=True, use_system_cpp=True)
+result = compiler.compile_file("example.c", "example")
 if result.success:
-    print("Compilation successful!")
-    print("Output written to:", result.output_file)
+    print("Done:", result.output_file)
 else:
-    print("Compilation failed:")
     for error in result.errors:
-        print(f"  {error}")
+        print("Error:", error)
 ```
 
-## Architecture Overview
+## Testing
 
-### 1. Frontend (Lexer + Parser)
-- **Lexer**: Converts source code into tokens
-- **Parser**: Builds Abstract Syntax Tree (AST) from tokens
+```bash
+# Run all tests
+python -m pytest tests/ -q
 
-### 2. Middle-End (Semantic Analysis + IR)
-- Structured type system (`CType` hierarchy) with integer promotion and UAC
-- const/volatile enforcement, pointer compatibility checks
-- Converts AST to 3-Address Code (TAC) with float-aware IR (fmov/fadd/fsub/fmul/fdiv/fcmp)
-- Constant folding
+# Run without property-based tests (faster)
+python -m pytest tests/ -q -p no:hypothesis
 
-### 3. Backend (Code Generation)
-- x86-64 assembly generation
-- Integer ops via general-purpose registers
-- Float ops via SSE/SSE2 (xmm registers, .rodata literals)
-- Stack frame management
-- Function prologue/epilogue
+# Run a specific test
+python -m pytest tests/test_integration.py -v
+```
 
-## Notes / current limitations
+## Known Limitations
 
-- Not a full C89 implementation yet (work in progress).
-- Preprocessor has both a built-in token engine and system `cpp` mode; see `docs/PREPROCESSOR_C89_CHECKLIST.md`.
-- Structured type system (`pycc/types.py`) with CType hierarchy, integer promotion, and UAC.
-- `&&`/`||` are short-circuiting.
-- Floating point: `float`/`double` variables, arithmetic, comparisons, and int↔float casts via SSE/SSE2.
+- Not a full C89 implementation (work in progress)
+- No multi-dimensional VLA support
+- Optimizer is minimal (constant folding, peephole)
+- Single-target: x86-64 Linux only
+- See `docs/NEXT_PLAN.md` for planned architectural improvements
 
-## Preprocessing modes (recommended)
+## Documentation
 
-AuraCompiler supports two practical ways to handle preprocessing; keeping both makes the tool behave closer to a “real” toolchain:
-
-1) **System preprocessor mode** (recommended for system headers)
-  - Use your platform's `cpp` to expand headers/macros, then compile the preprocessed output.
-  - This offers the best compatibility with glibc headers.
-
-2) **Built-in preprocessor mode** (portable subset)
-  - Uses `pycc/preprocessor.py`.
-  - Supports a broad subset but is not a full C preprocessor; some macro corner cases are intentionally unsupported.
-
-## Development status
-
-See `docs/C89_ROADMAP.md`.
-
-## Contributing
-
-This is an educational compiler project. Contributions are welcome!
+- [Architecture](docs/ARCHITECTURE.md) — compiler pipeline and module design
+- [C89 Roadmap](docs/C89_ROADMAP.md) — language feature implementation status
+- [Next Plan](docs/NEXT_PLAN.md) — planned refactoring (IR restructuring, TargetInfo, etc.)
+- [Feature Tracker](docs/FEATURE_TRACKER.md) — detailed feature status
 
 ## References
 
 - "Compilers: Principles, Techniques, and Tools" (Dragon Book)
 - "Engineering a Compiler" by Cooper & Torczon
-- TinyCompiler, Crafting Interpreters
-- C89 Standard Specification
+- C89/ANSI C Standard (ISO/IEC 9899:1990)
 
 ## License
 
-MIT License - See LICENSE file for details
+MIT License — see [LICENSE](LICENSE) for details.
 
 ## Author
 
