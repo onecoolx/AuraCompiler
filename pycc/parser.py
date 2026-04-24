@@ -2357,7 +2357,8 @@ class Parser:
                         ty.pointer_quals = []
                     ty.pointer_quals.insert(0, set())
                     ty._normalize_pointer_state()
-                self._skip_pointer_qualifiers()
+                    # Pointer qualifiers after each '*': (const char *const *)
+                    self._skip_pointer_qualifiers()
                 # Function pointer cast: (type (*)(params))expr
                 # After consuming the base type and any pointer stars, if we
                 # see '(' it may be a function pointer type cast like
@@ -2365,6 +2366,11 @@ class Parser:
                 if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
                     self.advance()  # consume '('
                     self.advance()  # consume '*'
+                    # Consume additional pointer stars: (**)(params) means
+                    # pointer-to-function-pointer cast.
+                    while self._match(TokenType.STAR):
+                        pass
+                    self._skip_pointer_qualifiers()
                     self._expect(TokenType.RPAREN, "Expected ')' in function pointer cast")
                     # Consume parameter list
                     if self._match(TokenType.LPAREN):
