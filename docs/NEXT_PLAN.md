@@ -327,3 +327,56 @@ def _parse_type_specifier(self) -> Type:
 4. **Parser**: Recognize `__uint128_t`, `__int128_t`, `__int128` as type keywords (remove the `strip_gcc_extensions` lossy mapping).
 
 **Scope**: Medium. Depends on IR refactoring (Plan 4) for clean representation. The x86-64 codegen part is straightforward since the hardware instructions already exist. Estimated ~200 lines of codegen + ~50 lines of type system changes.
+
+
+## 8. Semantic analysis: register struct layouts from all declaration forms
+
+**Problem**: When compiling sqlite3.c, the semantic analyzer reports hundreds of "Unknown struct XXX for member access" errors. The root cause is that struct layouts are only registered when a struct is defined via a standalone `struct Tag { ... };` or `typedef struct Tag { ... } Name;` declaration. But sqlite3 extensively uses other declaration forms that also define struct members:
+
+```c
+// Form 1: static struct with inline definition and initializer
+static struct Mem0Global {
+    void *mutex;
+    long alarmThreshold;
+} mem0 = { 0, 0 };
+
+// Form 2: struct defined inside a variable declaration
+struct sqlite3AutoExtList {
+    u32 nExt;
+    void (**aExt)(void);
+} sqlite3Autoext = { 0, 0 };
+
+// Form 3: local struct definition inside function body
+void f(void) {
+    struct Sublist { int nList; int *aList; };
+    struct Sublist s;
+    s.nList = 1;  // "Unknown struct Sublist" error
+}
+```
+
+In all these forms, the parser correctly parses the struct members and stores them in `_tag_members`. But the semantic analyzer only processes struct layouts when it encounters a `StructDecl` AST node at the top level. The variable declarations (`Declaration` nodes) that happen to contain inline struct definitions don't trigger layout registration.
+
+**Additional semantic errors found in sqlite3**:
+- "invalid application of sizeof to incomplete array" — sizeof on arrays declared as `[]` (flexible array members or extern arrays)
+- "invalid cast to aggregate type" — casts involving struct types (e.g. `(Token){...}` compound literals)
+- "pointer and non-pointer comparison" — comparisons between typed pointers and integer constants that should be allowed
+- "conflicting return type" — false positives from typedef-resolved return types not matching
+- "Assignment to non-modifiable lvalue" — false positives on struct member assignments through pointers
+
+**Proposed design**:
+
+The struct layout registration should be unified into a single mechanism that handles all declaration forms:
+
+1. **Parser**: Already stores struct members in `_tag_members[tag_key]` for all forms. This is correct.
+
+2. **Semantic analyzer**: Should register struct layouts whenever it encounters a type that references a tag with known members, regardless of the AST node type. Specifically:
+   - When processing any `Declaration` node, check if `type.base` starts with `"struct "` or `"union "` and if `_tag_members` has members for that tag → register layout
+   - When processing `TypedefDecl`, same check → register layout (already done)
+   - When processing `StructDecl`/`UnionDecl`, register layout (already done)
+   - The `_tag_members` dict from the parser should be passed to the semantic analyzer
+
+3. **Layout registration should be idempotent**: If a struct is defined in one place and used in many, the layout should be registered once and reused.
+
+**Scope**: Medium. The core change is in `semantics.py` — adding struct layout registration to the `Declaration` visitor. Estimated ~50 lines of semantic analyzer changes + fixing the false-positive errors listed above.
+
+**Prerequisites**: None. Can be done as a standalone spec.
