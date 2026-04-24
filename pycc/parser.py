@@ -1129,6 +1129,12 @@ class Parser:
                                                        line=mem_name.line, column=mem_name.column))
                             continue
 
+                        # Consume additional pointer stars: (**name) means
+                        # pointer-to-function-pointer.
+                        while self._match(TokenType.STAR):
+                            pass
+                        self._skip_pointer_qualifiers()
+
                         mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
                         self._expect(TokenType.RPAREN, "Expected ')'")
                         # Consume parameter list
