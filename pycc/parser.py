@@ -436,6 +436,8 @@ class Parser:
                     ptr_ty._normalize_pointer_state()
                 else:
                     ptr_ty = Type(base=getattr(ptr_ty, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(ptr_ty, "line", 1), column=getattr(ptr_ty, "column", 1))
+                # GCC extension / C89: pointer qualifiers after '*' (e.g. *const)
+                self._skip_pointer_qualifiers()
 
             # Check for nested parenthesized declarator: (*(*fp)(int))[10]
             if self._at(TokenType.LPAREN):
@@ -549,7 +551,9 @@ class Parser:
                 self._expect(TokenType.RBRACKET, "Expected ']'")
 
             # optional parameter list inside the parentheses: `(*name(void))`
+            _had_inner_params = False
             if self._match(TokenType.LPAREN):
+                _had_inner_params = True
                 depth = 1
                 while self.current_token and depth > 0:
                     if self._match(TokenType.LPAREN):
@@ -582,6 +586,36 @@ class Parser:
                 # Build function pointer type: base (*)(...)
                 ptr_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
                               line=base_type.line, column=base_type.column)
+                ptr_ty._normalize_pointer_state()
+
+            # Function pointer variable: type (*name)(params) = ...;
+            # After closing ')' of (*name), if we see '(' it's the pointed-to
+            # function's parameter list, not a function definition.  Consume it
+            # and build a function pointer type, then fall through to the
+            # variable-vs-function-definition check.
+            # IMPORTANT: only do this when the inner declarator was a simple
+            # `(*name)` — NOT `(*name(params))` which is a function returning
+            # a pointer (handled by the function-definition path below).
+            if self._at(TokenType.LPAREN) and not _inner_array and not _had_inner_params:
+                self.advance()  # consume '('
+                try:
+                    fp_params = self._parse_parameter_list()
+                    fp_arity = len([p for p in fp_params if getattr(p, "name", None) != "..."])
+                except Exception:
+                    fp_params = None
+                    fp_arity = None
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._at(TokenType.LPAREN):
+                            depth += 1
+                        elif self._at(TokenType.RPAREN):
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        self.advance()
+                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+                ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True,
+                              line=ptr_ty.line, column=ptr_ty.column)
                 ptr_ty._normalize_pointer_state()
 
             if self._at(TokenType.LBRACKET) or self._at(TokenType.SEMICOLON) or self._at(TokenType.ASSIGN) or self._at(TokenType.COMMA):
