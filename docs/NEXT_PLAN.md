@@ -299,3 +299,31 @@ def _parse_type_specifier(self) -> Type:
 **Prerequisites**: None. Can be done independently of other refactoring plans.
 
 **Scope**: Varies by approach. Algorithm audit is a small task (1-2 days). PyPy validation is trivial. mypyc is medium (1 week). 
+
+
+## 7. Support 128-bit integers on x86-64
+
+**Problem**: GCC provides `__uint128_t` / `__int128` as compiler extensions for 128-bit integer arithmetic. Real-world code like sqlite3 uses them for high-precision intermediate computations (e.g. 64×64→128 bit multiplication in floating-point formatting). Currently pycc maps these to `unsigned long long` / `long long` (64-bit) in `strip_gcc_extensions()`, which allows compilation but produces incorrect results — the upper 64 bits are silently lost.
+
+**x86-64 hardware support**: The CPU natively supports partial 128-bit operations:
+- `mul` / `imul`: 64×64→128 result in `rdx:rax`
+- `div` / `idiv`: 128÷64→64 quotient+remainder, dividend in `rdx:rax`
+- Shifts and adds can be implemented with two-register sequences (`shld`/`shrd`)
+
+**Proposed design**:
+
+1. **Type system**: Add `CType.INT128` and `CType.UINT128` variants. `_type_size` returns `(16, 16)` for size and alignment.
+
+2. **IR representation**: In the HIR refactoring (Plan 4), 128-bit values should be first-class typed values. Operations like `mul_wide` (64×64→128), `shr128`, `trunc128_to_64` can be explicit IR operations rather than generic `mul`/`shr`.
+
+3. **Codegen (x86-64 LIR)**: Lower 128-bit operations to register-pair sequences:
+   - Storage: `rdx:rax` or any two GPR pair
+   - `mul_wide(a, b) → (hi, lo)`: emit `mov a, %rax; mul b` → result in `rdx:rax`
+   - `shr128(val, 64)`: extract `rdx` (high half)
+   - `trunc128(val)`: extract `rax` (low half)
+   - `cast_to_128(val)`: zero-extend 64-bit to `rdx:rax` (`xor %rdx, %rdx`)
+   - 128-bit add/sub: `add lo, lo; adc hi, hi`
+
+4. **Parser**: Recognize `__uint128_t`, `__int128_t`, `__int128` as type keywords (remove the `strip_gcc_extensions` lossy mapping).
+
+**Scope**: Medium. Depends on IR refactoring (Plan 4) for clean representation. The x86-64 codegen part is straightforward since the hardware instructions already exist. Estimated ~200 lines of codegen + ~50 lines of type system changes.
