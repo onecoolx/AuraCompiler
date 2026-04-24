@@ -26,6 +26,14 @@ _FLOAT_TYPE_MAP = {
     "_Float32":  "float",
 }
 
+# GCC extension: 128-bit integer types → map to 64-bit (lossy but allows
+# compilation of code that uses __int128 for high-precision intermediates).
+_INT128_TYPE_MAP = {
+    "__uint128_t": "unsigned long",
+    "__int128_t":  "long",
+    "__int128":    "long",
+}
+
 # Simple keywords to remove (replaced with empty string).
 _SIMPLE_KEYWORDS = (
     "__extension__",
@@ -34,6 +42,12 @@ _SIMPLE_KEYWORDS = (
     "__restrict__",
     "__restrict",
 )
+
+# GCC extension: alternative keyword spellings → standard C equivalents.
+_KEYWORD_REPLACEMENTS = {
+    "__signed__": "signed",
+    "__signed":   "signed",
+}
 
 
 def strip_gcc_extensions(text: str) -> str:
@@ -105,6 +119,15 @@ def strip_gcc_extensions(text: str) -> str:
                     i += kw_len
                     matched = True
                     break
+            if not matched:
+                # --- GCC extension: alternative keyword spellings ---
+                for kw, replacement in _KEYWORD_REPLACEMENTS.items():
+                    kw_len = len(kw)
+                    if text[i:i+kw_len] == kw and _is_word_boundary(text, i, kw_len):
+                        out.append(replacement)
+                        i += kw_len
+                        matched = True
+                        break
             if matched:
                 continue
 
@@ -116,6 +139,19 @@ def strip_gcc_extensions(text: str) -> str:
                 if text[i:i+ft_len] == ftype and _is_word_boundary(text, i, ft_len):
                     out.append(replacement)
                     i += ft_len
+                    replaced = True
+                    break
+            if replaced:
+                continue
+
+        # --- GCC extension: __uint128_t / __int128_t / __int128 type replacement ---
+        if c == '_' and i + 6 <= n and text[i:i+6] == '__int1' or (c == '_' and i + 6 <= n and text[i:i+7] == '__uint1'):
+            replaced = False
+            for itype, replacement in _INT128_TYPE_MAP.items():
+                it_len = len(itype)
+                if text[i:i+it_len] == itype and _is_word_boundary(text, i, it_len):
+                    out.append(replacement)
+                    i += it_len
                     replaced = True
                     break
             if replaced:

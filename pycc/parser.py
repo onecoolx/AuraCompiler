@@ -2308,6 +2308,29 @@ class Parser:
                     ty.pointer_quals.insert(0, set())
                     ty._normalize_pointer_state()
                 self._skip_pointer_qualifiers()
+                # Function pointer cast: (type (*)(params))expr
+                # After consuming the base type and any pointer stars, if we
+                # see '(' it may be a function pointer type cast like
+                # (int(*)(void)) or (uid_t(*)(int,int)).
+                if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
+                    self.advance()  # consume '('
+                    self.advance()  # consume '*'
+                    self._expect(TokenType.RPAREN, "Expected ')' in function pointer cast")
+                    # Consume parameter list
+                    if self._match(TokenType.LPAREN):
+                        depth = 1
+                        while self.current_token and depth > 0:
+                            if self._at(TokenType.LPAREN):
+                                depth += 1
+                            elif self._at(TokenType.RPAREN):
+                                depth -= 1
+                                if depth == 0:
+                                    break
+                            self.advance()
+                        self._expect(TokenType.RPAREN, "Expected ')' after cast parameter list")
+                    ty = Type(base=f"{ty.base} (*)()", is_pointer=True,
+                              line=ty.line, column=ty.column)
+                    ty._normalize_pointer_state()
                 self._expect(TokenType.RPAREN, "Expected ')' after cast type")
                 expr = self._parse_unary()
                 return Cast(type=ty, expression=expr, line=tok.line, column=tok.column)
