@@ -1473,6 +1473,16 @@ class Parser:
             return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
 
         base_type = self._parse_type_specifier()
+
+        # Standalone struct/union/enum definition: `struct S { ... };`
+        # No variable name follows — just a type definition.
+        if self._at(TokenType.SEMICOLON):
+            b = getattr(base_type, "base", "")
+            if isinstance(b, str) and (b.startswith("struct ") or b.startswith("union ") or b.startswith("enum ")):
+                self.advance()  # consume ';'
+                return Declaration(name="__tagdecl__", type=base_type,
+                                   line=base_type.line, column=base_type.column)
+
         # Consume any leading '*' tokens that appear before the identifier.
         # This is common in declarations like `int **pp = ...;`.
         while self._match(TokenType.STAR):
