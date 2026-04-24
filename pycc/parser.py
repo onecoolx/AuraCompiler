@@ -161,7 +161,7 @@ class Parser:
         if self.current_token is None:
             return False
         # allow storage-class specifier to appear before the type in top-level decls
-        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"extern", "static", "auto", "register"}:
+        if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"extern", "static", "auto", "register", "typedef"}:
             return True
         if self.current_token.type == TokenType.KEYWORD and self.current_token.value in {
             "int",
@@ -1474,6 +1474,68 @@ class Parser:
             while self._match(TokenType.STAR):
                 base_type = Type(base=base_type.base, is_pointer=True, line=base_type.line, column=base_type.column)
                 self._skip_pointer_qualifiers()
+
+            # Function pointer typedef: typedef int (*name)(params);
+            if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
+                self.advance()  # consume '('
+                self.advance()  # consume '*'
+                name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
+                self._expect(TokenType.RPAREN, "Expected ')'")
+                # Consume parameter list
+                if self._match(TokenType.LPAREN):
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._at(TokenType.LPAREN):
+                            depth += 1
+                        elif self._at(TokenType.RPAREN):
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        self.advance()
+                    self._expect(TokenType.RPAREN, "Expected ')'")
+                fp_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
+                             line=base_type.line, column=base_type.column)
+                fp_ty._normalize_pointer_state()
+                self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
+                td = TypedefDecl(name=name_tok.value, type=fp_ty,
+                                 line=name_tok.line, column=name_tok.column)
+                self._typedefs.add(td.name)
+                return td
+
+            # Function type typedef: typedef int func_t(params);
+            if self._at(TokenType.IDENTIFIER):
+                name_tok = self.current_token
+                self.advance()
+                if self._at(TokenType.LPAREN):
+                    self.advance()  # consume '('
+                    try:
+                        self._parse_parameter_list()
+                    except Exception:
+                        depth = 1
+                        while self.current_token and depth > 0:
+                            if self._at(TokenType.LPAREN):
+                                depth += 1
+                            elif self._at(TokenType.RPAREN):
+                                depth -= 1
+                                if depth == 0:
+                                    break
+                            self.advance()
+                    self._expect(TokenType.RPAREN, "Expected ')'")
+                    fp_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
+                                 line=base_type.line, column=base_type.column)
+                    fp_ty._normalize_pointer_state()
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
+                    td = TypedefDecl(name=name_tok.value, type=fp_ty,
+                                     line=name_tok.line, column=name_tok.column)
+                    self._typedefs.add(td.name)
+                    return td
+                # Simple typedef
+                self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
+                td = TypedefDecl(name=name_tok.value, type=base_type,
+                                 line=name_tok.line, column=name_tok.column)
+                self._typedefs.add(td.name)
+                return td
+
             name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             return TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
