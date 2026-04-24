@@ -29,9 +29,9 @@ _FLOAT_TYPE_MAP = {
 # GCC extension: 128-bit integer types → map to 64-bit (lossy but allows
 # compilation of code that uses __int128 for high-precision intermediates).
 _INT128_TYPE_MAP = {
-    "__uint128_t": "unsigned long",
-    "__int128_t":  "long",
-    "__int128":    "long",
+    "__uint128_t": "unsigned long long",
+    "__int128_t":  "long long",
+    "__int128":    "long long",
 }
 
 # Simple keywords to remove (replaced with empty string).
