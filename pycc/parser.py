@@ -558,17 +558,29 @@ class Parser:
 
             # optional parameter list inside the parentheses: `(*name(void))`
             _had_inner_params = False
+            _inner_params = []
             if self._match(TokenType.LPAREN):
                 _had_inner_params = True
-                depth = 1
-                while self.current_token and depth > 0:
-                    if self._match(TokenType.LPAREN):
-                        depth += 1
-                        continue
-                    if self._match(TokenType.RPAREN):
-                        depth -= 1
-                        continue
-                    self.advance()
+                # Parse the parameter list properly so function definitions
+                # get correct parameter declarations (needed for scope).
+                try:
+                    _inner_params = self._parse_parameter_list()
+                except Exception:
+                    _inner_params = []
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._match(TokenType.LPAREN):
+                            depth += 1
+                            continue
+                        if self._match(TokenType.RPAREN):
+                            depth -= 1
+                            continue
+                        self.advance()
+                    # Don't consume the final ')' here — it's consumed below.
+                    _had_inner_params = True
+                else:
+                    pass
+                self._expect(TokenType.RPAREN, "Expected ')' after inner parameter list")
 
             # Check what follows: ')' then '(' means function decl pattern,
             # ')' then '[' or ';' means variable decl pattern.
@@ -656,30 +668,52 @@ class Parser:
                 return decls
 
             # first parameter list belongs to the function itself
-            self._expect(TokenType.LPAREN, "Expected '(' after function name")
-            params = self._parse_parameter_list()
-            self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+            # When _had_inner_params is True, the function's params were already
+            # parsed inside the parenthesized declarator: (*name(params))(ret_fnptr_params)
+            # The next '(' is the return function pointer's signature, not the
+            # function's own params.
+            if _had_inner_params:
+                params = _inner_params
+                # Consume the return function pointer's parameter list
+                if self._match(TokenType.LPAREN):
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._match(TokenType.LPAREN):
+                            depth += 1
+                            continue
+                        if self._match(TokenType.RPAREN):
+                            depth -= 1
+                            continue
+                        self.advance()
+                    ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True,
+                                  pointer_level=max(1, int(getattr(ptr_ty, "pointer_level", 0) or 1)),
+                                  line=ptr_ty.line, column=ptr_ty.column)
+                    ptr_ty._normalize_pointer_state()
+            else:
+                self._expect(TokenType.LPAREN, "Expected '(' after function name")
+                params = self._parse_parameter_list()
+                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
 
-            # optional second parameter list: function returns pointer-to-function
-            if self._match(TokenType.LPAREN):
-                depth = 1
-                while self.current_token and depth > 0:
-                    if self._match(TokenType.LPAREN):
-                        depth += 1
-                        continue
-                    if self._match(TokenType.RPAREN):
-                        depth -= 1
-                        continue
-                    self.advance()
-                ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True, pointer_level=max(1, int(getattr(ptr_ty, "pointer_level", 0) or 1)), line=ptr_ty.line, column=ptr_ty.column)
-                ptr_ty._normalize_pointer_state()
-                # Best-effort: preserve arity for function-pointer return types.
-                try:
-                    ptr_ty.fn_param_count = len(params)
-                    # Store parameter types from the function's own parameter list.
-                    ptr_ty.fn_param_types = [p.type for p in params if getattr(p, "name", None) != "..."]
-                except Exception:
-                    pass
+                # optional second parameter list: function returns pointer-to-function
+                if self._match(TokenType.LPAREN):
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._match(TokenType.LPAREN):
+                            depth += 1
+                            continue
+                        if self._match(TokenType.RPAREN):
+                            depth -= 1
+                            continue
+                        self.advance()
+                    ptr_ty = Type(base=f"{ptr_ty.base} (*)()", is_pointer=True,
+                                  pointer_level=max(1, int(getattr(ptr_ty, "pointer_level", 0) or 1)),
+                                  line=ptr_ty.line, column=ptr_ty.column)
+                    ptr_ty._normalize_pointer_state()
+                    try:
+                        ptr_ty.fn_param_count = len(params)
+                        ptr_ty.fn_param_types = [p.type for p in params if getattr(p, "name", None) != "..."]
+                    except Exception:
+                        pass
 
             # prototype or definition
             if self._match(TokenType.SEMICOLON):
