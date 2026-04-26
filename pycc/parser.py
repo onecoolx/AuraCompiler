@@ -896,29 +896,6 @@ class Parser:
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
         return decls
 
-    def _parse_type_specifier(self) -> Type:
-        """Parse a C declaration-specifier sequence and return a Type.
-
-        C allows qualifiers both before and after the base type:
-          const int   ←→   int const
-          volatile char  ←→  char volatile
-        This wrapper delegates to _parse_type_specifier_core and then
-        consumes any trailing qualifiers (const/volatile) so that all
-        call sites see a clean token stream with qualifiers already absorbed.
-        """
-        t = self._parse_type_specifier_core()
-        # C post-type qualifiers: `char const *p` == `const char *p`.
-        # Absorb trailing const/volatile so callers see `*` or IDENTIFIER next.
-        while (self.current_token
-               and self.current_token.type == TokenType.KEYWORD
-               and self.current_token.value in {"const", "volatile"}):
-            if self.current_token.value == "const":
-                t.is_const = True
-            elif self.current_token.value == "volatile":
-                t.is_volatile = True
-            self.advance()
-        return t
-
     def _parse_struct_or_union_specifier(self) -> Type:
         """Parse struct/union specifier including optional member list.
 
@@ -1284,161 +1261,84 @@ class Parser:
         # --- bare qualifiers with no type at all -> error ---
         raise ParserError("Expected type specifier", start_tok)
 
-    def _parse_type_specifier_core(self) -> Type:
-        tok = self.current_token
+    def _parse_type_specifier(self) -> Type:
+        """Parse a C declaration-specifier sequence and return a Type.
+
+        Single-loop collector: accumulates qualifiers, sign, size, base type,
+        struct/union/enum tag, or typedef name, then delegates to
+        _build_type_from_specifiers for normalization.
+
+        C allows qualifiers both before and after the base type:
+          const int   ←→   int const
+          volatile char  ←→  char volatile
+        Trailing qualifiers are absorbed after the base type terminates the
+        main loop, so callers always see a clean token stream.
+
+        Extension point: to add a new type keyword (e.g. _Bool, long long),
+        add an elif branch in the collection loop below.
+        """
+        start_tok = self.current_token
         if not self._is_type_specifier():
-            raise ParserError("Expected type specifier", tok)
-        # qualifiers and integer-size/sign specifiers (C89 subset)
-        # We support combinations like:
-        #   unsigned int
-        #   unsigned
-        #   signed char
-        #   short
-        #   long int
-        #   const volatile unsigned long
-        is_const = False
-        is_volatile = False
-        is_unsigned = False
-        is_signed = False
-        size_kw: Optional[str] = None  # 'short'|'long' (single long for now)
-        saw_any = False
-        while self.current_token and self.current_token.type == TokenType.KEYWORD:
-            v = self.current_token.value
-            if v == "const":
-                is_const = True
-                saw_any = True
+            raise ParserError("Expected type specifier", start_tok)
+
+        quals: set = set()           # {'const', 'volatile'}
+        sign: Optional[str] = None   # 'signed' | 'unsigned'
+        size: Optional[str] = None   # 'short' | 'long'
+        base: Optional[str] = None   # 'int' | 'char' | 'void' | ...
+        tag_type: Optional[Type] = None    # from struct/union/enum
+        typedef_name: Optional[str] = None # typedef identifier
+
+        while self.current_token:
+            tok = self.current_token
+            # Qualifiers and modifiers are keywords
+            if tok.type == TokenType.KEYWORD:
+                v = tok.value
+                if v in {"const", "volatile"}:
+                    quals.add(v)
+                    self.advance()
+                    continue
+                if v in {"unsigned", "signed"}:
+                    sign = v
+                    self.advance()
+                    continue
+                if v in {"short", "long"}:
+                    size = v
+                    self.advance()
+                    continue
+                # --- Base type keywords ---
+                # To add a new base type (e.g. _Bool, _Complex), add it here.
+                # For multi-word sizes (e.g. long long), extend the 'size'
+                # handling above to accumulate a list instead of a single str.
+                if v in {"int", "char", "void", "float", "double",
+                         "__builtin_va_list"}:
+                    base = v
+                    self.advance()
+                    break  # base type keyword terminates collection
+                if v in {"struct", "union"}:
+                    tag_type = self._parse_struct_or_union_specifier()
+                    break
+                if v == "enum":
+                    tag_type = self._parse_enum_specifier()
+                    break
+            # Typedef name (identifier in _typedefs set)
+            if (tok.type == TokenType.IDENTIFIER
+                    and tok.value in self._typedefs):
+                typedef_name = tok.value
                 self.advance()
-                continue
-            if v == "volatile":
-                is_volatile = True
-                saw_any = True
-                self.advance()
-                continue
-            if v == "unsigned":
-                is_unsigned = True
-                saw_any = True
-                self.advance()
-                continue
-            if v == "signed":
-                is_signed = True
-                saw_any = True
-                self.advance()
-                continue
-            if v in {"short", "long"}:
-                size_kw = v
-                saw_any = True
-                self.advance()
-                continue
+                break
+            # Unrecognized token — stop collecting
             break
 
-        # After consuming leading qualifiers (const/volatile) and integer
-        # modifiers (unsigned/signed/short/long), the *current* token is the
-        # actual type keyword.  All subsequent type-kind checks must use
-        # self.current_token, not the stale `tok` saved at method entry.
-        # `tok` is only retained for source-location fallback.
-
-        # builtin + sized integer forms
-        if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value in {"int", "void", "char", "float", "double", "__builtin_va_list"}:
-            base_tok = self.current_token
+        # Absorb trailing qualifiers: `int const`, `struct Foo volatile`, etc.
+        # C89 §6.5.2 allows qualifiers in any order relative to the base type.
+        while (self.current_token
+               and self.current_token.type == TokenType.KEYWORD
+               and self.current_token.value in {"const", "volatile"}):
+            quals.add(self.current_token.value)
             self.advance()
-            t = Type(base=base_tok.value, line=base_tok.line, column=base_tok.column)
-            t.is_const = is_const
-            t.is_volatile = is_volatile
-            t.is_unsigned = is_unsigned
-            t.is_signed = is_signed
-            # Encode short/long in base string for now (type system is stringly-typed elsewhere)
-            if base_tok.value == "int" and size_kw in {"short", "long"}:
-                t.base = f"{size_kw} int"
-            if base_tok.value == "double" and size_kw == "long":
-                t.base = "long double"
-            # Normalize unsigned/signed base strings for downstream string checks.
-            if t.base == "int":
-                if is_unsigned:
-                    t.base = "unsigned int"
-                elif is_signed:
-                    t.base = "int"
-            if t.base == "char":
-                if is_unsigned:
-                    t.base = "unsigned char"
-                elif is_signed:
-                    t.base = "char"
-            if t.base == "short int":
-                if is_unsigned:
-                    t.base = "unsigned short"
 
-            # GCC builtin type: keep the name so downstream can apply ABI-aware
-            # lowering (e.g. when passing a va_list to libc on SysV AMD64).
-            # Treat it as an opaque scalar type for most semantic checks.
-            return t
-
-        # forms like: 'unsigned' (=> unsigned int), 'long' (=> long int), etc.
-        # But first check if the current token is a typedef name — handles
-        # `const GLvoid *p` where const was consumed but GLvoid is the type.
-        if saw_any:
-            cur = self.current_token
-            # After qualifiers, the next token may be struct/union/enum/typedef.
-            # Fall through to those branches instead of defaulting to int.
-            if cur and cur.type == TokenType.KEYWORD and cur.value in {"struct", "union", "enum"}:
-                pass  # fall through to enum/struct/union handling below
-            elif cur and cur.type == TokenType.IDENTIFIER and cur.value in self._typedefs:
-                self.advance()
-                t = Type(base=cur.value, line=cur.line, column=cur.column)
-                t.is_const = is_const
-                t.is_volatile = is_volatile
-                return t
-            else:
-                # Bare 'unsigned', 'long', 'const int' (already handled above), etc.
-                if tok is None:
-                    raise ParserError("Expected type specifier", tok)
-                t = Type(base="int", line=tok.line, column=tok.column)
-                t.is_const = is_const
-                t.is_volatile = is_volatile
-                t.is_unsigned = is_unsigned
-                t.is_signed = is_signed
-                if size_kw in {"short", "long"}:
-                    t.base = f"{size_kw} int"
-                # Normalize for downstream string checks.
-                if t.base == "int" and is_unsigned:
-                    t.base = "unsigned int"
-                if t.base == "short int" and is_unsigned:
-                    t.base = "unsigned short"
-                if t.base == "long int" and is_unsigned:
-                    t.base = "unsigned long"
-                return t
-
-        # enum type specifier: delegate to extracted method
-        cur = self.current_token
-        if cur and cur.type == TokenType.KEYWORD and cur.value == "enum":
-            base_ty = self._parse_enum_specifier()
-            base_ty.is_const = is_const
-            base_ty.is_volatile = is_volatile
-            return base_ty
-
-        # struct/union type specifier: delegate to extracted method
-        cur2 = self.current_token
-        if cur2 and cur2.type == TokenType.KEYWORD and cur2.value in {"struct", "union"}:
-            base_ty = self._parse_struct_or_union_specifier()
-            base_ty.is_const = is_const
-            base_ty.is_volatile = is_volatile
-            return base_ty
-
-        # typedef-name as type specifier (check current token, not the
-        # original `tok`, because qualifiers like const/volatile may have
-        # been consumed above)
-        cur = self.current_token
-        if cur and cur.type == TokenType.IDENTIFIER and cur.value in self._typedefs:
-            self.advance()
-            t = Type(base=cur.value, line=cur.line, column=cur.column)
-            t.is_const = is_const
-            t.is_volatile = is_volatile
-            return t
-
-        # Also check the original tok for the no-qualifier case
-        if tok.type == TokenType.IDENTIFIER and tok.value in self._typedefs:
-            self.advance()
-            return Type(base=tok.value, line=tok.line, column=tok.column)
-
-        raise ParserError("Expected type specifier", self.current_token or tok)
+        return self._build_type_from_specifiers(
+            quals, sign, size, base, tag_type, typedef_name, start_tok)
 
     def _parse_parameter_list(self) -> List[Declaration]:
         params: List[Declaration] = []

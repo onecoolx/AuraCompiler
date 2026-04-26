@@ -2,7 +2,7 @@
 
 Tests the normalization logic that converts collected declaration specifiers
 (quals, sign, size, base, tag_type, typedef_name) into a Type node.
-This method is not yet wired into _parse_type_specifier_core — it will be
+This method is not yet wired into _parse_type_specifier — it will be
 in task 4.  For now we test it directly.
 """
 import pytest
