@@ -204,16 +204,10 @@ class SemanticAnalyzer:
                 else:
                     prev_ret, prev_n = prev
                     # Resolve typedef aliases before comparing return types.
-                    # e.g. sqlite3_int64 == long long when typedef'd.
+                    # e.g. sqlite3_int64 -> i64 -> long long
                     cur_ret = str(ret_base_s)
-                    cmp_cur = cur_ret
-                    cmp_prev = prev_ret
-                    td = self._resolve_typedef(cmp_cur)
-                    if td is not None:
-                        cmp_cur = str(getattr(td, "base", cmp_cur))
-                    td = self._resolve_typedef(cmp_prev)
-                    if td is not None:
-                        cmp_prev = str(getattr(td, "base", cmp_prev))
+                    cmp_cur = self._resolve_typedef_base(cur_ret)
+                    cmp_prev = self._resolve_typedef_base(prev_ret)
                     if cmp_cur != cmp_prev:
                         self.errors.append(f"conflicting return type for function '{decl.name}'")
                     # If both sides have an explicit parameter list, require same count.
@@ -790,6 +784,26 @@ class SemanticAnalyzer:
             if name in scope:
                 return scope[name]
         return None
+
+    def _resolve_typedef_base(self, name: str) -> str:
+        """Recursively resolve a typedef name to its final base type string.
+
+        Follows the typedef chain until reaching a non-typedef base type.
+        e.g. sqlite3_int64 -> i64 -> long long -> "long long"
+        Returns the original name if it's not a typedef.
+        """
+        seen = set()
+        current = name
+        while current not in seen:
+            seen.add(current)
+            td = self._resolve_typedef(current)
+            if td is None:
+                break
+            base = str(getattr(td, "base", current))
+            if base == current:
+                break
+            current = base
+        return current
 
     def _lookup_typedef(self, name: str) -> Optional[Type]:
         for td in reversed(self._typedefs):
@@ -2151,14 +2165,8 @@ class SemanticAnalyzer:
                             raise StopIteration()
                         # void* <-> T* allowed (object pointers subset)
                         # Resolve typedef aliases before comparing base types.
-                        cmp_dst = dst_base
-                        cmp_src = src_base
-                        td = self._resolve_typedef(cmp_dst)
-                        if td is not None:
-                            cmp_dst = str(getattr(td, "base", cmp_dst))
-                        td = self._resolve_typedef(cmp_src)
-                        if td is not None:
-                            cmp_src = str(getattr(td, "base", cmp_src))
+                        cmp_dst = self._resolve_typedef_base(dst_base)
+                        cmp_src = self._resolve_typedef_base(src_base)
                         if cmp_dst != "void" and cmp_src != "void" and cmp_dst != cmp_src:
                             self.errors.append(
                                 f"incompatible pointer types in assignment: '{dst_base}*' from '{src_base}*'"
