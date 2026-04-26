@@ -1539,6 +1539,32 @@ class SemanticAnalyzer:
         if isinstance(expr, ArrayAccess):
             base_ty = self._expr_type(expr.array)
             if base_ty and (getattr(base_ty, "pointer_level", 0) or 0) > 0:
+                # Check if the base is a declared array variable.  For pointer
+                # arrays like `T *arr[N]`, the Type has pointer_level=1 for the
+                # element pointer, but array indexing should return the element
+                # type (still a pointer), not dereference the pointer.
+                is_array_var = False
+                if isinstance(expr.array, Identifier):
+                    # Check if this identifier was declared as an array
+                    if expr.array.name in getattr(self, "_local_array_names", set()):
+                        is_array_var = True
+                    ga = getattr(self, "_global_arrays", {}).get(expr.array.name)
+                    if ga is not None:
+                        is_array_var = True
+                if is_array_var:
+                    # Array subscript returns the element type — which is the
+                    # declared type itself (pointer level preserved).
+                    return Type(
+                        base=base_ty.base,
+                        is_pointer=base_ty.is_pointer,
+                        pointer_level=base_ty.pointer_level,
+                        is_const=bool(getattr(base_ty, "is_const", False)),
+                        is_volatile=bool(getattr(base_ty, "is_volatile", False)),
+                        is_unsigned=bool(getattr(base_ty, "is_unsigned", False)),
+                        is_signed=bool(getattr(base_ty, "is_signed", False)),
+                        line=getattr(base_ty, "line", 0),
+                        column=getattr(base_ty, "column", 0),
+                    )
                 new_level = base_ty.pointer_level - 1
                 return Type(
                     base=base_ty.base,
@@ -1989,17 +2015,23 @@ class SemanticAnalyzer:
 
                 if isinstance(e, ArrayAccess) and isinstance(e.array, Identifier):
                     aty = self._lookup_decl_type(e.array.name)
-                    # Parser encodes arrays via Declaration.array_size/array_dims;
-                    # element type qualifiers are carried on the base Type node.
-                    # For pointer arrays like `const char *arr[]`, is_const
-                    # qualifies the pointed-to data, not the pointer element
-                    # itself.  The pointer element is modifiable.
                     if aty is not None and getattr(aty, "is_pointer", False):
-                        # Check if the pointer itself is const (pointer_quals).
-                        pq = getattr(aty, "pointer_quals", None)
-                        if pq and len(pq) > 0 and "const" in pq[0]:
-                            return True
-                        return False
+                        # Distinguish array variables from pointer variables:
+                        # - `const char *arr[]`: arr is an array of pointers.
+                        #   arr[i] is a pointer element — modifiable (const
+                        #   qualifies the pointed-to char, not the pointer).
+                        # - `const int *p`: p is a pointer to const int.
+                        #   p[i] dereferences to const int — non-modifiable.
+                        is_array = (
+                            e.array.name in getattr(self, "_local_array_names", set())
+                            or getattr(self, "_global_arrays", {}).get(e.array.name) is not None
+                        )
+                        if is_array:
+                            # Array element: the element is a pointer, assigning
+                            # to it changes the pointer value, not the const data.
+                            return False
+                        # Pointer subscript: p[i] accesses const-qualified data.
+                        return bool(getattr(aty, "is_const", False))
                     return bool(aty is not None and getattr(aty, "is_const", False))
 
                 return False
