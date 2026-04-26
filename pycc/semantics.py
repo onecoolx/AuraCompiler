@@ -376,12 +376,29 @@ class SemanticAnalyzer:
                     n = getattr(decl, "array_size", None)
                     dims = getattr(decl, "array_dims", None)
                     if dims:
+                        resolved_dims = [int(x) if x is not None else None for x in dims]
+                        # C89: unsized array with initializer has its size
+                        # determined by the initializer element count.
+                        init = getattr(decl, "initializer", None)
+                        if resolved_dims and resolved_dims[0] is None and init is not None:
+                            if hasattr(init, "elements"):
+                                resolved_dims[0] = len(init.elements)
+                            elif isinstance(init, StringLiteral):
+                                resolved_dims[0] = len(init.value) + 1
                         self._global_arrays[decl.name] = (
                             str(getattr(decl.type, "base", "int")),
-                            [int(x) if x is not None else None for x in dims],
+                            resolved_dims,
                         )
                     if n is not None:
                         self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "int")), int(n))
+                    elif n is None and dims is None:
+                        # No explicit size — check if initializer provides one.
+                        init = getattr(decl, "initializer", None)
+                        if init is not None and hasattr(init, "elements"):
+                            self._global_arrays[decl.name] = (
+                                str(getattr(decl.type, "base", "int")),
+                                len(init.elements),
+                            )
                     # Infer `char s[] = "...";` size when unsized and initialized.
                     if (
                         n is None
@@ -1638,6 +1655,14 @@ class SemanticAnalyzer:
                     if isinstance(base, str) and base.startswith("array("):
                         return True
                     return False
+                # Address-of always produces a pointer (C89 §6.3.3.2).
+                if isinstance(e, UnaryOp) and e.operator == "&":
+                    return True
+                # Cast to pointer type is pointer-like.
+                if isinstance(e, Cast):
+                    to_ty = getattr(e, "type", None)
+                    if to_ty and (getattr(to_ty, "is_pointer", False) or (getattr(to_ty, "pointer_level", 0) or 0) > 0):
+                        return True
                 # Fallback: conservatively return False for expressions
                 # where type cannot be inferred.
                 return False
@@ -1786,8 +1811,10 @@ class SemanticAnalyzer:
             to_ty = getattr(expr, "type", None)
             if to_ty is not None:
                 b = str(getattr(to_ty, "base", "")).strip()
-                # Disallow casts to aggregate types.
-                if b.startswith("struct ") or b.startswith("union "):
+                # Disallow casts to aggregate types (C89 §6.3.4: cast target
+                # must be a scalar type or void).  Pointer-to-struct is fine.
+                is_ptr = getattr(to_ty, "is_pointer", False) or int(getattr(to_ty, "pointer_level", 0) or 0) > 0
+                if not is_ptr and (b.startswith("struct ") or b.startswith("union ")):
                     self._err("invalid cast to aggregate type", expr)
                 # Disallow cast to function type (non-pointer).
                 if "(" in b and ")" in b and "*" not in b:
