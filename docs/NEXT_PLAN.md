@@ -380,3 +380,48 @@ The struct layout registration should be unified into a single mechanism that ha
 **Scope**: Medium. The core change is in `semantics.py` — adding struct layout registration to the `Declaration` visitor. Estimated ~50 lines of semantic analyzer changes + fixing the false-positive errors listed above.
 
 **Prerequisites**: None. Can be done as a standalone spec.
+
+
+## 8. Complete expression type annotation in semantic analysis
+
+**Problem**: The current semantic analyzer has a best-effort `_expr_type()` function that can only infer types for simple expressions (identifiers, literals, casts). For compound expressions (member access chains, array subscripts, function call return values, arithmetic/pointer operations, prefix/postfix increment), it returns `None`. This causes:
+
+1. False positive errors — semantic checks reject valid code because they can't determine the expression type
+2. Code duplication — IR generation and codegen must re-infer types independently
+3. Incomplete checking — type compatibility checks are skipped when types are unknown
+
+**Correct architecture**: Every expression node in the AST should have a `.resolved_type` attribute after semantic analysis. This is the standard approach used by GCC, Clang, and all production compilers. The type annotation pass should:
+
+1. Walk the AST bottom-up after name resolution
+2. For each expression node, compute its type based on C89 type rules:
+   - Identifier → lookup in symbol table
+   - IntLiteral → `int` (or `long`/`unsigned` based on value and suffix)
+   - StringLiteral → `const char *`
+   - BinaryOp → usual arithmetic conversions (C89 §6.2.1.5)
+   - UnaryOp `&` → pointer to operand type
+   - UnaryOp `*` → dereference: remove one pointer level
+   - UnaryOp `++`/`--` → same type as operand
+   - ArrayAccess → element type (remove array/pointer level)
+   - MemberAccess → member type from struct layout
+   - PointerMemberAccess → member type from struct layout
+   - FunctionCall → return type from function signature
+   - Cast → target type
+   - Assignment → type of left side
+   - Ternary → usual arithmetic conversions of 2nd and 3rd operands
+   - SizeOf → `unsigned long` (size_t)
+   - Comma → type of right operand
+3. Store the result as `expr.resolved_type = Type(...)`
+4. All downstream consumers (semantic checks, IR generation, codegen) read `.resolved_type` instead of re-inferring
+
+**Benefits**:
+- Eliminates all false positive semantic errors caused by unknown types
+- IR generation becomes simpler — no need for `_var_types` dictionary or ad-hoc type guessing
+- Enables proper type checking for all C89 type rules (integer promotions, pointer arithmetic, etc.)
+- Foundation for multi-language support — each frontend annotates types according to its own rules, IR sees only annotated types
+
+**Relationship to other plans**:
+- Independent of IR refactoring (Plan 4) but complementary — annotated AST makes HIR generation trivial
+- Subsumes `_var_types` removal (Plan 3) — codegen reads types from IR which reads from annotated AST
+- Independent of preprocessor performance (Plan 6)
+
+**Scope**: Large. Estimated 500-800 lines of new code for the type annotation pass, plus refactoring ~200 lines of existing `_expr_type` callers. Should be a standalone spec. The annotation pass itself is straightforward (mechanical application of C89 type rules), but integrating it with existing semantic checks and IR generation requires careful migration.

@@ -1683,11 +1683,23 @@ class SemanticAnalyzer:
                 # Address-of always produces a pointer (C89 §6.3.3.2).
                 if isinstance(e, UnaryOp) and e.operator == "&":
                     return True
+                # Prefix ++/-- preserve the type of the operand.
+                if isinstance(e, UnaryOp) and e.operator in ("++", "--") and not getattr(e, "is_postfix", False):
+                    return _is_ptrlike(e.operand)
+                # Postfix ++/-- also preserve type.
+                if isinstance(e, UnaryOp) and e.operator in ("++", "--") and getattr(e, "is_postfix", False):
+                    return _is_ptrlike(e.operand)
                 # Cast to pointer type is pointer-like.
                 if isinstance(e, Cast):
                     to_ty = getattr(e, "type", None)
                     if to_ty and (getattr(to_ty, "is_pointer", False) or (getattr(to_ty, "pointer_level", 0) or 0) > 0):
                         return True
+                # Assignment expression has the type of the left side.
+                if isinstance(e, Assignment):
+                    return _is_ptrlike(e.target)
+                # Comma operator has the type of the right operand.
+                if isinstance(e, BinaryOp) and e.operator == ",":
+                    return _is_ptrlike(e.right)
                 # Fallback: conservatively return False for expressions
                 # where type cannot be inferred.
                 return False
