@@ -1339,6 +1339,8 @@ class Parser:
                 new_level = int(getattr(base_type, "pointer_level", 0) or 0) + 1
                 base_type = Type(base=base_type.base, is_pointer=True,
                                  pointer_level=new_level,
+                                 is_const=getattr(base_type, 'is_const', False),
+                                 is_volatile=getattr(base_type, 'is_volatile', False),
                                  is_unsigned=getattr(base_type, 'is_unsigned', False),
                                  is_signed=getattr(base_type, 'is_signed', False),
                                  line=base_type.line, column=base_type.column)

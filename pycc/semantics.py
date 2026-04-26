@@ -2051,7 +2051,13 @@ class SemanticAnalyzer:
                     p_ty = self._lookup_decl_type(p_name)
                     # Current representation: pointee const for `const T *p`
                     # is stored on Type.is_const (even for pointers).
-                    if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False):
+                    # For multi-level pointers like `const char **pp`, *pp
+                    # dereferences to `const char *` (a pointer), and assigning
+                    # to it changes the pointer value, not the const data.
+                    # Only reject when pointer_level == 1 (direct access to
+                    # const-qualified data).
+                    pl = int(getattr(p_ty, "pointer_level", 0) or 0)
+                    if p_ty is not None and getattr(p_ty, "is_pointer", False) and getattr(p_ty, "is_const", False) and pl <= 1:
                         self._err(f"Assignment through pointer to const is not allowed: '*{p_name}'", expr)
 
             # Pointer assignment from integer (subset): allow only 0 as a null
