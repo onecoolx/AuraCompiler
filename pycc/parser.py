@@ -1134,6 +1134,156 @@ class Parser:
                 base_ty._inline_members = members
         return base_ty
 
+    def _parse_enum_specifier(self) -> Type:
+        """Parse enum specifier including optional enumerator list.
+
+        Handles: enum Tag, enum Tag { enumerators }, enum { enumerators }
+        Returns Type with base="enum Tag".
+        Queues EnumDecl in self._pending_enum_decls.
+
+        The caller is responsible for applying qualifiers (const/volatile).
+        """
+        cur = self.current_token
+        self.advance()  # consume 'enum'
+        tag_tok = None
+        if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
+            tag_tok = self.current_token
+            self.advance()
+
+        if self._match(TokenType.LBRACE):
+            members: List[tuple[str, Optional[object]]] = []
+            while not self._at(TokenType.RBRACE):
+                if self._at(TokenType.EOF):
+                    raise ParserError("Unterminated enum list", self.current_token)
+                name_tok = self._expect(TokenType.IDENTIFIER, "Expected enumerator name")
+                value_expr = None
+                if self._match(TokenType.ASSIGN):
+                    # In enum lists, commas separate enumerators; parse the
+                    # explicit value as an assignment-expression.
+                    value_expr = self._parse_assignment()
+                members.append((name_tok.value, value_expr))
+                if not self._match(TokenType.COMMA):
+                    break
+            # allow trailing comma
+            self._match(TokenType.COMMA)
+            self._expect(TokenType.RBRACE, "Expected '}' after enum list")
+
+            # queue a top-level EnumDecl so semantics can register constants
+            self._pending_enum_decls.append(
+                EnumDecl(
+                    name=None if tag_tok is None else tag_tok.value,
+                    enumerators=members,
+                    line=cur.line,
+                    column=cur.column,
+                )
+            )
+
+        tag_name = tag_tok.value if tag_tok else "<anonymous>"
+        t = Type(base=f"enum {tag_name}", line=cur.line, column=cur.column)
+        return t
+
+    # ------------------------------------------------------------------
+    # _build_type_from_specifiers: construct a Type from collected
+    # declaration-specifier state.  This is a pure normalization step
+    # that does NOT consume tokens — it only interprets the accumulated
+    # qualifier / sign / size / base / tag / typedef information.
+    # ------------------------------------------------------------------
+    def _build_type_from_specifiers(
+        self,
+        quals: set,
+        sign: Optional[str],
+        size: Optional[str],
+        base: Optional[str],
+        tag_type: Optional[Type],
+        typedef_name: Optional[str],
+        start_tok: Optional[Token],
+    ) -> Type:
+        """Construct a Type from collected declaration specifiers.
+
+        Normalization rules (C89 §6.5.2):
+        - unsigned/signed + int/char/short/long combinations
+        - bare unsigned -> unsigned int, bare long -> long int, etc.
+        - long double
+        - tag_type passthrough with quals applied
+        - typedef_name passthrough with quals applied
+        - implicit int from bare sign/size specifiers
+        - nothing set -> error
+        """
+        line = start_tok.line if start_tok else 0
+        col = start_tok.column if start_tok else 0
+        is_const = "const" in quals
+        is_volatile = "volatile" in quals
+
+        # --- tag_type passthrough (struct/union/enum) ---
+        if tag_type is not None:
+            tag_type.is_const = is_const
+            tag_type.is_volatile = is_volatile
+            return tag_type
+
+        # --- typedef_name passthrough ---
+        if typedef_name is not None:
+            t = Type(base=typedef_name, line=line, column=col)
+            t.is_const = is_const
+            t.is_volatile = is_volatile
+            return t
+
+        # --- explicit base type keyword present ---
+        if base is not None:
+            t = Type(base=base, line=line, column=col)
+            t.is_const = is_const
+            t.is_volatile = is_volatile
+            t.is_unsigned = (sign == "unsigned")
+            t.is_signed = (sign == "signed")
+
+            # size + base combinations
+            if base == "int" and size in {"short", "long"}:
+                t.base = f"{size} int"
+            if base == "double" and size == "long":
+                t.base = "long double"
+
+            # Normalize unsigned/signed into base string for downstream
+            # string-based checks used throughout the compiler.
+            if t.base == "int":
+                if sign == "unsigned":
+                    t.base = "unsigned int"
+                # signed int is just "int"
+            elif t.base == "char":
+                if sign == "unsigned":
+                    t.base = "unsigned char"
+                # signed char is just "char"
+            elif t.base == "short int":
+                if sign == "unsigned":
+                    t.base = "unsigned short"
+            elif t.base == "long int":
+                if sign == "unsigned":
+                    t.base = "unsigned long"
+
+            return t
+
+        # --- no explicit base: implicit int from sign/size specifiers ---
+        if sign is not None or size is not None:
+            t = Type(base="int", line=line, column=col)
+            t.is_const = is_const
+            t.is_volatile = is_volatile
+            t.is_unsigned = (sign == "unsigned")
+            t.is_signed = (sign == "signed")
+
+            if size in {"short", "long"}:
+                t.base = f"{size} int"
+
+            # Normalize unsigned into base string
+            if t.base == "int" and sign == "unsigned":
+                t.base = "unsigned int"
+            elif t.base == "short int" and sign == "unsigned":
+                t.base = "unsigned short"
+            elif t.base == "long int" and sign == "unsigned":
+                t.base = "unsigned long"
+
+            return t
+
+        # --- bare qualifiers with no type at all -> error ---
+        raise ParserError("Expected type specifier", start_tok)
+
     def _parse_type_specifier_core(self) -> Type:
         tok = self.current_token
         if not self._is_type_specifier():
@@ -1256,49 +1406,13 @@ class Parser:
                     t.base = "unsigned long"
                 return t
 
-        # enum type specifier: `enum Tag { A=1, B, ... }` / `enum Tag` / `enum { ... }`
-        # Use self.current_token (not tok) because qualifiers may have been consumed.
+        # enum type specifier: delegate to extracted method
         cur = self.current_token
         if cur and cur.type == TokenType.KEYWORD and cur.value == "enum":
-            self.advance()
-            tag_tok = None
-            if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
-                tag_tok = self.current_token
-                self.advance()
-
-            if self._match(TokenType.LBRACE):
-                members: List[tuple[str, Optional[object]]] = []
-                while not self._at(TokenType.RBRACE):
-                    if self._at(TokenType.EOF):
-                        raise ParserError("Unterminated enum list", self.current_token)
-                    name_tok = self._expect(TokenType.IDENTIFIER, "Expected enumerator name")
-                    value_expr = None
-                    if self._match(TokenType.ASSIGN):
-                        # In enum lists, commas separate enumerators; parse the
-                        # explicit value as an assignment-expression.
-                        value_expr = self._parse_assignment()
-                    members.append((name_tok.value, value_expr))
-                    if not self._match(TokenType.COMMA):
-                        break
-                # allow trailing comma
-                self._match(TokenType.COMMA)
-                self._expect(TokenType.RBRACE, "Expected '}' after enum list")
-
-                # queue a top-level EnumDecl so semantics can register constants
-                self._pending_enum_decls.append(
-                    EnumDecl(
-                        name=None if tag_tok is None else tag_tok.value,
-                        enumerators=members,
-                        line=cur.line,
-                        column=cur.column,
-                    )
-                )
-
-            tag_name = tag_tok.value if tag_tok else "<anonymous>"
-            t = Type(base=f"enum {tag_name}", line=cur.line, column=cur.column)
-            t.is_const = is_const
-            t.is_volatile = is_volatile
-            return t
+            base_ty = self._parse_enum_specifier()
+            base_ty.is_const = is_const
+            base_ty.is_volatile = is_volatile
+            return base_ty
 
         # struct/union type specifier: delegate to extracted method
         cur2 = self.current_token
