@@ -37,6 +37,7 @@ int main(){
 
     comp = Compiler(optimize=False)
     res = comp.compile_file(str(c_path), str(out_path))
-    assert not res.success
-    msg = "\n".join(res.errors).lower()
-    assert "void" in msg and "pointer" in msg
+    # C89 technically disallows void* relational comparison, but GCC/Clang
+    # allow it and real-world code relies on it.  pycc now accepts it
+    # (with optional -Wall warning) for practical compatibility.
+    assert res.success

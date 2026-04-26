@@ -203,7 +203,18 @@ class SemanticAnalyzer:
                     func_sigs[decl.name] = (str(ret_base_s), _pc)
                 else:
                     prev_ret, prev_n = prev
-                    if str(ret_base_s) != prev_ret:
+                    # Resolve typedef aliases before comparing return types.
+                    # e.g. sqlite3_int64 == long long when typedef'd.
+                    cur_ret = str(ret_base_s)
+                    cmp_cur = cur_ret
+                    cmp_prev = prev_ret
+                    td = self._resolve_typedef(cmp_cur)
+                    if td is not None:
+                        cmp_cur = str(getattr(td, "base", cmp_cur))
+                    td = self._resolve_typedef(cmp_prev)
+                    if td is not None:
+                        cmp_prev = str(getattr(td, "base", cmp_prev))
+                    if cmp_cur != cmp_prev:
                         self.errors.append(f"conflicting return type for function '{decl.name}'")
                     # If both sides have an explicit parameter list, require same count.
                     cur_n = param_count
@@ -1727,7 +1738,15 @@ class SemanticAnalyzer:
                     else:
                         self._err(f"pointer and non-pointer comparison is not allowed: '{expr.operator}'", expr)
                 elif lp and rp and (_is_void_ptr(expr.left) or _is_void_ptr(expr.right)):
-                    self._err("relational comparison on void* pointer is not allowed", expr)
+                    # C89 §6.3.8 technically requires pointers to compatible
+                    # object types for relational comparison.  void* is not an
+                    # object type, but GCC/Clang allow void* relational
+                    # comparisons and real-world code relies on it.  Emit a
+                    # warning (if -Wall) instead of an error.
+                    if getattr(self, "wall", False):
+                        self.warnings.append(
+                            f"relational comparison on void* pointer at {getattr(expr, 'line', '?')}:{getattr(expr, 'column', '?')}"
+                        )
 
             # Conservative: for equality comparisons, allow:
             # - pointer ==/!= pointer (including void*)
@@ -1944,8 +1963,17 @@ class SemanticAnalyzer:
 
                 if isinstance(e, ArrayAccess) and isinstance(e.array, Identifier):
                     aty = self._lookup_decl_type(e.array.name)
-                    # Parser encodes arrays via Declaration.array_size/array_dims; element type
-                    # qualifiers are carried on the base Type node.
+                    # Parser encodes arrays via Declaration.array_size/array_dims;
+                    # element type qualifiers are carried on the base Type node.
+                    # For pointer arrays like `const char *arr[]`, is_const
+                    # qualifies the pointed-to data, not the pointer element
+                    # itself.  The pointer element is modifiable.
+                    if aty is not None and getattr(aty, "is_pointer", False):
+                        # Check if the pointer itself is const (pointer_quals).
+                        pq = getattr(aty, "pointer_quals", None)
+                        if pq and len(pq) > 0 and "const" in pq[0]:
+                            return True
+                        return False
                     return bool(aty is not None and getattr(aty, "is_const", False))
 
                 return False
@@ -2122,7 +2150,16 @@ class SemanticAnalyzer:
                             # Do not apply object-pointer base checks to function pointers.
                             raise StopIteration()
                         # void* <-> T* allowed (object pointers subset)
-                        if dst_base != "void" and src_base != "void" and dst_base != src_base:
+                        # Resolve typedef aliases before comparing base types.
+                        cmp_dst = dst_base
+                        cmp_src = src_base
+                        td = self._resolve_typedef(cmp_dst)
+                        if td is not None:
+                            cmp_dst = str(getattr(td, "base", cmp_dst))
+                        td = self._resolve_typedef(cmp_src)
+                        if td is not None:
+                            cmp_src = str(getattr(td, "base", cmp_src))
+                        if cmp_dst != "void" and cmp_src != "void" and cmp_dst != cmp_src:
                             self.errors.append(
                                 f"incompatible pointer types in assignment: '{dst_base}*' from '{src_base}*'"
                             )
