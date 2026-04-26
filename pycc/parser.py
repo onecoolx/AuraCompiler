@@ -919,6 +919,221 @@ class Parser:
             self.advance()
         return t
 
+    def _parse_struct_or_union_specifier(self) -> Type:
+        """Parse struct/union specifier including optional member list.
+
+        Handles: struct Tag, struct Tag { members }, struct { members }
+        Returns Type with base="struct Tag" or "union Tag".
+        Attaches _inline_members/_anon_members for inline definitions.
+        Records members in self._tag_members.
+
+        The caller is responsible for applying qualifiers (const/volatile).
+        """
+        cur = self.current_token
+        kind = cur.value  # 'struct' or 'union'
+        self.advance()
+        tag_tok = None
+        if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
+            tag_tok = self.current_token
+            self.advance()
+
+        # optional member list
+        members = None
+        if self._match(TokenType.LBRACE):
+            members = []
+            while not self._at(TokenType.RBRACE):
+                if self._at(TokenType.EOF):
+                    raise ParserError("Unterminated struct/union member list", self.current_token)
+                mem_ty = self._parse_type_specifier()
+
+                # Support pointer members in struct/union definitions, e.g.
+                #   struct S { void *p; };
+                while self._match(TokenType.STAR):
+                    mem_ty = Type(base=mem_ty.base, is_pointer=True, line=mem_ty.line, column=mem_ty.column)
+                self._skip_pointer_qualifiers()
+
+                # C11 anonymous struct/union members: `union { ... };` with
+                # no member name.  Skip them gracefully (treat as padding).
+                if self._at(TokenType.SEMICOLON):
+                    base = getattr(mem_ty, "base", "")
+                    if isinstance(base, str) and (base.startswith("struct ") or base.startswith("union ")):
+                        self.advance()  # consume ';'
+                        continue
+
+                # Function pointer member: int (*name)(params);
+                # Also handles nested function pointers that return a
+                # function pointer, e.g.:
+                #   void (*(*xDlSym)(sqlite3_vfs*, void*, const char*))(void);
+                # The pattern is: `(` `*` followed by either:
+                #   - IDENTIFIER  → simple fnptr: `(*name)(params)`
+                #   - `(`         → nested fnptr: `(*(*name)(inner_params))(outer_params)`
+                if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
+                    self.advance()  # consume '('
+                    self.advance()  # consume '*'
+
+                    # Nested function pointer: (*(*name)(inner))(outer)
+                    if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
+                        self.advance()  # consume inner '('
+                        self.advance()  # consume inner '*'
+                        mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                        self._expect(TokenType.RPAREN, "Expected ')'")
+                        # Consume inner parameter list
+                        if self._match(TokenType.LPAREN):
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._at(TokenType.LPAREN):
+                                    depth += 1
+                                elif self._at(TokenType.RPAREN):
+                                    depth -= 1
+                                    if depth == 0:
+                                        break
+                                self.advance()
+                            self._expect(TokenType.RPAREN, "Expected ')'")
+                        self._expect(TokenType.RPAREN, "Expected ')' after nested declarator")
+                        # Consume outer parameter list
+                        if self._match(TokenType.LPAREN):
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._at(TokenType.LPAREN):
+                                    depth += 1
+                                elif self._at(TokenType.RPAREN):
+                                    depth -= 1
+                                    if depth == 0:
+                                        break
+                                self.advance()
+                            self._expect(TokenType.RPAREN, "Expected ')'")
+                        fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
+                                     line=mem_ty.line, column=mem_ty.column)
+                        fp_ty._normalize_pointer_state()
+                        self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
+                        members.append(Declaration(name=mem_name.value, type=fp_ty,
+                                                   line=mem_name.line, column=mem_name.column))
+                        continue
+
+                    # Consume additional pointer stars: (**name) means
+                    # pointer-to-function-pointer.
+                    while self._match(TokenType.STAR):
+                        pass
+                    self._skip_pointer_qualifiers()
+
+                    mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                    self._expect(TokenType.RPAREN, "Expected ')'")
+                    # Consume parameter list
+                    if self._match(TokenType.LPAREN):
+                        depth = 1
+                        while self.current_token and depth > 0:
+                            if self._at(TokenType.LPAREN):
+                                depth += 1
+                            elif self._at(TokenType.RPAREN):
+                                depth -= 1
+                                if depth == 0:
+                                    break
+                            self.advance()
+                        self._expect(TokenType.RPAREN, "Expected ')'")
+                    fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
+                                 line=mem_ty.line, column=mem_ty.column)
+                    fp_ty._normalize_pointer_state()
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
+                    members.append(Declaration(name=mem_name.value, type=fp_ty,
+                                               line=mem_name.line, column=mem_name.column))
+                    continue
+
+                # Anonymous bit-field: `int :32;` — padding, no member name.
+                if self._at(TokenType.COLON):
+                    self.advance()  # consume ':'
+                    bw_expr = self._parse_expression()
+                    bw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
+                    # Skip anonymous padding — don't add to members list.
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after anonymous bit-field")
+                    continue
+
+                mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
+
+                # Support fixed-size array members (incl. multi-dimensional):
+                mem_array_dims = []
+                while self._match(TokenType.LBRACKET):
+                    # Parse the size expression inside [...]
+                    if self._at(TokenType.RBRACKET):
+                        mem_array_dims.append(None)
+                    else:
+                        size_expr = self._parse_expression()
+                        if isinstance(size_expr, IntLiteral):
+                            mem_array_dims.append(int(size_expr.value))
+                        elif isinstance(size_expr, BinaryOp):
+                            # Constant fold simple expressions like 8*8
+                            try:
+                                from pycc.ir import _eval_const_int_expr
+                                val = _eval_const_int_expr(size_expr)
+                                mem_array_dims.append(int(val) if val is not None else None)
+                            except Exception:
+                                mem_array_dims.append(None)
+                        else:
+                            mem_array_dims.append(None)
+                    self._expect(TokenType.RBRACKET, "Expected ']' after array declarator")
+
+                # Bit-field: member_name : width
+                bit_width = None
+                if self._match(TokenType.COLON):
+                    bw_expr = self._parse_expression()
+                    if isinstance(bw_expr, IntLiteral):
+                        bit_width = int(bw_expr.value)
+                    else:
+                        bit_width = 0
+
+                d = Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column)
+                if mem_array_dims:
+                    d.array_size = mem_array_dims[0]
+                    d.array_dims = mem_array_dims
+                if bit_width is not None:
+                    d.bit_width = bit_width
+                members.append(d)
+
+                # Multi-declarator: int a, b, *c;
+                while self._match(TokenType.COMMA):
+                    extra_ty = Type(base=mem_ty.base, line=mem_ty.line, column=mem_ty.column)
+                    while self._match(TokenType.STAR):
+                        extra_ty = Type(base=extra_ty.base, is_pointer=True, line=extra_ty.line, column=extra_ty.column)
+                    en = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                    if self._match(TokenType.LBRACKET):
+                        depth = 1
+                        while self.current_token and depth > 0:
+                            if self._match(TokenType.RBRACKET):
+                                depth -= 1
+                                break
+                            if self._match(TokenType.LBRACKET):
+                                depth += 1
+                                continue
+                            self.advance()
+                    ebw = None
+                    if self._match(TokenType.COLON):
+                        bw_expr = self._parse_expression()
+                        ebw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
+                    ed = Declaration(name=en.value, type=extra_ty, line=en.line, column=en.column)
+                    if ebw is not None:
+                        ed.bit_width = ebw
+                    members.append(ed)
+
+                self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
+            self._expect(TokenType.RBRACE, "Expected '}' after struct/union members")
+
+            # Remember members for named tags so outer declaration `struct T {...};`
+            # can be materialized as a StructDecl/UnionDecl node.
+            if tag_tok is not None:
+                self._tag_members[f"{kind} {tag_tok.value}"] = members
+
+        # record a textual type name for now: e.g. "struct Point"
+        tag_name = tag_tok.value if tag_tok else "<anonymous>"
+        base_ty = Type(base=f"{kind} {tag_name}", line=cur.line, column=cur.column)
+        # Attach members to the Type node so that semantics can register
+        # the layout even when no standalone StructDecl node is emitted
+        # (e.g. `static struct S { int x; } var;`).
+        if members is not None:
+            if tag_tok is None:
+                base_ty._anon_members = members
+            else:
+                base_ty._inline_members = members
+        return base_ty
+
     def _parse_type_specifier_core(self) -> Type:
         tok = self.current_token
         if not self._is_type_specifier():
@@ -1085,214 +1300,12 @@ class Parser:
             t.is_volatile = is_volatile
             return t
 
-        # struct/union type specifier: `struct Tag { ... }` / `struct Tag` / `struct { ... }`
-        # Use self.current_token (not tok) because qualifiers may have been consumed.
+        # struct/union type specifier: delegate to extracted method
         cur2 = self.current_token
         if cur2 and cur2.type == TokenType.KEYWORD and cur2.value in {"struct", "union"}:
-            kind = cur2.value
-            self.advance()
-            tag_tok = None
-            if self.current_token and self.current_token.type == TokenType.IDENTIFIER:
-                tag_tok = self.current_token
-                self.advance()
-
-            # optional member list
-            members = None
-            if self._match(TokenType.LBRACE):
-                members = []
-                while not self._at(TokenType.RBRACE):
-                    if self._at(TokenType.EOF):
-                        raise ParserError("Unterminated struct/union member list", self.current_token)
-                    mem_ty = self._parse_type_specifier()
-
-                    # Support pointer members in struct/union definitions, e.g.
-                    #   struct S { void *p; };
-                    while self._match(TokenType.STAR):
-                        mem_ty = Type(base=mem_ty.base, is_pointer=True, line=mem_ty.line, column=mem_ty.column)
-                    self._skip_pointer_qualifiers()
-
-                    # C11 anonymous struct/union members: `union { ... };` with
-                    # no member name.  Skip them gracefully (treat as padding).
-                    if self._at(TokenType.SEMICOLON):
-                        base = getattr(mem_ty, "base", "")
-                        if isinstance(base, str) and (base.startswith("struct ") or base.startswith("union ")):
-                            self.advance()  # consume ';'
-                            continue
-
-                    # Function pointer member: int (*name)(params);
-                    # Also handles nested function pointers that return a
-                    # function pointer, e.g.:
-                    #   void (*(*xDlSym)(sqlite3_vfs*, void*, const char*))(void);
-                    # The pattern is: `(` `*` followed by either:
-                    #   - IDENTIFIER  → simple fnptr: `(*name)(params)`
-                    #   - `(`         → nested fnptr: `(*(*name)(inner_params))(outer_params)`
-                    if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
-                        self.advance()  # consume '('
-                        self.advance()  # consume '*'
-
-                        # Nested function pointer: (*(*name)(inner))(outer)
-                        if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
-                            self.advance()  # consume inner '('
-                            self.advance()  # consume inner '*'
-                            mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
-                            self._expect(TokenType.RPAREN, "Expected ')'")
-                            # Consume inner parameter list
-                            if self._match(TokenType.LPAREN):
-                                depth = 1
-                                while self.current_token and depth > 0:
-                                    if self._at(TokenType.LPAREN):
-                                        depth += 1
-                                    elif self._at(TokenType.RPAREN):
-                                        depth -= 1
-                                        if depth == 0:
-                                            break
-                                    self.advance()
-                                self._expect(TokenType.RPAREN, "Expected ')'")
-                            self._expect(TokenType.RPAREN, "Expected ')' after nested declarator")
-                            # Consume outer parameter list
-                            if self._match(TokenType.LPAREN):
-                                depth = 1
-                                while self.current_token and depth > 0:
-                                    if self._at(TokenType.LPAREN):
-                                        depth += 1
-                                    elif self._at(TokenType.RPAREN):
-                                        depth -= 1
-                                        if depth == 0:
-                                            break
-                                    self.advance()
-                                self._expect(TokenType.RPAREN, "Expected ')'")
-                            fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
-                                         line=mem_ty.line, column=mem_ty.column)
-                            fp_ty._normalize_pointer_state()
-                            self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
-                            members.append(Declaration(name=mem_name.value, type=fp_ty,
-                                                       line=mem_name.line, column=mem_name.column))
-                            continue
-
-                        # Consume additional pointer stars: (**name) means
-                        # pointer-to-function-pointer.
-                        while self._match(TokenType.STAR):
-                            pass
-                        self._skip_pointer_qualifiers()
-
-                        mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
-                        self._expect(TokenType.RPAREN, "Expected ')'")
-                        # Consume parameter list
-                        if self._match(TokenType.LPAREN):
-                            depth = 1
-                            while self.current_token and depth > 0:
-                                if self._at(TokenType.LPAREN):
-                                    depth += 1
-                                elif self._at(TokenType.RPAREN):
-                                    depth -= 1
-                                    if depth == 0:
-                                        break
-                                self.advance()
-                            self._expect(TokenType.RPAREN, "Expected ')'")
-                        fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
-                                     line=mem_ty.line, column=mem_ty.column)
-                        fp_ty._normalize_pointer_state()
-                        self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
-                        members.append(Declaration(name=mem_name.value, type=fp_ty,
-                                                   line=mem_name.line, column=mem_name.column))
-                        continue
-
-                    # Anonymous bit-field: `int :32;` — padding, no member name.
-                    if self._at(TokenType.COLON):
-                        self.advance()  # consume ':'
-                        bw_expr = self._parse_expression()
-                        bw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
-                        # Skip anonymous padding — don't add to members list.
-                        self._expect(TokenType.SEMICOLON, "Expected ';' after anonymous bit-field")
-                        continue
-
-                    mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
-
-                    # Support fixed-size array members (incl. multi-dimensional):
-                    mem_array_dims = []
-                    while self._match(TokenType.LBRACKET):
-                        # Parse the size expression inside [...]
-                        if self._at(TokenType.RBRACKET):
-                            mem_array_dims.append(None)
-                        else:
-                            size_expr = self._parse_expression()
-                            if isinstance(size_expr, IntLiteral):
-                                mem_array_dims.append(int(size_expr.value))
-                            elif isinstance(size_expr, BinaryOp):
-                                # Constant fold simple expressions like 8*8
-                                try:
-                                    from pycc.ir import _eval_const_int_expr
-                                    val = _eval_const_int_expr(size_expr)
-                                    mem_array_dims.append(int(val) if val is not None else None)
-                                except Exception:
-                                    mem_array_dims.append(None)
-                            else:
-                                mem_array_dims.append(None)
-                        self._expect(TokenType.RBRACKET, "Expected ']' after array declarator")
-
-                    # Bit-field: member_name : width
-                    bit_width = None
-                    if self._match(TokenType.COLON):
-                        bw_expr = self._parse_expression()
-                        if isinstance(bw_expr, IntLiteral):
-                            bit_width = int(bw_expr.value)
-                        else:
-                            bit_width = 0
-
-                    d = Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column)
-                    if mem_array_dims:
-                        d.array_size = mem_array_dims[0]
-                        d.array_dims = mem_array_dims
-                    if bit_width is not None:
-                        d.bit_width = bit_width
-                    members.append(d)
-
-                    # Multi-declarator: int a, b, *c;
-                    while self._match(TokenType.COMMA):
-                        extra_ty = Type(base=mem_ty.base, line=mem_ty.line, column=mem_ty.column)
-                        while self._match(TokenType.STAR):
-                            extra_ty = Type(base=extra_ty.base, is_pointer=True, line=extra_ty.line, column=extra_ty.column)
-                        en = self._expect(TokenType.IDENTIFIER, "Expected member name")
-                        if self._match(TokenType.LBRACKET):
-                            depth = 1
-                            while self.current_token and depth > 0:
-                                if self._match(TokenType.RBRACKET):
-                                    depth -= 1
-                                    break
-                                if self._match(TokenType.LBRACKET):
-                                    depth += 1
-                                    continue
-                                self.advance()
-                        ebw = None
-                        if self._match(TokenType.COLON):
-                            bw_expr = self._parse_expression()
-                            ebw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
-                        ed = Declaration(name=en.value, type=extra_ty, line=en.line, column=en.column)
-                        if ebw is not None:
-                            ed.bit_width = ebw
-                        members.append(ed)
-
-                    self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
-                self._expect(TokenType.RBRACE, "Expected '}' after struct/union members")
-
-                # Remember members for named tags so outer declaration `struct T {...};`
-                # can be materialized as a StructDecl/UnionDecl node.
-                if tag_tok is not None:
-                    self._tag_members[f"{kind} {tag_tok.value}"] = members
-
-            # record a textual type name for now: e.g. "struct Point"
-            tag_name = tag_tok.value if tag_tok else "<anonymous>"
-            base_ty = Type(base=f"{kind} {tag_name}", line=cur2.line, column=cur2.column)
+            base_ty = self._parse_struct_or_union_specifier()
             base_ty.is_const = is_const
             base_ty.is_volatile = is_volatile
-            # Attach members to the Type node so that semantics can register
-            # the layout even when no standalone StructDecl node is emitted
-            # (e.g. `static struct S { int x; } var;`).
-            if members is not None:
-                if tag_tok is None:
-                    base_ty._anon_members = members
-                else:
-                    base_ty._inline_members = members
             return base_ty
 
         # typedef-name as type specifier (check current token, not the
