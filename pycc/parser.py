@@ -115,8 +115,14 @@ class Parser:
         # Use first token position for program location, default to 1:1
         if self.tokens:
             first = self.tokens[0]
-            return Program(declarations=decls, line=first.line, column=first.column)
-        return Program(declarations=decls, line=1, column=1)
+            prog = Program(declarations=decls, line=first.line, column=first.column)
+        else:
+            prog = Program(declarations=decls, line=1, column=1)
+        # Attach all struct/union tag definitions discovered during parsing
+        # so that semantic analysis can register layouts for inline-defined
+        # structs that don't have standalone StructDecl nodes in the AST.
+        prog._tag_members = dict(self._tag_members)
+        return prog
     
     def advance(self) -> Token:
         """Move to next token"""

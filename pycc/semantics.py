@@ -150,6 +150,29 @@ class SemanticAnalyzer:
         self._global_arrays = {}
 
         seen_globals: Dict[str, str] = {}
+
+        # Pre-register all struct/union layouts from parser's tag_members.
+        # This is the single authoritative source for all struct definitions
+        # encountered during parsing, including inline definitions like
+        # `struct S { ... } *ptr;` inside other structs, global variables,
+        # and local scopes.  By registering them upfront, we avoid the need
+        # to propagate _inline_members through pointer-type transformations.
+        tag_members = getattr(ast, '_tag_members', {})
+        for tag_key, members in tag_members.items():
+            if tag_key in self._layouts:
+                continue
+            parts = tag_key.split(" ", 1)
+            if len(parts) != 2:
+                continue
+            kind, tag = parts
+            if kind == "struct":
+                synth = StructDecl(name=tag, members=members, line=0, column=0)
+            elif kind == "union":
+                synth = UnionDecl(name=tag, members=members, line=0, column=0)
+            else:
+                continue
+            self._register_layout_decl(synth)
+
         # Minimal function redeclaration compatibility tracking (C89 subset).
         # Map: function name -> (return_type_base, param_count or None if unspecified)
         func_sigs: Dict[str, tuple[str, Optional[int]]] = {}
@@ -531,6 +554,28 @@ class SemanticAnalyzer:
             # forward decl
             self._layouts.setdefault(key, StructLayout(kind=kind, name=tag, size=0, align=1, member_offsets={}, member_sizes={}))
             return
+
+        # Recursively register any nested struct/union definitions found in
+        # member types.  This handles patterns like:
+        #   struct ExprList { struct ExprList_item { ... } a[1]; };
+        # where ExprList_item is defined inline as a member type.
+        for mem in decl.members:
+            mem_ty = getattr(mem, 'type', None)
+            if mem_ty is None:
+                continue
+            inline = getattr(mem_ty, '_inline_members', None)
+            if inline is not None:
+                b = getattr(mem_ty, 'base', '')
+                if isinstance(b, str) and (b.startswith("struct ") or b.startswith("union ")):
+                    parts = b.split(" ", 1)
+                    if len(parts) == 2:
+                        nk, nt = parts
+                        if nk == "struct":
+                            nested = StructDecl(name=nt, members=inline, line=mem.line, column=mem.column)
+                        else:
+                            nested = UnionDecl(name=nt, members=inline, line=mem.line, column=mem.column)
+                        self._register_layout_decl(nested)
+
         layout = self._compute_layout(kind, tag, decl.members)
         self._layouts[key] = layout
 
@@ -1167,6 +1212,23 @@ class SemanticAnalyzer:
             self._push_scope()
             for item in stmt.statements:
                 if isinstance(item, Declaration):
+                    # Auto-register struct/union layout from inline definitions
+                    # in local declarations (e.g. `struct S { int x; } var;` or
+                    # standalone `struct S { ... };` inside a function body).
+                    inline_members = getattr(item.type, '_inline_members', None)
+                    if inline_members is not None:
+                        b = getattr(item.type, 'base', '')
+                        if isinstance(b, str) and (b.startswith("struct ") or b.startswith("union ")):
+                            parts = b.split(" ", 1)
+                            if len(parts) == 2:
+                                nk, nt = parts
+                                if nk == "struct":
+                                    synth = StructDecl(name=nt, members=inline_members, line=item.line, column=item.column)
+                                else:
+                                    synth = UnionDecl(name=nt, members=inline_members, line=item.line, column=item.column)
+                                self._register_layout_decl(synth)
+                    if item.name == "__tagdecl__":
+                        continue
                     self._declare_local(item.name, "variable")
                     self._decl_types[item.name] = item.type
                     if getattr(item, "array_size", None) is not None or getattr(item, "array_dims", None) is not None:
