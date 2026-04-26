@@ -1245,10 +1245,14 @@ class Parser:
             base_ty = Type(base=f"{kind} {tag_name}", line=cur2.line, column=cur2.column)
             base_ty.is_const = is_const
             base_ty.is_volatile = is_volatile
-            # Attach members to the Type node for anonymous structs so
-            # typedef processing can register the layout.
-            if members is not None and tag_tok is None:
-                base_ty._anon_members = members
+            # Attach members to the Type node so that semantics can register
+            # the layout even when no standalone StructDecl node is emitted
+            # (e.g. `static struct S { int x; } var;`).
+            if members is not None:
+                if tag_tok is None:
+                    base_ty._anon_members = members
+                else:
+                    base_ty._inline_members = members
             return base_ty
 
         # typedef-name as type specifier (check current token, not the

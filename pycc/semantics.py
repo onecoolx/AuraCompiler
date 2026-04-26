@@ -289,6 +289,24 @@ class SemanticAnalyzer:
                 if decl.name == "__tagdecl__":
                     # struct/union tag-only declarations are ignored
                     continue
+
+                # Auto-register struct/union layout when the type was defined
+                # inline: `static struct S { int x; } var;`.  The parser
+                # attaches the member list as `_inline_members` on the Type
+                # node so we can discover it here without a separate StructDecl.
+                inline_members = getattr(decl.type, '_inline_members', None)
+                if inline_members is not None:
+                    b = getattr(decl.type, 'base', '')
+                    if isinstance(b, str) and (b.startswith("struct ") or b.startswith("union ")):
+                        kind_tag = b.split(" ", 1)
+                        if len(kind_tag) == 2:
+                            kind, tag = kind_tag
+                            if kind == "struct":
+                                synth = StructDecl(name=tag, members=inline_members, line=decl.line, column=decl.column)
+                            else:
+                                synth = UnionDecl(name=tag, members=inline_members, line=decl.line, column=decl.column)
+                            self._register_layout_decl(synth)
+
                 # minimal duplicate/ABI checks for globals
                 sc = getattr(decl, "storage_class", None)
                 kind = "static" if sc == "static" else "nonstatic"
