@@ -206,9 +206,9 @@ class TestStructCopy:
 
 
 class TestArrayDispatchStub:
-    """Array types should dispatch to _lower_array_init (currently stub)."""
+    """Non-string array types should raise NotImplementedError (tasks 3.2/3.3)."""
 
-    def test_array_raises_not_implemented(self):
+    def test_int_array_raises_not_implemented(self):
         ctx = _make_sema_ctx()
         gen = _make_ir_gen(ctx)
         ct = CArrayType(kind=TypeKind.ARRAY, element=IntegerType(kind=TypeKind.INT), size=5)

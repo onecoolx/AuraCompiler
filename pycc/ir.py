@@ -2053,13 +2053,74 @@ class IRGenerator:
         init: Expression,
         base_sym: str,
     ) -> None:
-        """Lower an array initializer (stub — raises NotImplementedError).
+        """Lower an array initializer to IR instructions.
 
-        Will be fully implemented in tasks 3.1–3.3.
+        Handles:
+        - String literal initialization for char/unsigned char arrays
+          (task 3.1)
+        - General brace-enclosed initializer lists (task 3.2 — TODO)
+        - Designated array initializers (task 3.3 — TODO)
         """
+        elem_ct = resolve_typedefs(ctype.element, self._sema_ctx) if ctype.element else None
+
+        # ── String literal path: char s[N] = "hello" or char s[] = "hello" ──
+        if elem_ct is not None and elem_ct.kind == TypeKind.CHAR:
+            str_lit = self._extract_string_literal(init)
+            if str_lit is not None:
+                s = str_lit.value
+                n = ctype.size
+                if n is None:
+                    # Inferred size: char s[] = "hello" → size = len + 1
+                    n = len(s) + 1
+                else:
+                    n = int(n)
+                    if len(s) + 1 > n:
+                        raise IRGenError(
+                            f"string literal initializer too long for array '{base_sym}'"
+                        )
+                # Build byte values: string chars + NUL + zero-fill
+                bytes_vals = [ord(c) for c in s]
+                if len(bytes_vals) < n:
+                    bytes_vals.append(0)  # NUL terminator
+                if len(bytes_vals) > n:
+                    bytes_vals = bytes_vals[:n]
+                else:
+                    bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
+                for idx, b in enumerate(bytes_vals):
+                    self.instructions.append(
+                        IRInstruction(
+                            op="store_index",
+                            result=f"${b}",
+                            operand1=base_sym,
+                            operand2=f"${idx}",
+                            label="char",
+                        )
+                    )
+                return
+
+        # ── General array / designated paths (tasks 3.2, 3.3) ──
         raise NotImplementedError(
-            "_lower_array_init not yet implemented (task 3.x)"
+            "_lower_array_init: non-string paths not yet implemented (task 3.2/3.3)"
         )
+
+    def _extract_string_literal(self, init: Expression) -> Optional[StringLiteral]:
+        """Extract a StringLiteral from an initializer if present.
+
+        Handles three forms:
+        - Direct StringLiteral: ``char s[] = "hello"``
+        - Initializer wrapping a StringLiteral: ``char s[] = {"hello"}``
+        - Initializer with one element that is a StringLiteral
+        Returns None if init is not a string literal form.
+        """
+        if isinstance(init, StringLiteral):
+            return init
+        if isinstance(init, Initializer):
+            elems = init.elements or []
+            if len(elems) == 1 and elems[0][0] is None:
+                inner = elems[0][1]
+                if isinstance(inner, StringLiteral):
+                    return inner
+        return None
 
     def _lower_struct_init(
         self,
