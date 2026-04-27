@@ -131,17 +131,16 @@ def integer_rank(t: CType) -> int:
 
 def type_sizeof(t: CType) -> int:
     """Size in bytes on LP64 (x86-64 SysV)."""
-    _SIZES = {
-        TypeKind.CHAR: 1, TypeKind.SHORT: 2, TypeKind.INT: 4,
-        TypeKind.LONG: 8, TypeKind.FLOAT: 4, TypeKind.DOUBLE: 8,
-        TypeKind.POINTER: 8, TypeKind.ENUM: 4,
-    }
-    if t.kind in _SIZES:
-        return _SIZES[t.kind]
-    if t.kind == TypeKind.ARRAY and isinstance(t, ArrayType):
-        if t.element and t.size is not None:
-            return type_sizeof(t.element) * t.size
-    return 0
+    # Lazy import to avoid circular dependency (target.py imports from types.py)
+    global _DEFAULT_TARGET
+    if _DEFAULT_TARGET is None:
+        from pycc.target import TargetInfo
+        _DEFAULT_TARGET = TargetInfo.lp64()
+    return _DEFAULT_TARGET.sizeof_ctype(t)
+
+
+# Module-level default TargetInfo instance (lazily initialized)
+_DEFAULT_TARGET = None
 
 def integer_promote(t: CType) -> CType:
     """C89 integer promotion: narrow types -> int."""

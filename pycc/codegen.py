@@ -247,17 +247,8 @@ class CodeGenerator:
 
     def _ctype_sizeof(self, ct: CType) -> int:
         """Get size in bytes from CType, using layouts for struct/union."""
-        if ct.kind in (TypeKind.STRUCT, TypeKind.UNION):
-            tag = self._ctype_struct_tag(ct)
-            if tag and self._sema_ctx is not None:
-                layout = getattr(self._sema_ctx, "layouts", {}).get(tag)
-                if layout is not None:
-                    try:
-                        return int(getattr(layout, "size"))
-                    except Exception:
-                        pass
-            return 0
-        return type_sizeof(ct)
+        layouts = getattr(self._sema_ctx, "layouts", None) if self._sema_ctx is not None else None
+        return self._target.sizeof_ctype(ct, layouts)
 
     def _get_base_struct_ctype(self, name: str) -> Optional[CType]:
         """Get the struct/union CType for a base operand used in member access.
@@ -3703,8 +3694,8 @@ class CodeGenerator:
     def _type_size_bytes(self, ty: str) -> int:
         """Return size in bytes for a type string.
 
-        Uses CType for struct/union layout lookup, falls back to string
-        matching for scalars and pointers.
+        Uses CType for struct/union layout lookup, falls back to TargetInfo
+        for scalars and pointers.
         """
         b = self._resolve_type(ty)
         if b.startswith("struct ") or b.startswith("union "):
@@ -3717,25 +3708,7 @@ class CodeGenerator:
             # String-based fallback
             layout = getattr(self._sema_ctx, "layouts", {}).get(b)
             return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
-        if "*" in b:
-            return 8
-        if b in {"char", "unsigned char", "signed char"}:
-            return 1
-        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
-            return 2
-        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
-            return 4
-        if b == "long double":
-            return 16
-        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
-            return 8
-        if "long long" in b:
-            return 8
-        if b == "float":
-            return 4
-        if b == "double":
-            return 8
-        return 8
+        return self._target.sizeof(b)
 
     def _resolve_member(self, base_sym: str, member: str) -> Tuple[int, int]:
         """Return (offset, size_bytes) for `base_sym.member`."""
