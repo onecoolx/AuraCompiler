@@ -618,7 +618,7 @@ class SemanticAnalyzer:
 
         def size_align(ty: Type) -> Tuple[int, int]:
             if ty.is_pointer:
-                return 8, 8
+                return self._target.pointer_size, self._target.pointer_size
             # Nested aggregates.
             base = ty.base if isinstance(ty.base, str) else ""
             # Resolve typedef to underlying type.
@@ -633,25 +633,10 @@ class SemanticAnalyzer:
                         return int(lay.size), int(lay.align or 1)
                     except Exception:
                         return int(lay.size), 1
-            b = resolved
-            if b in {"char", "unsigned char", "signed char"}:
-                return 1, 1
-            if b in {"short", "short int", "unsigned short", "unsigned short int",
-                      "signed short", "signed short int"}:
-                return 2, 2
-            if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
-                return 4, 4
-            if b in {"long", "long int", "unsigned long", "unsigned long int",
-                      "signed long", "signed long int"}:
-                return 8, 8
-            if b == "float":
-                return 4, 4
-            if b == "double":
-                return 8, 8
-            if b == "long double":
-                return 16, 16
-            # unknown types: default to pointer-sized
-            return 8, 8
+            # Delegate scalar type lookup to TargetInfo.
+            s = self._target.sizeof(resolved)
+            a = self._target.alignof(resolved)
+            return s, a
 
         off = 0
         max_align = 1
