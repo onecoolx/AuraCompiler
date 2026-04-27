@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union, Tuple
 
 from pycc.ir import _type_size
+from pycc.target import TargetInfo
 from pycc.types import (
     ast_type_to_ctype,
     is_integer as ctype_is_integer,
@@ -103,6 +104,12 @@ class SemanticContext:
     # - an int element count (1D), or
     # - a list of dimensions (outer->inner) for multi-dimensional arrays.
     global_arrays: Dict[str, tuple[str, object]]
+    target: 'TargetInfo' = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.target is None:
+            from pycc.target import TargetInfo as _TI
+            self.target = _TI.lp64()
 
 
 class SemanticError(Exception):
@@ -115,7 +122,7 @@ class SemanticError(Exception):
 class SemanticAnalyzer:
     """Semantic analyzer for C89"""
     
-    def __init__(self, *, wall: bool = False):
+    def __init__(self, *, wall: bool = False, target: TargetInfo | None = None):
         # A simple scope stack: list of dict(name -> kind)
         self._scopes: List[Dict[str, str]] = [{}]
         # typedef scope stack: list of dict(name -> Type)
@@ -123,6 +130,7 @@ class SemanticAnalyzer:
         self.errors: List[str] = []
         self.warnings: List[str] = []
         self._wall = wall
+        self._target: TargetInfo = target if target is not None else TargetInfo.lp64()
         # Track globally known functions (including implicit decls)
         self._functions: Set[str] = set()
         self._layouts: Dict[str, StructLayout] = {}
@@ -451,6 +459,7 @@ class SemanticAnalyzer:
             function_sigs=dict(self._function_sigs),
             function_param_types=dict(self._function_param_types),
             global_arrays=dict(self._global_arrays),
+            target=self._target,
         )
 
     def _err(self, msg: str, node: object = None) -> None:

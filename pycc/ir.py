@@ -332,6 +332,7 @@ class IRGenerator:
         self._scope_stack: List[Dict[str, str]] = []  # name -> IR symbol mapping
         self._shadow_counter = 0
         self._sym_table: Optional[TypedSymbolTable] = None
+        self._target = None  # resolved lazily from sema_ctx in generate()
     
     def generate(self, ast: Program) -> List[IRInstruction]:
         """Generate IR from AST"""
@@ -350,6 +351,12 @@ class IRGenerator:
             self._sym_table = TypedSymbolTable(self._sema_ctx)
         else:
             self._sym_table = None
+        # Resolve TargetInfo from sema_ctx (with fallback to LP64 default)
+        from pycc.target import TargetInfo
+        if self._sema_ctx is not None and hasattr(self._sema_ctx, 'target'):
+            self._target = self._sema_ctx.target
+        else:
+            self._target = TargetInfo.lp64()
         for decl in ast.declarations:
             from pycc.ast_nodes import EnumDecl
             if isinstance(decl, EnumDecl):

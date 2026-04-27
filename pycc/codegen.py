@@ -163,6 +163,12 @@ class CodeGenerator:
         self._sema_ctx = sema_ctx
         self._pic = pic
         self._sym_table = sym_table
+        # Resolve TargetInfo from sema_ctx (with fallback to LP64 default)
+        from pycc.target import TargetInfo
+        if sema_ctx is not None and hasattr(sema_ctx, 'target'):
+            self._target = sema_ctx.target
+        else:
+            self._target = TargetInfo.lp64()
         self.assembly_lines: List[str] = []
         self._string_pool: Dict[str, str] = {}
         self._string_counter = 0
