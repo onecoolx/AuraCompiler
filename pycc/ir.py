@@ -1891,6 +1891,44 @@ class IRGenerator:
             return init.elements[0][1]
         return init
 
+    def _flatten_multidim_init(
+        self,
+        init: Expression,
+        array_dims: list,
+        line: int,
+        column: int,
+    ) -> Initializer:
+        """Flatten a nested multi-dimensional initializer into a 1D list.
+
+        For ``int a[2][3] = { {1,2,3}, {4,5,6} }``, produces a flat
+        ``Initializer`` with elements ``[1,2,3,4,5,6]``.
+
+        Handles both nested brace lists and brace elision (already flat).
+        Each row is padded to the column count with zero-fill.
+        """
+        if not isinstance(init, Initializer):
+            return init
+        elems = init.elements or []
+        cols = int(array_dims[1]) if len(array_dims) >= 2 else 1
+        flat_elems: list = []
+        has_nested = any(isinstance(e, Initializer) for _d, e in elems)
+        if has_nested:
+            for _desig, row in elems:
+                if isinstance(row, Initializer):
+                    row_vals = [e for (_d, e) in (row.elements or [])]
+                    # Pad short rows to column count.
+                    while len(row_vals) < cols:
+                        row_vals.append(IntLiteral(
+                            value=0, is_hex=False, is_octal=False,
+                            line=line, column=column))
+                    flat_elems.extend([(None, v) for v in row_vals[:cols]])
+                else:
+                    flat_elems.append((_desig, row))
+        else:
+            # Already flat (brace elision).
+            flat_elems = list(elems)
+        return Initializer(elements=flat_elems, line=line, column=column)
+
     def _count_flat_inits(self, ctype: CType) -> int:
         """Count the number of flat scalar elements in an aggregate type.
 
@@ -3743,229 +3781,94 @@ class IRGenerator:
                                 self._var_types[self._resolve_name(item.name)] = f"{base}*"
                     except Exception:
                         pass
-                    if self._lower_local_struct_initializer(item):
-                        continue
-                    # Designated array initializer: `int a[N] = { [2] = 10, [0] = 5 }`
-                    if self._lower_local_array_designated_init(item):
-                        continue
+                    # ── Unified initializer lowering ──────────────────
+                    # Build CType from the Declaration and delegate to
+                    # _lower_initializer for all initializer forms.
                     if item.initializer is not None:
-                        # Fixed-size char array string initializer: `char s[N] = "hi";`
-                        # Must be lowered as byte stores, not via generic int-array init.
-                        if item.type.base in {"char", "unsigned char"} and getattr(item, "array_size", None) is not None:
-                            inits = self._const_initializer_list(item.initializer)
-                            if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
-                                s = inits[0].value
-                                n = int(item.array_size)
-                                # C89 constraint: string literal initialization requires
-                                # space for all chars plus the terminating NUL.
-                                if len(s) + 1 > n:
-                                    raise IRGenError(
-                                        f"string literal initializer too long for array '{item.name}'"
-                                    )
-                                bytes_vals = [ord(c) for c in s]
-                                if len(bytes_vals) < n:
-                                    bytes_vals.append(0)
-                                if len(bytes_vals) > n:
-                                    bytes_vals = bytes_vals[:n]
-                                else:
-                                    bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
-                                for idx, b in enumerate(bytes_vals):
-                                    self.instructions.append(
-                                        IRInstruction(
-                                            op="store_index",
-                                            result=f"${b}",
-                                            operand1=self._resolve_name(item.name),
-                                            operand2=f"${idx}",
-                                            label="char",
-                                        )
-                                    )
-                                continue
-
-                        # Local aggregate initialization for arrays.
-                        # NOTE: Some declarators (e.g. `char (*p)[4]`) carry
-                        # `array_size` from the parser but are pointer objects
-                        # (not arrays). Only take the array-init path for true
-                        # array objects. Pointer arrays (e.g. char *a[3]) have
-                        # is_pointer=True but are still arrays — check
-                        # _local_arrays membership instead.
-                        if getattr(item, "array_size", None) is not None and item.name in self._local_arrays:
-                            inits = self._const_initializer_list(item.initializer)
-                            if inits is None:
-                                raise IRGenError("unsupported array initializer: expected initializer list")
-
-                            # Minimal multi-dimensional support: if this is a
-                            # 2D array with a nested initializer list, flatten
-                            # and store bytes/ints in row-major order.
-                            try:
-                                ad = getattr(item, "array_dims", None)
-                            except Exception:
-                                ad = None
-                            if isinstance(ad, list) and len(ad) >= 2 and isinstance(ad[0], int) and isinstance(ad[1], int):
-                                # Minimal multi-dimensional support for local arrays.
-                                # We treat the array as a flat backing store in row-major order.
-                                # Accept both:
-                                #  - nested brace lists: {{...},{...}}
-                                #  - brace elision: { 1,2,3,4 }
-                                from pycc.ast_nodes import Initializer as ASTInit
-
-                                flat: list[Expression] = []
-                                cols = int(ad[1])
-                                if any(isinstance(x, ASTInit) for x in inits):
-                                    for row in inits:
-                                        if isinstance(row, ASTInit):
-                                            row_elems = [e for (_d, e) in (row.elements or [])]
-                                            # Pad each row to column count (zero-fill short rows)
-                                            while len(row_elems) < cols:
-                                                row_elems.append(IntLiteral(
-                                                    value=0, is_hex=False, is_octal=False,
-                                                    line=item.line, column=item.column))
-                                            flat.extend(row_elems[:cols])
-                                        else:
-                                            flat.append(row)
-                                else:
-                                    flat = list(inits)
-
-                                total = int(ad[0]) * int(ad[1])
-                                # Reject excess elements.
-                                if len(flat) > total:
-                                    raise IRGenError(
-                                        f"excess elements in initializer for array '{item.name}'"
-                                    )
-                                for idx in range(total):
-                                    val_ast = flat[idx] if idx < len(flat) else IntLiteral(
-                                        value=0,
-                                        is_hex=False,
-                                        is_octal=False,
-                                        line=item.line,
-                                        column=item.column,
-                                    )
-                                    v = self._gen_expr(val_ast)
-                                    self.instructions.append(
-                                        IRInstruction(
-                                            op="store_index",
-                                            result=v,
-                                            operand1=self._resolve_name(item.name),
-                                            operand2=f"${idx}",
-                                            label="char" if str(item.type.base).strip() in {"char", "unsigned char"} else "int",
-                                        )
-                                    )
-                                continue
-
-                            # struct/union element array: T arr[N] = {{...},{...}}
-                            elem_base = str(item.type.base).strip()
-                            resolved_elem = self._resolve_elem_type(elem_base)
-                            if self._is_struct_or_union_type(elem_base):
-                                n = int(item.array_size)
-                                if len(inits) > n:
-                                    raise IRGenError(
-                                        f"excess elements in initializer for array '{item.name}'"
-                                    )
-                                sym = self._resolve_name(item.name)
-                                # Build CType for element pointer (for symbol table registration).
-                                _elem_ct = ast_type_to_ctype_resolved(item.type, self._sema_ctx) if self._sema_ctx else None
-                                _elem_ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=_elem_ct) if _elem_ct else None
-                                for idx in range(n):
-                                    if _elem_ptr_ct is not None:
-                                        t_addr = self._new_temp_typed(_elem_ptr_ct)
-                                    else:
-                                        t_addr = self._new_temp()
-                                    self._var_types[t_addr] = f"{resolved_elem}*"
-                                    self.instructions.append(IRInstruction(
-                                        op="addr_index", result=t_addr,
-                                        operand1=sym, operand2=f"${idx}"))
-                                    if idx < len(inits):
-                                        elem_init = inits[idx]
-                                        if not isinstance(elem_init, Initializer):
-                                            elem_init = Initializer(
-                                                elements=[(None, elem_init)],
-                                                line=item.line, column=item.column)
-                                        self._lower_struct_init_recursive(
-                                            t_addr, True, resolved_elem,
-                                            elem_init, item.line, item.column)
-                                    else:
-                                        self._lower_struct_init_recursive(
-                                            t_addr, True, resolved_elem,
-                                            Initializer(elements=[], line=item.line, column=item.column),
-                                            item.line, item.column)
-                                continue
-
-                            # int a[N] = {...}
-                            n = int(item.array_size)
-                            if len(inits) > n:
-                                raise IRGenError(
-                                    f"excess elements in initializer for array '{item.name}'"
-                                )
-                            for idx in range(n):
-                                val_ast = inits[idx] if idx < len(inits) else IntLiteral(
-                                    value=0,
-                                    is_hex=False,
-                                    is_octal=False,
-                                    line=item.line,
-                                    column=item.column,
-                                )
-                                v = self._gen_expr(val_ast)
-                                self.instructions.append(
-                                    IRInstruction(
-                                        op="store_index",
-                                        result=v,
-                                        operand1=self._resolve_name(item.name),
-                                        operand2=f"${idx}",
-                                        label="int",
-                                    )
-                                )
-                            continue
-
-                        # char s[] = "abc"; (C89)
-                        if item.type.base in {"char", "unsigned char"} and getattr(item, "array_size", None) is None:
-                            inits = self._const_initializer_list(item.initializer)
-                            if inits is not None and len(inits) == 1 and isinstance(inits[0], StringLiteral):
-                                s = inits[0].value
-                                bytes_vals = [ord(c) for c in s] + [0]
-                                for idx, b in enumerate(bytes_vals):
-                                    self.instructions.append(
-                                        IRInstruction(
-                                            op="store_index",
-                                            result=f"${b}",
-                                            operand1=self._resolve_name(item.name),
-                                            operand2=f"${idx}",
-                                            label="char",
-                                        )
-                                    )
-                                continue
-
-                        # int a[N] = {...} (or any array base we don't support specially)
-                        # already handled above when `array_size` is known.
-                        # If we reached here and this is an array, it means we don't
-                        # support the given initializer form for arrays yet.
-                        if getattr(item, "array_size", None) is not None and item.name in self._local_arrays:
-                            raise IRGenError("unsupported array initializer")
-
-                        # Scalar init (existing path)
-                        v = self._gen_expr(item.initializer)
-                        # struct/union by-value initialization: `struct S b = a;`
-                        # Must use struct_copy instead of mov to copy all bytes.
-                        dst_sym = self._resolve_name(item.name)
-                        dst_ty = self._var_types.get(dst_sym, "")
-                        if isinstance(dst_ty, str) and (dst_ty.strip().startswith("struct ") or dst_ty.strip().startswith("union ")):
-                            layout = getattr(self._sema_ctx, "layouts", {}).get(dst_ty.strip()) if self._sema_ctx else None
-                            sz = int(getattr(layout, "size", 0) or 0) if layout else 0
-                            if sz > 0:
-                                self.instructions.append(IRInstruction(op="struct_copy", result=dst_sym, operand1=v, meta={"size": sz}))
+                        base_sym = self._resolve_name(item.name)
+                        # Determine if this is truly an array declaration.
+                        # The ground truth is _local_arrays membership: if the
+                        # decl was emitted as array(...), the init must use
+                        # array-style stores.  This covers cases like
+                        # `const char* s = "abc"` where the parser sets
+                        # is_pointer=True but the inferred-size logic above
+                        # declared it as array(char,$4).
+                        is_array = item.name in self._local_arrays
+                        if is_array:
+                            # Array: construct CType from the element base type
+                            # (not the full pointer type).  The decl was emitted
+                            # as array(elem_type,$N) where elem_type is
+                            # item.type.base, so we must match that.
+                            arr_sz = getattr(item, "array_size", None)
+                            # Build element CType from the base type string,
+                            # ignoring pointer wrapping.  For `char *a[3]`,
+                            # the element is `char*`; for `const char* s = "abc"`,
+                            # the element is `char`.
+                            if getattr(item.type, 'is_pointer', False) and arr_sz is None:
+                                # Inferred-size pointer case: element is the
+                                # bare base type (e.g. char), not char*.
+                                elem_ctype = _str_to_ctype(str(item.type.base).strip())
                             else:
-                                _init_vol = self._is_volatile_sym(dst_sym)
-                                self.instructions.append(IRInstruction(op="mov", result=dst_sym, operand1=v,
-                                                                       meta={"volatile": True} if _init_vol else None))
+                                elem_ctype = ast_type_to_ctype_resolved(item.type, self._sema_ctx)
+                            # Determine the effective array size.  For inferred
+                            # sizes (e.g. `char s[] = "hi"`) item.array_size
+                            # may still be None — extract from _var_types.
+                            eff_sz = int(arr_sz) if arr_sz is not None else None
+                            if eff_sz is None:
+                                # Try to extract from the recorded var type
+                                # string like "array(char,$3)".
+                                vt = self._var_types.get(base_sym, "")
+                                if isinstance(vt, str) and vt.startswith("array("):
+                                    try:
+                                        _dollar = vt.rfind("$")
+                                        _paren = vt.rfind(")")
+                                        if _dollar >= 0 and _paren > _dollar:
+                                            eff_sz = int(vt[_dollar + 1:_paren])
+                                    except (ValueError, IndexError):
+                                        pass
+                            ad = getattr(item, "array_dims", None)
+                            if isinstance(ad, list) and len(ad) >= 2:
+                                # Multi-dimensional array: flat backing store.
+                                total = 1
+                                for d in ad:
+                                    if isinstance(d, int):
+                                        total *= d
+                                decl_ctype = CArrayType(
+                                    kind=TypeKind.ARRAY,
+                                    element=elem_ctype,
+                                    size=total,
+                                )
+                                flat_init = self._flatten_multidim_init(
+                                    item.initializer, ad, item.line, item.column
+                                )
+                                self._lower_initializer(decl_ctype, flat_init, base_sym, is_ptr=False)
+                            else:
+                                decl_ctype = CArrayType(
+                                    kind=TypeKind.ARRAY,
+                                    element=elem_ctype,
+                                    size=eff_sz,
+                                )
+                                self._lower_initializer(decl_ctype, item.initializer, base_sym, is_ptr=False)
                         else:
-                            _init_vol = self._is_volatile_sym(dst_sym)
-                            self.instructions.append(IRInstruction(op="mov", result=dst_sym, operand1=v,
-                                                                   meta={"volatile": True} if _init_vol else None))
-                        # Propagate pointer-to-row step metadata from the decay
-                        # temp into the local symbol, so later pointer
-                        # arithmetic (e.g. p+1) can scale correctly.
-                        if isinstance(v, str):
-                            src_step = getattr(self, "_ptr_step_bytes", {}).get(v)
-                            if src_step is not None:
-                                self._ptr_step_bytes[self._resolve_name(item.name)] = src_step
+                            # Scalar or struct/union (non-array).
+                            base_ctype = ast_type_to_ctype_resolved(item.type, self._sema_ctx)
+                            self._lower_initializer(base_ctype, item.initializer, base_sym, is_ptr=False)
+                            # Propagate pointer-to-row step metadata from the
+                            # decay temp into the local symbol, so later pointer
+                            # arithmetic (e.g. p+1) can scale correctly.
+                            # This only applies to scalar pointer init like
+                            # `int (*p)[4] = a;` where _gen_expr produces a
+                            # temp with step metadata.
+                            try:
+                                # Peek at the last instruction to find the
+                                # source operand for step propagation.
+                                last_instr = self.instructions[-1] if self.instructions else None
+                                if last_instr and last_instr.op == "mov" and isinstance(last_instr.operand1, str):
+                                    src_step = getattr(self, "_ptr_step_bytes", {}).get(last_instr.operand1)
+                                    if src_step is not None:
+                                        self._ptr_step_bytes[base_sym] = src_step
+                            except Exception:
+                                pass
                 else:
                     self._gen_stmt(item)
             self._pop_scope()
