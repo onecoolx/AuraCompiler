@@ -251,3 +251,75 @@ def test_property4_layout_total_size_match(specs):
     _, _, old_total = _compute_layout_generic(members, _old_size_align)
     _, _, new_total = _compute_layout_generic(members, _new_size_align)
     assert old_total == new_total
+
+
+# -- Property 5: Typedef resolution sizeof/alignof correctness -------------
+# **Validates: Requirements 8.1, 8.2**
+#
+# For any typedef chain (1-3 levels deep) with a scalar base type,
+# sizeof/alignof after resolution should equal the base type's value.
+
+from pycc.ast_nodes import Type as ASTType
+
+
+def _make_typedef_chain(base_type, alias_names):
+    """Build a typedefs dict representing a chain of typedef aliases.
+
+    Example: base_type="int", alias_names=["MyInt", "YourInt"]
+    produces: {"MyInt": Type(base="int"), "YourInt": Type(base="MyInt")}
+    so YourInt -> MyInt -> int.
+    """
+    typedefs = {}
+    prev = base_type
+    for name in alias_names:
+        typedefs[name] = ASTType(base=prev, line=0, column=0)
+        prev = name
+    return typedefs
+
+
+# Strategy: pick a scalar base type and 1-3 alias names
+_alias_name_strategy = st.lists(
+    st.text(
+        alphabet=st.sampled_from("abcdefghijklmnopqrstuvwxyz_"),
+        min_size=2, max_size=8,
+    ).filter(lambda n: n not in _ALL_SCALAR_NAMES and n != "enum"),
+    min_size=1,
+    max_size=3,
+    unique=True,
+)
+
+_typedef_chain_strategy = st.tuples(
+    scalar_name_strategy,       # base scalar type
+    _alias_name_strategy,       # 1-3 alias names
+)
+
+
+@settings(max_examples=200)
+@given(data=_typedef_chain_strategy)
+def test_property5_sizeof_through_typedef_chain(data):
+    """sizeof through a typedef chain equals the base scalar type's sizeof."""
+    base_type, alias_names = data
+    typedefs = _make_typedef_chain(base_type, alias_names)
+    # Query using the outermost alias (last in the chain)
+    outermost = alias_names[-1]
+    assert _ti.sizeof(outermost, typedefs=typedefs) == _ti.sizeof(base_type)
+
+
+@settings(max_examples=200)
+@given(data=_typedef_chain_strategy)
+def test_property5_alignof_through_typedef_chain(data):
+    """alignof through a typedef chain equals the base scalar type's alignof."""
+    base_type, alias_names = data
+    typedefs = _make_typedef_chain(base_type, alias_names)
+    outermost = alias_names[-1]
+    assert _ti.alignof(outermost, typedefs=typedefs) == _ti.alignof(base_type)
+
+
+@settings(max_examples=200)
+@given(data=_typedef_chain_strategy)
+def test_property5_sizeof_equals_alignof_through_typedef(data):
+    """For scalar typedefs, sizeof and alignof after resolution are equal."""
+    base_type, alias_names = data
+    typedefs = _make_typedef_chain(base_type, alias_names)
+    outermost = alias_names[-1]
+    assert _ti.sizeof(outermost, typedefs=typedefs) == _ti.alignof(outermost, typedefs=typedefs)

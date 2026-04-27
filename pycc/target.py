@@ -22,6 +22,36 @@ def _normalize(name: str) -> str:
     return " ".join(name.strip().split())
 
 
+_MAX_TYPEDEF_DEPTH = 16
+
+
+def _resolve_typedef_chain(name: str, typedefs: dict, _depth: int = 0) -> Optional[str]:
+    """Resolve a typedef name to its underlying type name string.
+
+    The *typedefs* dict maps ``str -> AST Type`` objects (with ``.base``
+    and ``.is_pointer`` attributes).  Chains are followed recursively up
+    to ``_MAX_TYPEDEF_DEPTH`` levels to guard against cycles.
+
+    Returns the resolved type name string, or ``None`` if *name* is not
+    a typedef or the chain cannot be resolved.
+    """
+    if _depth >= _MAX_TYPEDEF_DEPTH:
+        return None
+    td = typedefs.get(name)
+    if td is None:
+        return None
+    # AST Type object: if it's a pointer, the resolved type is a pointer
+    if getattr(td, "is_pointer", False):
+        return name + " *"  # will match the '*' check in sizeof/alignof
+    base = getattr(td, "base", None)
+    if base is None:
+        return None
+    base = _normalize(base)
+    if not base:
+        return None
+    return base
+
+
 @dataclass(frozen=True)
 class TargetInfo:
     """Immutable target platform type size and alignment configuration."""
@@ -32,7 +62,7 @@ class TargetInfo:
 
     # -- String-based queries ------------------------------------------------
 
-    def sizeof(self, type_name: str) -> int:
+    def sizeof(self, type_name: str, *, typedefs=None) -> int:
         """Return byte size for a type name string.
 
         Lookup order:
@@ -40,23 +70,38 @@ class TargetInfo:
         2. If contains '*', return pointer_size
         3. If starts with 'enum ', return enum size
         4. Lookup in _sizes
-        5. Fallback to pointer_size (matches existing behaviour)
+        5. If not found and typedefs provided, resolve through typedef chain
+        6. Fallback to pointer_size (matches existing behaviour)
         """
         n = _normalize(type_name)
         if "*" in n:
             return self.pointer_size
         if n.startswith("enum "):
             return self._sizes.get("enum", self.pointer_size)
-        return self._sizes.get(n, self.pointer_size)
+        val = self._sizes.get(n)
+        if val is not None:
+            return val
+        if typedefs is not None:
+            resolved = _resolve_typedef_chain(n, typedefs)
+            if resolved is not None:
+                return self.sizeof(resolved, typedefs=typedefs)
+        return self.pointer_size
 
-    def alignof(self, type_name: str) -> int:
+    def alignof(self, type_name: str, *, typedefs=None) -> int:
         """Return alignment requirement for a type name string."""
         n = _normalize(type_name)
         if "*" in n:
             return self.pointer_size
         if n.startswith("enum "):
             return self._aligns.get("enum", self.pointer_size)
-        return self._aligns.get(n, self.pointer_size)
+        val = self._aligns.get(n)
+        if val is not None:
+            return val
+        if typedefs is not None:
+            resolved = _resolve_typedef_chain(n, typedefs)
+            if resolved is not None:
+                return self.alignof(resolved, typedefs=typedefs)
+        return self.pointer_size
 
     # -- CType-based queries -------------------------------------------------
 
