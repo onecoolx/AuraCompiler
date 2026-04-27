@@ -43,17 +43,7 @@
 **Scope**: Large. 2000-3000 lines across 3-5 specs.
 
 
-## ~~5. Refactor _parse_type_specifier into unordered declaration-specifier collector~~ ✅ DONE
-
-**已完成**。通过 3 个增量 commit 实现：
-1. 提取 `_parse_struct_or_union_specifier` 和 `_parse_enum_specifier` 为独立方法
-2. 新增 `_build_type_from_specifiers` 纯归一化方法 + 36 个单元测试
-3. 重写 `_parse_type_specifier` 为无序声明说明符收集循环，移除 `tok`/`saw_any`/fall-through
-
-净减约 100 行代码，1825 个测试全部通过。扩展点已文档化（添加 `_Bool`/`long long` 只需新增一个 elif 分支）。
-
-
-## 6. Preprocessor performance for large source files
+## 5. Preprocessor performance for large source files
 
 **Problem**: Built-in preprocessor times out on sqlite3.c (250K lines). Forces use_system_cpp=True.
 
@@ -62,7 +52,7 @@
 **Scope**: Algorithm audit 1-2 days, PyPy trivial, mypyc 1 week.
 
 
-## 7. Support 128-bit integers on x86-64
+## 6. Support 128-bit integers on x86-64
 
 **Problem**: __uint128_t mapped to 64-bit (lossy). sqlite3 uses it for high-precision math.
 
@@ -73,7 +63,7 @@
 **Scope**: Medium. ~250 lines.
 
 
-## 8. Complete expression type annotation in semantic analysis
+## 7. Complete expression type annotation in semantic analysis
 
 **Problem**: _expr_type() returns None for compound expressions, causing false positives and code duplication.
 
