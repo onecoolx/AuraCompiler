@@ -8,7 +8,7 @@ Verifies:
 - Union copy: union U b = a emits struct_copy
 - Array dispatch: raises NotImplementedError (stub)
 - Struct dispatch: raises NotImplementedError (stub)
-- Union dispatch: raises NotImplementedError (stub)
+- Union dispatch: initializes first member only per C89 rules
 """
 
 import pytest
@@ -243,7 +243,7 @@ class TestStructDispatchStub:
         member_names = [ins.operand2 for ins in gen.instructions if ins.op == "store_member"]
         assert member_names == ["x", "y"]
 
-    def test_union_init_raises_not_implemented(self):
+    def test_union_init_initializes_first_member(self):
         layout = _make_struct_layout("U", 4, kind="union")
         ctx = _make_sema_ctx(layouts={"union U": layout})
         gen = _make_ir_gen(ctx)
@@ -251,5 +251,7 @@ class TestStructDispatchStub:
         init = Initializer(L, C, elements=[
             (None, IntLiteral(L, C, value=1)),
         ])
-        with pytest.raises(NotImplementedError, match="task 4"):
-            gen._lower_initializer(ct, init, "@u", False)
+        gen._lower_initializer(ct, init, "@u", False)
+        stores = [i for i in gen.instructions if i.op == "store_member"]
+        assert len(stores) == 1
+        assert stores[0].operand2 == "x"

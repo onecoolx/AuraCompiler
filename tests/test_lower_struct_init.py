@@ -1,4 +1,4 @@
-"""Tests for IRGenerator._lower_struct_init — sequential initialization path (task 4.1).
+"""Tests for IRGenerator._lower_struct_init — sequential and union initialization.
 
 Verifies:
 - Sequential member initialization emits store_member for each member
@@ -8,7 +8,8 @@ Verifies:
 - is_ptr=True uses store_member_ptr / addr_of_member_ptr
 - Excess elements raise IRGenError
 - Empty initializer zero-fills all members
-- Union init delegates to stub (NotImplementedError for task 4.2)
+- Union init initializes only the first member per C89 rules
+- Union empty init zero-fills the first member
 - Designated init delegates to stub (NotImplementedError for task 4.3)
 """
 
@@ -242,19 +243,88 @@ class TestNestedStruct:
         assert ops.count("store_member") == 1
 
 
-class TestDelegation:
-    """Designated and union paths delegate to stubs."""
+class TestUnionInit:
+    """Union initialization — first member only (C89 rule)."""
 
-    def test_union_delegates_to_stub(self):
-        layout = _make_layout("U", [("x", "int", 0, 4)], kind="union")
+    def test_union_scalar_first_member(self):
+        """union U { int x; float y; }; union U u = {1};
+        Only x should be initialized."""
+        layout = _make_layout("U", [
+            ("x", "int", 0, 4),
+            ("y", "float", 0, 4),
+        ], kind="union")
         ctx = _make_sema_ctx(layouts={"union U": layout})
         gen = _make_ir_gen(ctx)
         ct = CStructType(kind=TypeKind.UNION, tag="U")
         init = Initializer(L, C, elements=[
             (None, IntLiteral(L, C, value=1)),
         ])
-        with pytest.raises(NotImplementedError, match="task 4.2"):
-            gen._lower_struct_init(ct, init, "@u", False)
+        gen._lower_struct_init(ct, init, "@u", False)
+        stores = [i for i in gen.instructions if i.op == "store_member"]
+        assert len(stores) == 1
+        assert stores[0].operand2 == "x"
+
+    def test_union_empty_initializer_zero_fills(self):
+        """union U u = {}; — first member should be zero-filled."""
+        layout = _make_layout("U", [
+            ("x", "int", 0, 4),
+            ("y", "int", 0, 4),
+        ], kind="union")
+        ctx = _make_sema_ctx(layouts={"union U": layout})
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.UNION, tag="U")
+        init = Initializer(L, C, elements=[])
+        gen._lower_struct_init(ct, init, "@u", False)
+        stores = [i for i in gen.instructions if i.op == "store_member"]
+        assert len(stores) == 1
+        assert stores[0].operand2 == "x"
+
+    def test_union_is_ptr_uses_store_member_ptr(self):
+        """When is_ptr=True, should use store_member_ptr."""
+        layout = _make_layout("U", [
+            ("x", "int", 0, 4),
+        ], kind="union")
+        ctx = _make_sema_ctx(layouts={"union U": layout})
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.UNION, tag="U")
+        init = Initializer(L, C, elements=[
+            (None, IntLiteral(L, C, value=7)),
+        ])
+        gen._lower_struct_init(ct, init, "%t0", True)
+        stores = [i for i in gen.instructions if i.op == "store_member_ptr"]
+        assert len(stores) == 1
+        assert stores[0].operand2 == "x"
+
+    def test_union_nested_struct_first_member(self):
+        """union U { struct S inner; int y; }; union U u = {{1, 2}};
+        First member is a struct — should use addr_of_member + recursive."""
+        inner_layout = _make_layout("S", [
+            ("a", "int", 0, 4),
+            ("b", "int", 4, 4),
+        ])
+        union_layout = _make_layout("U", [
+            ("inner", "struct S", 0, 8),
+            ("y", "int", 0, 4),
+        ], kind="union")
+        ctx = _make_sema_ctx(layouts={
+            "struct S": inner_layout,
+            "union U": union_layout,
+        })
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.UNION, tag="U")
+        init = Initializer(L, C, elements=[
+            (None, Initializer(L, C, elements=[
+                (None, IntLiteral(L, C, value=1)),
+                (None, IntLiteral(L, C, value=2)),
+            ])),
+        ])
+        gen._lower_struct_init(ct, init, "@u", False)
+        ops = [i.op for i in gen.instructions]
+        assert "addr_of_member" in ops
+
+
+class TestDelegation:
+    """Designated path delegates to stub."""
 
     def test_designated_delegates_to_stub(self):
         layout = _make_layout("S", [

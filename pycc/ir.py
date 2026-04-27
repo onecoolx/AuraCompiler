@@ -2462,11 +2462,59 @@ class IRGenerator:
     ) -> None:
         """Lower a union initializer — only the first member (C89 rule).
 
-        Stub for task 4.2.  Will be replaced with full implementation.
+        Per C89, a union initializer initializes only the first declared
+        member.  If the initializer list is empty, the first member is
+        zero-filled.
         """
-        raise NotImplementedError(
-            "_lower_union_init not yet implemented (task 4.2)"
+        if not members:
+            return  # empty union — nothing to do
+
+        first = members[0]
+        m_ct = self._get_member_ctype(layout, first)
+        m_ct_resolved = resolve_typedefs(m_ct, self._sema_ctx) if m_ct else None
+        is_aggregate = (
+            m_ct_resolved is not None
+            and m_ct_resolved.kind in (TypeKind.STRUCT, TypeKind.UNION, TypeKind.ARRAY)
         )
+
+        if not elems:
+            # Empty initializer — zero-fill the first member.
+            self._zero_fill_member(layout, first, m_ct, base_sym, is_ptr, src_line, src_col)
+            return
+
+        # Use the first element to initialize the first member.
+        _desig, elem_init = elems[0]
+
+        if is_aggregate and m_ct is not None:
+            if not isinstance(elem_init, Initializer):
+                # Wrap bare expression in an Initializer for the recursive call.
+                elem_init = Initializer(
+                    elements=[(None, elem_init)],
+                    line=src_line, column=src_col,
+                )
+            ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=m_ct)
+            t_addr = self._new_temp_typed(ptr_ct)
+            op_aom = "addr_of_member_ptr" if is_ptr else "addr_of_member"
+            self.instructions.append(
+                IRInstruction(
+                    op=op_aom, result=t_addr,
+                    operand1=base_sym, operand2=first,
+                    result_type=ptr_ct,
+                )
+            )
+            self._lower_initializer(m_ct, elem_init, t_addr, True)
+        else:
+            # Scalar first member.
+            v = self._gen_expr(elem_init)
+            meta = {"member_ctype": m_ct} if m_ct else None
+            op_store = "store_member_ptr" if is_ptr else "store_member"
+            self.instructions.append(
+                IRInstruction(
+                    op=op_store, result=v,
+                    operand1=base_sym, operand2=first,
+                    meta=meta,
+                )
+            )
 
     def _lower_designated_struct_init_new(
         self,
