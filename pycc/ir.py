@@ -2191,10 +2191,116 @@ class IRGenerator:
         init: Initializer,
         base_sym: str,
     ) -> None:
-        """Lower a designated array initializer (task 3.3 — stub)."""
-        raise NotImplementedError(
-            "_lower_array_init_designated not yet implemented (task 3.3)"
+        """Lower a designated array initializer.
+
+        Handles ``int a[5] = { [2] = 10, [0] = 5 }`` style initialization.
+        Mixed designated/non-designated elements are supported: the sequential
+        position advances after each designated element.  Unspecified indices
+        are zero-filled.
+        """
+        elems = init.elements or []
+        n = ctype.size
+        if n is None:
+            # Compute max index to infer size.
+            max_idx = -1
+            cur = 0
+            for desig, _val in elems:
+                if desig is not None:
+                    idx = self._resolve_designator_index(desig)
+                    if idx is not None:
+                        max_idx = max(max_idx, idx)
+                        cur = idx + 1
+                    else:
+                        max_idx = max(max_idx, cur)
+                        cur += 1
+                else:
+                    max_idx = max(max_idx, cur)
+                    cur += 1
+            n = max_idx + 1 if max_idx >= 0 else 0
+        else:
+            n = int(n)
+
+        # Build index → value mapping.  Non-designated elements advance
+        # sequentially; designated elements set cur_idx to desig.index + 1.
+        index_values: dict[int, Any] = {}
+        cur_idx = 0
+        for desig, val in elems:
+            if desig is not None:
+                idx = self._resolve_designator_index(desig)
+                if idx is not None:
+                    if idx >= n:
+                        raise IRGenError(
+                            f"array designator index {idx} out of bounds "
+                            f"for '{base_sym}' of size {n}"
+                        )
+                    index_values[idx] = val
+                    cur_idx = idx + 1
+                else:
+                    # Fallback: treat as sequential if index can't be resolved.
+                    index_values[cur_idx] = val
+                    cur_idx += 1
+            else:
+                if cur_idx >= n:
+                    raise IRGenError(
+                        f"excess elements in array initializer for '{base_sym}': "
+                        f"index {cur_idx} exceeds size {n}"
+                    )
+                index_values[cur_idx] = val
+                cur_idx += 1
+
+        # Resolve element CType for dispatch decisions.
+        elem_ct = resolve_typedefs(ctype.element, self._sema_ctx) if ctype.element else None
+        is_aggregate = (
+            elem_ct is not None
+            and elem_ct.kind in (TypeKind.STRUCT, TypeKind.UNION, TypeKind.ARRAY)
         )
+        ir_label = ctype_to_ir_type(elem_ct) if elem_ct is not None else "int"
+
+        # Emit stores for [0, n), using designated values or zero-fill.
+        for idx in range(n):
+            elem_init = index_values.get(idx)
+
+            if is_aggregate:
+                # Aggregate element: compute address, recurse.
+                elem_ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=ctype.element)
+                t_addr = self._new_temp_typed(elem_ptr_ct)
+                self._var_types[t_addr] = ir_label + "*" if not ir_label.endswith("*") else ir_label
+                self.instructions.append(
+                    IRInstruction(
+                        op="addr_index", result=t_addr,
+                        operand1=base_sym, operand2=f"${idx}",
+                    )
+                )
+                if elem_init is not None:
+                    if not isinstance(elem_init, Initializer) and ctype.element is not None:
+                        elem_init = Initializer(
+                            elements=[(None, elem_init)],
+                            line=getattr(init, 'line', 0),
+                            column=getattr(init, 'column', 0),
+                        )
+                    self._lower_initializer(ctype.element, elem_init, t_addr, True)
+                else:
+                    zero_init = Initializer(
+                        elements=[],
+                        line=getattr(init, 'line', 0),
+                        column=getattr(init, 'column', 0),
+                    )
+                    self._lower_initializer(ctype.element, zero_init, t_addr, True)
+            else:
+                # Scalar element: use store_index directly.
+                if elem_init is not None:
+                    v = self._gen_expr(elem_init)
+                else:
+                    v = "$0"
+                self.instructions.append(
+                    IRInstruction(
+                        op="store_index",
+                        result=v,
+                        operand1=base_sym,
+                        operand2=f"${idx}",
+                        label=ir_label,
+                    )
+                )
 
     def _extract_string_literal(self, init: Expression) -> Optional[StringLiteral]:
         """Extract a StringLiteral from an initializer if present.
