@@ -2525,11 +2525,160 @@ class IRGenerator:
     ) -> None:
         """Lower a struct/union initializer with designators.
 
-        Stub for task 4.3.  Will be replaced with full implementation.
+        Handles:
+        - Member designators: ``.x = value``
+        - Chained designators: ``.outer.inner = value``
+        - Mixed designated/non-designated elements
+        - Zero-fill for unspecified members
+
+        Uses the same CType-driven dispatch as the sequential path:
+        addr_of_member for aggregates, store_member for scalars.
         """
-        raise NotImplementedError(
-            "_lower_designated_struct_init_new not yet implemented (task 4.3)"
+        ct = resolve_typedefs(ctype, self._sema_ctx)
+        tag = getattr(ct, 'tag', None)
+        if tag is None:
+            raise IRGenError("_lower_designated_struct_init_new: cannot determine struct/union tag")
+
+        prefix = 'union' if ct.kind == TypeKind.UNION else 'struct'
+        layout_key = f"{prefix} {tag}"
+        layouts = getattr(self._sema_ctx, 'layouts', {}) if self._sema_ctx else {}
+        layout = layouts.get(layout_key) or layouts.get(tag)
+        if layout is None:
+            raise IRGenError(f"_lower_designated_struct_init_new: no layout for '{layout_key}'")
+
+        members = list(getattr(layout, 'member_offsets', {}) or {})
+        src_line = getattr(init, 'line', 0)
+        src_col = getattr(init, 'column', 0)
+        elems = init.elements or []
+
+        # Build member → value mapping.
+        # For chained designators on the same outer member, accumulate into a list.
+        # Value types: Expression | Initializer | (Designator, Expression) for chained | list for multi-chained
+        member_values: dict[str, Any] = {}
+        cur_idx = 0  # sequential position for non-designated elements
+
+        for desig, val in elems:
+            if desig is not None:
+                mname = self._resolve_designator_member(desig)
+                if mname is not None and mname in layout.member_offsets:
+                    if desig.next is not None:
+                        # Chained designator (.outer.inner = value).
+                        # Accumulate multiple chains for the same outer member.
+                        existing = member_values.get(mname)
+                        chain_entry = (desig.next, val)
+                        if isinstance(existing, list):
+                            existing.append(chain_entry)
+                        elif isinstance(existing, tuple) and len(existing) == 2 and isinstance(existing[0], Designator):
+                            member_values[mname] = [existing, chain_entry]
+                        else:
+                            member_values[mname] = chain_entry
+                    else:
+                        member_values[mname] = val
+                    # Advance sequential position past this member.
+                    try:
+                        cur_idx = members.index(mname) + 1
+                    except ValueError:
+                        cur_idx = len(members)
+            else:
+                # Non-designated: assign to current sequential member.
+                if cur_idx < len(members):
+                    member_values[members[cur_idx]] = val
+                    cur_idx += 1
+
+        # Emit stores for all members: designated values or zero-fill.
+        for m in members:
+            val = member_values.get(m)
+            m_ct = self._get_member_ctype(layout, m)
+
+            if val is None:
+                # Zero-fill unspecified member.
+                self._zero_fill_member(layout, m, m_ct, base_sym, is_ptr, src_line, src_col)
+                continue
+
+            m_ct_resolved = resolve_typedefs(m_ct, self._sema_ctx) if m_ct else None
+            is_aggregate = (
+                m_ct_resolved is not None
+                and m_ct_resolved.kind in (TypeKind.STRUCT, TypeKind.UNION, TypeKind.ARRAY)
+            )
+
+            if isinstance(val, list):
+                # Multiple chained designators for the same outer member.
+                # Build a synthetic Initializer with designated elements and recurse.
+                self._emit_chained_designated_member(
+                    layout, m, m_ct, val, base_sym, is_ptr, src_line, src_col,
+                )
+            elif isinstance(val, tuple) and len(val) == 2 and isinstance(val[0], Designator):
+                # Single chained designator (.outer.inner = value).
+                self._emit_chained_designated_member(
+                    layout, m, m_ct, [val], base_sym, is_ptr, src_line, src_col,
+                )
+            elif is_aggregate and m_ct is not None:
+                # Aggregate member with a direct value (Initializer or bare expr).
+                ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=m_ct)
+                t_addr = self._new_temp_typed(ptr_ct)
+                op_aom = "addr_of_member_ptr" if is_ptr else "addr_of_member"
+                self.instructions.append(
+                    IRInstruction(
+                        op=op_aom, result=t_addr,
+                        operand1=base_sym, operand2=m,
+                        result_type=ptr_ct,
+                    )
+                )
+                if not isinstance(val, Initializer):
+                    val = Initializer(
+                        elements=[(None, val)],
+                        line=src_line, column=src_col,
+                    )
+                self._lower_initializer(m_ct, val, t_addr, True)
+            else:
+                # Scalar member: evaluate and store.
+                v = self._gen_expr(val)
+                meta = {"member_ctype": m_ct} if m_ct else None
+                op_store = "store_member_ptr" if is_ptr else "store_member"
+                self.instructions.append(
+                    IRInstruction(
+                        op=op_store, result=v,
+                        operand1=base_sym, operand2=m,
+                        meta=meta,
+                    )
+                )
+
+    def _emit_chained_designated_member(
+        self,
+        layout,
+        member: str,
+        m_ct: Optional[CType],
+        chains: list,
+        base_sym: str,
+        is_ptr: bool,
+        src_line: int,
+        src_col: int,
+    ) -> None:
+        """Emit IR for chained designator(s) targeting a nested member.
+
+        ``chains`` is a list of ``(next_designator, value)`` tuples.
+        Gets the member address, builds a synthetic Initializer with
+        designated elements, and recurses via ``_lower_initializer``.
+        """
+        if m_ct is None:
+            return
+        ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=m_ct)
+        t_addr = self._new_temp_typed(ptr_ct)
+        op_aom = "addr_of_member_ptr" if is_ptr else "addr_of_member"
+        self.instructions.append(
+            IRInstruction(
+                op=op_aom, result=t_addr,
+                operand1=base_sym, operand2=member,
+                result_type=ptr_ct,
+            )
         )
+        # Build a synthetic Initializer with the chained designator elements.
+        synth_elements = [(sub_desig, sub_val) for sub_desig, sub_val in chains]
+        synth_init = Initializer(
+            elements=synth_elements,
+            line=src_line, column=src_col,
+        )
+        self._lower_initializer(m_ct, synth_init, t_addr, True)
 
     def _zero_fill_member(
         self,

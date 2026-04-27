@@ -1,4 +1,4 @@
-"""Tests for IRGenerator._lower_struct_init — sequential and union initialization.
+"""Tests for IRGenerator._lower_struct_init — sequential, union, and designated initialization.
 
 Verifies:
 - Sequential member initialization emits store_member for each member
@@ -10,7 +10,7 @@ Verifies:
 - Empty initializer zero-fills all members
 - Union init initializes only the first member per C89 rules
 - Union empty init zero-fills the first member
-- Designated init delegates to stub (NotImplementedError for task 4.3)
+- Designated init: single, all, mixed designated/sequential, chained, zero-fill
 """
 
 import pytest
@@ -323,10 +323,12 @@ class TestUnionInit:
         assert "addr_of_member" in ops
 
 
-class TestDelegation:
-    """Designated path delegates to stub."""
+class TestDesignatedInit:
+    """Designated struct initialization via _lower_struct_init."""
 
-    def test_designated_delegates_to_stub(self):
+    def test_single_designated_member(self):
+        """struct S { int x; int y; }; struct S s = {.y = 99};
+        x should be zero-filled, y should be 99."""
         layout = _make_layout("S", [
             ("x", "int", 0, 4),
             ("y", "int", 4, 4),
@@ -338,5 +340,116 @@ class TestDelegation:
         init = Initializer(L, C, elements=[
             (desig, IntLiteral(L, C, value=99)),
         ])
-        with pytest.raises(NotImplementedError, match="task 4.3"):
-            gen._lower_struct_init(ct, init, "@s", False)
+        gen._lower_struct_init(ct, init, "@s", False)
+        stores = [i for i in gen.instructions if i.op == "store_member"]
+        assert len(stores) == 2
+        # x is zero-filled, y is designated
+        assert stores[0].operand2 == "x"
+        assert stores[1].operand2 == "y"
+
+    def test_all_members_designated(self):
+        """struct S { int x; int y; }; struct S s = {.x = 1, .y = 2};"""
+        layout = _make_layout("S", [
+            ("x", "int", 0, 4),
+            ("y", "int", 4, 4),
+        ])
+        ctx = _make_sema_ctx(layouts={"struct S": layout})
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.STRUCT, tag="S")
+        init = Initializer(L, C, elements=[
+            (Designator(L, C, member="x"), IntLiteral(L, C, value=1)),
+            (Designator(L, C, member="y"), IntLiteral(L, C, value=2)),
+        ])
+        gen._lower_struct_init(ct, init, "@s", False)
+        stores = [i for i in gen.instructions if i.op == "store_member"]
+        assert len(stores) == 2
+        assert stores[0].operand2 == "x"
+        assert stores[1].operand2 == "y"
+
+    def test_mixed_designated_and_sequential(self):
+        """struct S { int a; int b; int c; }; struct S s = {.b = 10, 20};
+        a zero-filled, b = 10, c = 20 (sequential after designated)."""
+        layout = _make_layout("S", [
+            ("a", "int", 0, 4),
+            ("b", "int", 4, 4),
+            ("c", "int", 8, 4),
+        ])
+        ctx = _make_sema_ctx(layouts={"struct S": layout})
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.STRUCT, tag="S")
+        init = Initializer(L, C, elements=[
+            (Designator(L, C, member="b"), IntLiteral(L, C, value=10)),
+            (None, IntLiteral(L, C, value=20)),
+        ])
+        gen._lower_struct_init(ct, init, "@s", False)
+        stores = [i for i in gen.instructions if i.op == "store_member"]
+        assert len(stores) == 3
+        assert stores[0].operand2 == "a"  # zero-filled
+        assert stores[1].operand2 == "b"  # designated
+        assert stores[2].operand2 == "c"  # sequential after .b
+
+    def test_designated_is_ptr(self):
+        """When is_ptr=True, should use store_member_ptr."""
+        layout = _make_layout("S", [
+            ("x", "int", 0, 4),
+        ])
+        ctx = _make_sema_ctx(layouts={"struct S": layout})
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.STRUCT, tag="S")
+        init = Initializer(L, C, elements=[
+            (Designator(L, C, member="x"), IntLiteral(L, C, value=7)),
+        ])
+        gen._lower_struct_init(ct, init, "%t0", True)
+        stores = [i for i in gen.instructions if i.op == "store_member_ptr"]
+        assert len(stores) == 1
+        assert stores[0].operand2 == "x"
+
+    def test_chained_designator(self):
+        """struct Inner { int a; int b; };
+        struct Outer { struct Inner inner; int z; };
+        struct Outer o = {.inner.a = 42};
+        inner.a = 42, inner.b zero-filled, z zero-filled."""
+        inner_layout = _make_layout("Inner", [
+            ("a", "int", 0, 4),
+            ("b", "int", 4, 4),
+        ])
+        outer_layout = _make_layout("Outer", [
+            ("inner", "struct Inner", 0, 8),
+            ("z", "int", 8, 4),
+        ])
+        ctx = _make_sema_ctx(layouts={
+            "struct Inner": inner_layout,
+            "struct Outer": outer_layout,
+        })
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.STRUCT, tag="Outer")
+        inner_desig = Designator(L, C, member="a")
+        outer_desig = Designator(L, C, member="inner", next=inner_desig)
+        init = Initializer(L, C, elements=[
+            (outer_desig, IntLiteral(L, C, value=42)),
+        ])
+        gen._lower_struct_init(ct, init, "@o", False)
+        ops = [i.op for i in gen.instructions]
+        # inner: addr_of_member (for chained designator recurse)
+        assert "addr_of_member" in ops
+
+    def test_zero_fill_unspecified_three_members(self):
+        """struct S { int x; int y; int z; }; struct S s = {.y = 5};
+        x and z should be zero-filled."""
+        layout = _make_layout("S", [
+            ("x", "int", 0, 4),
+            ("y", "int", 4, 4),
+            ("z", "int", 8, 4),
+        ])
+        ctx = _make_sema_ctx(layouts={"struct S": layout})
+        gen = _make_ir_gen(ctx)
+        ct = CStructType(kind=TypeKind.STRUCT, tag="S")
+        init = Initializer(L, C, elements=[
+            (Designator(L, C, member="y"), IntLiteral(L, C, value=5)),
+        ])
+        gen._lower_struct_init(ct, init, "@s", False)
+        stores = [i for i in gen.instructions if i.op == "store_member"]
+        assert len(stores) == 3
+        # All three members should have stores (x=0, y=5, z=0)
+        member_names = [s.operand2 for s in stores]
+        assert member_names == ["x", "y", "z"]
