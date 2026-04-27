@@ -1874,6 +1874,23 @@ class IRGenerator:
 
         return elem_ct
 
+    @staticmethod
+    def _unwrap_single_init(init: Expression) -> Expression:
+        """Unwrap a single-element brace initializer, e.g. ``int x = {42}`` → ``42``.
+
+        If *init* is an ``Initializer`` node with exactly one element whose
+        designator is ``None``, return that inner element.  Otherwise return
+        *init* unchanged.  This implements the C89 rule that allows a scalar
+        initializer to be optionally wrapped in braces.
+        """
+        if (
+            isinstance(init, Initializer)
+            and len(init.elements) == 1
+            and init.elements[0][0] is None
+        ):
+            return init.elements[0][1]
+        return init
+
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"
         self.label_counter += 1
