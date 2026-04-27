@@ -206,9 +206,9 @@ class TestStructCopy:
 
 
 class TestArrayDispatchStub:
-    """Non-string array types should raise NotImplementedError (tasks 3.2/3.3)."""
+    """Non-string array types should now work via the general path (task 3.2)."""
 
-    def test_int_array_raises_not_implemented(self):
+    def test_int_array_emits_store_index(self):
         ctx = _make_sema_ctx()
         gen = _make_ir_gen(ctx)
         ct = CArrayType(kind=TypeKind.ARRAY, element=IntegerType(kind=TypeKind.INT), size=5)
@@ -216,8 +216,10 @@ class TestArrayDispatchStub:
             (None, IntLiteral(L, C, value=1)),
             (None, IntLiteral(L, C, value=2)),
         ])
-        with pytest.raises(NotImplementedError, match="task 3"):
-            gen._lower_initializer(ct, init, "@arr", False)
+        gen._lower_initializer(ct, init, "@arr", False)
+        ops = [ins.op for ins in gen.instructions]
+        # 2 provided + 3 zero-filled = 5 store_index
+        assert ops.count("store_index") == 5
 
 
 class TestStructDispatchStub:

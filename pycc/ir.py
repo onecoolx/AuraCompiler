@@ -2098,9 +2098,102 @@ class IRGenerator:
                     )
                 return
 
-        # ── General array / designated paths (tasks 3.2, 3.3) ──
+        # ── General brace-enclosed initializer list ──
+        if not isinstance(init, Initializer):
+            raise IRGenError(
+                f"unsupported array initializer for '{base_sym}': expected initializer list"
+            )
+
+        elems = init.elements or []
+        n = ctype.size
+        if n is None:
+            # Unsized array: infer size from initializer count.
+            n = len(elems)
+        else:
+            n = int(n)
+
+        # Check for designated initializers — delegate to task 3.3 path.
+        has_desig = any(d is not None for d, _e in elems)
+        if has_desig:
+            self._lower_array_init_designated(ctype, init, base_sym)
+            return
+
+        # Check excess elements.
+        if len(elems) > n:
+            raise IRGenError(
+                f"excess elements in array initializer for '{base_sym}': "
+                f"got {len(elems)}, expected at most {n}"
+            )
+
+        # Resolve element CType for dispatch decisions.
+        elem_ct = resolve_typedefs(ctype.element, self._sema_ctx) if ctype.element else None
+        is_aggregate = (
+            elem_ct is not None
+            and elem_ct.kind in (TypeKind.STRUCT, TypeKind.UNION, TypeKind.ARRAY)
+        )
+
+        # Determine IR type label for store_index (scalar path).
+        ir_label = ctype_to_ir_type(elem_ct) if elem_ct is not None else "int"
+
+        for idx in range(n):
+            if idx < len(elems):
+                _desig, elem_init = elems[idx]
+            else:
+                elem_init = None  # zero-fill
+
+            if is_aggregate:
+                # Aggregate element: compute address, recurse.
+                elem_ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=ctype.element)
+                t_addr = self._new_temp_typed(elem_ptr_ct)
+                self._var_types[t_addr] = ir_label + "*" if not ir_label.endswith("*") else ir_label
+                self.instructions.append(
+                    IRInstruction(
+                        op="addr_index", result=t_addr,
+                        operand1=base_sym, operand2=f"${idx}",
+                    )
+                )
+                if elem_init is not None:
+                    if not isinstance(elem_init, Initializer) and ctype.element is not None:
+                        # Wrap bare expression in an Initializer for struct elements.
+                        elem_init = Initializer(
+                            elements=[(None, elem_init)],
+                            line=getattr(init, 'line', 0),
+                            column=getattr(init, 'column', 0),
+                        )
+                    self._lower_initializer(ctype.element, elem_init, t_addr, True)
+                else:
+                    # Zero-fill aggregate element via empty Initializer.
+                    zero_init = Initializer(
+                        elements=[],
+                        line=getattr(init, 'line', 0),
+                        column=getattr(init, 'column', 0),
+                    )
+                    self._lower_initializer(ctype.element, zero_init, t_addr, True)
+            else:
+                # Scalar element: use store_index directly.
+                if elem_init is not None:
+                    v = self._gen_expr(elem_init)
+                else:
+                    v = "$0"
+                self.instructions.append(
+                    IRInstruction(
+                        op="store_index",
+                        result=v,
+                        operand1=base_sym,
+                        operand2=f"${idx}",
+                        label=ir_label,
+                    )
+                )
+
+    def _lower_array_init_designated(
+        self,
+        ctype: CArrayType,
+        init: Initializer,
+        base_sym: str,
+    ) -> None:
+        """Lower a designated array initializer (task 3.3 — stub)."""
         raise NotImplementedError(
-            "_lower_array_init: non-string paths not yet implemented (task 3.2/3.3)"
+            "_lower_array_init_designated not yet implemented (task 3.3)"
         )
 
     def _extract_string_literal(self, init: Expression) -> Optional[StringLiteral]:

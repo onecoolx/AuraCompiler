@@ -202,9 +202,9 @@ class TestExtractStringLiteral:
 
 
 class TestNonStringArrayFallthrough:
-    """Non-string array init should still raise NotImplementedError."""
+    """Non-string array init should now work via the general path (task 3.2)."""
 
-    def test_int_array_raises(self):
+    def test_int_array_emits_store_index(self):
         ctx = _make_sema_ctx()
         gen = _make_ir_gen(ctx)
         int_ct = IntegerType(kind=TypeKind.INT)
@@ -212,5 +212,7 @@ class TestNonStringArrayFallthrough:
         init = Initializer(L, C, elements=[
             (None, IntLiteral(L, C, value=1)),
         ])
-        with pytest.raises(NotImplementedError, match="task 3"):
-            gen._lower_array_init(ct, init, "@arr")
+        gen._lower_array_init(ct, init, "@arr")
+        ops = [ins.op for ins in gen.instructions]
+        # Should emit store_index for element 0 (value=1) and zero-fill for elements 1,2
+        assert ops.count("store_index") == 3
