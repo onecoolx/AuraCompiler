@@ -146,30 +146,35 @@ def _eval_const_int_expr(expr: Expression, enum_constants: dict = None) -> int:
     raise IRGenError("not an integer constant expression")
 
 
+# Module-level default TargetInfo for functions that lack a sema_ctx.
+from pycc.target import TargetInfo as _TargetInfo, _normalize
+_DEFAULT_TARGET = _TargetInfo.lp64()
+
+
+def _get_target(sema_ctx: object = None) -> '_TargetInfo':
+    """Return the TargetInfo from sema_ctx, falling back to LP64 default."""
+    if sema_ctx is not None:
+        t = getattr(sema_ctx, "target", None)
+        if t is not None:
+            return t
+    return _DEFAULT_TARGET
+
+
 def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
     """Best-effort sizeof for the current project stage."""
 
     if ty is None:
         return 8
+    target = _get_target(sema_ctx)
     if isinstance(ty, str):
         b = " ".join(ty.strip().split())
         if "*" in b:
-            return 8
+            return target.pointer_size
         # Resolve typedef to underlying type.
         if sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and not b.startswith("enum "):
             td = getattr(sema_ctx, "typedefs", {}).get(b)
             if td is not None:
                 return _type_size(td, sema_ctx)
-        if b in {"char", "unsigned char", "signed char"}:
-            return 1
-        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
-            return 2
-        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
-            return 4
-        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
-            return 8
-        if b == "long double":
-            return 16
         if b.startswith("struct ") or b.startswith("union "):
             if sema_ctx is not None:
                 layouts = getattr(sema_ctx, "layouts", None) or getattr(sema_ctx, "_layouts", {})
@@ -177,12 +182,12 @@ def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
                 if layout is not None and int(getattr(layout, "size", 0)) > 0:
                     return int(getattr(layout, "size", 0))
             raise IRGenError(f"invalid application of sizeof to incomplete type '{b}'")
-        return 8
+        return target.sizeof(b)
 
     base = getattr(ty, "base", None)
     if isinstance(base, str):
         if getattr(ty, "is_pointer", False):
-            return 8
+            return target.pointer_size
         b = " ".join(base.strip().split())
         # Resolve typedef to underlying type.
         if sema_ctx is not None and not b.startswith("struct ") and not b.startswith("union ") and not b.startswith("enum "):
@@ -198,19 +203,7 @@ def _type_size(ty: Optional[object], sema_ctx: object = None) -> int:
                 if layout is not None and int(getattr(layout, "size", 0)) > 0:
                     return int(getattr(layout, "size", 0))
             raise IRGenError(f"invalid application of sizeof to incomplete type '{b}'")
-        if b == "char" or b == "unsigned char" or b == "signed char":
-            return 1
-        if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
-            return 2
-        if b == "int" or b == "unsigned int" or b == "signed int":
-            return 4
-        if b in {"long int", "long", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
-            return 8
-        if b == "long double":
-            return 16
-        # treat enums as int
-        if b.startswith("enum "):
-            return 4
+        return target.sizeof(b)
     # fallback
     return 8
 
@@ -224,38 +217,19 @@ def _type_align(ty: Optional[object]) -> int:
 
     if ty is None:
         return 8
+    target = _DEFAULT_TARGET
     if isinstance(ty, str):
         b = ty.strip()
         if "*" in b:
-            return 8
-        if b in {"char", "unsigned char", "signed char"}:
-            return 1
-        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
-            return 2
-        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
-            return 4
-        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
-            return 8
-        if b == "long double":
-            return 16
-        # default
-        return 8
+            return target.pointer_size
+        return target.alignof(b)
 
     base = getattr(ty, "base", None)
     if isinstance(base, str):
         if getattr(ty, "is_pointer", False):
-            return 8
+            return target.pointer_size
         b = base.strip()
-        if b in {"char", "unsigned char", "signed char"}:
-            return 1
-        if b in {"short int", "short", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
-            return 2
-        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
-            return 4
-        if b in {"long int", "long", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
-            return 8
-        if b == "long double":
-            return 16
+        return target.alignof(b)
     return 8
 
 
@@ -263,25 +237,22 @@ def _type_size_bytes(sema_ctx: object, ty: Optional[object]) -> int:
     """Best-effort size (bytes) for constant-initializer packing."""
     if ty is None:
         return 0
+    target = _get_target(sema_ctx)
     if isinstance(ty, str):
         b = ty.strip()
         if b.startswith("struct ") or b.startswith("union "):
             layout = getattr(sema_ctx, "layouts", {}).get(b)
             return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
         if "*" in b:
-            return 8
-        if b in {"char", "unsigned char", "signed char"}:
-            return 1
-        if b in {"short", "short int", "unsigned short", "unsigned short int", "signed short", "signed short int"}:
-            return 2
-        if b in {"int", "unsigned int", "signed int"} or b.startswith("enum "):
-            return 4
-        if b in {"long", "long int", "unsigned long", "unsigned long int", "signed long", "signed long int"}:
-            return 8
-        if b == "long double":
-            return 16
+            return target.pointer_size
         if "long long" in b:
             return 8
+        # Use TargetInfo for known scalar types; return 0 for unknowns.
+        n = _normalize(b)
+        if n.startswith("enum "):
+            return target.sizeof(n)
+        if n in target._sizes:
+            return target._sizes[n]
         return 0
 
     # Type node
@@ -290,7 +261,7 @@ def _type_size_bytes(sema_ctx: object, ty: Optional[object]) -> int:
         layout = getattr(sema_ctx, "layouts", {}).get(str(ty))
         return int(getattr(layout, "size", 0) or 0) if layout is not None else 0
     if kind == "pointer" or getattr(ty, "is_pointer", False):
-        return 8
+        return target.pointer_size
     if kind == "array":
         base_sz = _type_size_bytes(sema_ctx, getattr(ty, "base", None))
         n = getattr(ty, "size", None)
