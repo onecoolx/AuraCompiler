@@ -1940,6 +1940,126 @@ class IRGenerator:
         # Scalar types
         return 1
 
+    # ── Unified initializer lowering entry point ───────────────────────
+
+    def _lower_initializer(
+        self,
+        ctype: CType,
+        init: Expression,
+        base_sym: str,
+        is_ptr: bool,
+    ) -> None:
+        """Unified recursive entry point for local initializer lowering.
+
+        Resolves typedefs on *ctype*, then dispatches to the appropriate
+        handler based on ``ctype.kind``:
+
+        - ARRAY  → ``_lower_array_init``
+        - STRUCT / UNION → ``_lower_struct_init``
+        - scalar → ``_lower_scalar_init``
+
+        Also handles the special case of ``struct S b = a;`` where *init*
+        is not an ``Initializer`` node but a plain expression (struct copy).
+
+        Args:
+            ctype:    Fully constructed CType for the target variable.
+            init:     AST initializer expression (Initializer node, or a
+                      plain expression for struct-copy / scalar init).
+            base_sym: IR symbol name (e.g. ``"@x"`` or ``"%t42"``).
+            is_ptr:   Whether *base_sym* is a pointer to the target
+                      (True when lowering nested aggregate members via
+                      ``addr_of_member``).
+        """
+        # 1. Resolve typedefs to the underlying concrete type.
+        ct = resolve_typedefs(ctype, self._sema_ctx)
+
+        # 2. Struct/union copy: ``struct S b = a;`` — init is a plain
+        #    expression, not an Initializer node.
+        if ct.kind in (TypeKind.STRUCT, TypeKind.UNION) and not isinstance(init, Initializer):
+            v = self._gen_expr(init)
+            tag = getattr(ct, 'tag', None)
+            prefix = 'union' if ct.kind == TypeKind.UNION else 'struct'
+            layout_key = f"{prefix} {tag}" if tag else None
+            layouts = getattr(self._sema_ctx, 'layouts', {}) if self._sema_ctx else {}
+            layout = layouts.get(layout_key) if layout_key else None
+            if layout is None and tag:
+                layout = layouts.get(tag)
+            sz = int(getattr(layout, 'size', 0) or 0) if layout else 0
+            if sz > 0:
+                self.instructions.append(
+                    IRInstruction(op="struct_copy", result=base_sym,
+                                  operand1=v, meta={"size": sz})
+                )
+            else:
+                _vol = self._is_volatile_sym(base_sym)
+                self.instructions.append(
+                    IRInstruction(op="mov", result=base_sym, operand1=v,
+                                  meta={"volatile": True} if _vol else None)
+                )
+            return
+
+        # 3. Dispatch by CType kind.
+        if ct.kind == TypeKind.ARRAY and isinstance(ct, CArrayType):
+            self._lower_array_init(ct, init, base_sym)
+            return
+
+        if ct.kind in (TypeKind.STRUCT, TypeKind.UNION):
+            self._lower_struct_init(ct, init, base_sym, is_ptr)
+            return
+
+        # 4. Scalar (int, float, char, pointer, enum, etc.)
+        self._lower_scalar_init(ct, init, base_sym, is_ptr)
+
+    # ── Stub handlers (to be replaced by tasks 2.1, 3.1–3.3, 4.1–4.3) ─
+
+    def _lower_scalar_init(
+        self,
+        ctype: CType,
+        init: Expression,
+        base_sym: str,
+        is_ptr: bool,
+    ) -> None:
+        """Lower a scalar initializer (stub — delegates to existing logic).
+
+        Will be fully implemented in task 2.1.
+        """
+        init = self._unwrap_single_init(init)
+        v = self._gen_expr(init)
+        _vol = self._is_volatile_sym(base_sym)
+        self.instructions.append(
+            IRInstruction(op="mov", result=base_sym, operand1=v,
+                          meta={"volatile": True} if _vol else None)
+        )
+
+    def _lower_array_init(
+        self,
+        ctype: CArrayType,
+        init: Expression,
+        base_sym: str,
+    ) -> None:
+        """Lower an array initializer (stub — raises NotImplementedError).
+
+        Will be fully implemented in tasks 3.1–3.3.
+        """
+        raise NotImplementedError(
+            "_lower_array_init not yet implemented (task 3.x)"
+        )
+
+    def _lower_struct_init(
+        self,
+        ctype: CType,
+        init: Initializer,
+        base_sym: str,
+        is_ptr: bool,
+    ) -> None:
+        """Lower a struct/union initializer (stub — raises NotImplementedError).
+
+        Will be fully implemented in tasks 4.1–4.3.
+        """
+        raise NotImplementedError(
+            "_lower_struct_init not yet implemented (task 4.x)"
+        )
+
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"
         self.label_counter += 1
