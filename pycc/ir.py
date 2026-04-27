@@ -3412,11 +3412,17 @@ class IRGenerator:
                                 from pycc.ast_nodes import Initializer as ASTInit
 
                                 flat: list[Expression] = []
+                                cols = int(ad[1])
                                 if any(isinstance(x, ASTInit) for x in inits):
                                     for row in inits:
                                         if isinstance(row, ASTInit):
                                             row_elems = [e for (_d, e) in (row.elements or [])]
-                                            flat.extend(row_elems)
+                                            # Pad each row to column count (zero-fill short rows)
+                                            while len(row_elems) < cols:
+                                                row_elems.append(IntLiteral(
+                                                    value=0, is_hex=False, is_octal=False,
+                                                    line=item.line, column=item.column))
+                                            flat.extend(row_elems[:cols])
                                         else:
                                             flat.append(row)
                                 else:
