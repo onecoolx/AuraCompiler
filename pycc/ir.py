@@ -2328,13 +2328,213 @@ class IRGenerator:
         base_sym: str,
         is_ptr: bool,
     ) -> None:
-        """Lower a struct/union initializer (stub — raises NotImplementedError).
+        """Lower a struct/union initializer to IR instructions.
 
-        Will be fully implemented in tasks 4.1–4.3.
+        Handles:
+        - Sequential (non-designated) member initialization (task 4.1)
+        - Union initialization — first member only, C89 (task 4.2)
+        - Designated initializers — delegated to _lower_designated_struct_init (task 4.3)
+
+        For each member, uses CType-driven dispatch via _lower_initializer
+        to recursively handle nested aggregates, brace elision, and
+        trailing zero-fill.
+        """
+        ct = resolve_typedefs(ctype, self._sema_ctx)
+        tag = getattr(ct, 'tag', None)
+        if tag is None:
+            raise IRGenError("_lower_struct_init: cannot determine struct/union tag")
+
+        # Build the layout key: "struct Tag" or "union Tag".
+        prefix = 'union' if ct.kind == TypeKind.UNION else 'struct'
+        layout_key = f"{prefix} {tag}"
+        layouts = getattr(self._sema_ctx, 'layouts', {}) if self._sema_ctx else {}
+        layout = layouts.get(layout_key)
+        if layout is None:
+            # Try the tag directly (e.g. typedef-registered layouts).
+            layout = layouts.get(tag)
+        if layout is None:
+            raise IRGenError(f"_lower_struct_init: no layout for '{layout_key}'")
+
+        members = list(getattr(layout, 'member_offsets', {}) or {})
+        src_line = getattr(init, 'line', 0)
+        src_col = getattr(init, 'column', 0)
+
+        # Extract initializer elements.
+        if not isinstance(init, Initializer):
+            raise IRGenError(
+                f"_lower_struct_init: expected Initializer node for '{layout_key}'"
+            )
+        elems = init.elements or []
+
+        # Check for designated initializers — delegate to task 4.3 path.
+        if self._has_any_designator(init):
+            self._lower_designated_struct_init_new(ct, init, base_sym, is_ptr)
+            return
+
+        # Union: only initialize the first member (C89 rule).
+        if ct.kind == TypeKind.UNION:
+            self._lower_union_init(ct, layout, members, elems, base_sym, is_ptr, src_line, src_col)
+            return
+
+        # Sequential struct initialization.
+        eidx = 0
+        for m in members:
+            m_ct = self._get_member_ctype(layout, m)
+
+            if eidx >= len(elems):
+                # Zero-fill trailing unspecified members.
+                self._zero_fill_member(layout, m, m_ct, base_sym, is_ptr, src_line, src_col)
+                continue
+
+            _desig, elem_init = elems[eidx]
+
+            # Determine if this member is an aggregate type.
+            m_ct_resolved = resolve_typedefs(m_ct, self._sema_ctx) if m_ct else None
+            is_aggregate = (
+                m_ct_resolved is not None
+                and m_ct_resolved.kind in (TypeKind.STRUCT, TypeKind.UNION, TypeKind.ARRAY)
+            )
+
+            if is_aggregate and m_ct is not None:
+                if isinstance(elem_init, Initializer):
+                    # Braced sub-initializer for aggregate member — recurse.
+                    eidx += 1
+                else:
+                    # Brace elision: member is aggregate but element is a bare
+                    # expression.  Consume the correct number of flat elements.
+                    take = self._count_flat_inits(m_ct)
+                    sub_elems: list = []
+                    for _ in range(take):
+                        if eidx >= len(elems):
+                            break
+                        _d, e = elems[eidx]
+                        if isinstance(e, Initializer):
+                            break
+                        sub_elems.append(e)
+                        eidx += 1
+                    elem_init = Initializer(
+                        elements=[(None, e) for e in sub_elems],
+                        line=src_line, column=src_col,
+                    )
+
+                # Get member address and recurse.
+                ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=m_ct)
+                t_addr = self._new_temp_typed(ptr_ct)
+                op_aom = "addr_of_member_ptr" if is_ptr else "addr_of_member"
+                self.instructions.append(
+                    IRInstruction(
+                        op=op_aom, result=t_addr,
+                        operand1=base_sym, operand2=m,
+                        result_type=ptr_ct,
+                    )
+                )
+                self._lower_initializer(m_ct, elem_init, t_addr, True)
+            else:
+                # Scalar member: evaluate expression and store directly.
+                eidx += 1
+                v = self._gen_expr(elem_init)
+                meta = {"member_ctype": m_ct} if m_ct else None
+                op_store = "store_member_ptr" if is_ptr else "store_member"
+                self.instructions.append(
+                    IRInstruction(
+                        op=op_store, result=v,
+                        operand1=base_sym, operand2=m,
+                        meta=meta,
+                    )
+                )
+
+        # Check for excess elements.
+        if eidx < len(elems):
+            raise IRGenError(
+                f"excess elements in initializer for '{layout_key}'"
+            )
+
+    def _lower_union_init(
+        self,
+        ctype: CType,
+        layout,
+        members: list,
+        elems: list,
+        base_sym: str,
+        is_ptr: bool,
+        src_line: int,
+        src_col: int,
+    ) -> None:
+        """Lower a union initializer — only the first member (C89 rule).
+
+        Stub for task 4.2.  Will be replaced with full implementation.
         """
         raise NotImplementedError(
-            "_lower_struct_init not yet implemented (task 4.x)"
+            "_lower_union_init not yet implemented (task 4.2)"
         )
+
+    def _lower_designated_struct_init_new(
+        self,
+        ctype: CType,
+        init: Initializer,
+        base_sym: str,
+        is_ptr: bool,
+    ) -> None:
+        """Lower a struct/union initializer with designators.
+
+        Stub for task 4.3.  Will be replaced with full implementation.
+        """
+        raise NotImplementedError(
+            "_lower_designated_struct_init_new not yet implemented (task 4.3)"
+        )
+
+    def _zero_fill_member(
+        self,
+        layout,
+        member: str,
+        m_ct: Optional[CType],
+        base_sym: str,
+        is_ptr: bool,
+        src_line: int,
+        src_col: int,
+    ) -> None:
+        """Zero-fill a single struct member.
+
+        For aggregate members (struct/union/array), gets the member address
+        and recurses with an empty Initializer.  For scalar members, emits
+        a store of $0.
+        """
+        m_ct_resolved = resolve_typedefs(m_ct, self._sema_ctx) if m_ct else None
+        is_aggregate = (
+            m_ct_resolved is not None
+            and m_ct_resolved.kind in (TypeKind.STRUCT, TypeKind.UNION, TypeKind.ARRAY)
+        )
+
+        if is_aggregate and m_ct is not None:
+            # Zero-fill aggregate: get address, recurse with empty Initializer.
+            ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=m_ct)
+            t_addr = self._new_temp_typed(ptr_ct)
+            op_aom = "addr_of_member_ptr" if is_ptr else "addr_of_member"
+            self.instructions.append(
+                IRInstruction(
+                    op=op_aom, result=t_addr,
+                    operand1=base_sym, operand2=member,
+                    result_type=ptr_ct,
+                )
+            )
+            zero_init = Initializer(elements=[], line=src_line, column=src_col)
+            self._lower_initializer(m_ct, zero_init, t_addr, True)
+        else:
+            # Scalar: emit store of zero.
+            zero_expr = IntLiteral(
+                value=0, is_hex=False, is_octal=False,
+                line=src_line, column=src_col,
+            )
+            v = self._gen_expr(zero_expr)
+            meta = {"member_ctype": m_ct} if m_ct else None
+            op_store = "store_member_ptr" if is_ptr else "store_member"
+            self.instructions.append(
+                IRInstruction(
+                    op=op_store, result=v,
+                    operand1=base_sym, operand2=member,
+                    meta=meta,
+                )
+            )
 
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"

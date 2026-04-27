@@ -74,6 +74,7 @@ def _make_struct_layout(name, size, kind="struct"):
         "x": Type(base="int", line=0, column=0),
         "y": Type(base="int", line=0, column=0),
     }
+    layout.member_array_info = None
     return layout
 
 
@@ -223,9 +224,9 @@ class TestArrayDispatchStub:
 
 
 class TestStructDispatchStub:
-    """Struct/union Initializer should dispatch to _lower_struct_init (currently stub)."""
+    """Struct/union Initializer should dispatch to _lower_struct_init."""
 
-    def test_struct_init_raises_not_implemented(self):
+    def test_struct_init_emits_store_members(self):
         layout = _make_struct_layout("S", 8)
         ctx = _make_sema_ctx(layouts={"struct S": layout})
         gen = _make_ir_gen(ctx)
@@ -234,8 +235,13 @@ class TestStructDispatchStub:
             (None, IntLiteral(L, C, value=1)),
             (None, IntLiteral(L, C, value=2)),
         ])
-        with pytest.raises(NotImplementedError, match="task 4"):
-            gen._lower_initializer(ct, init, "@s", False)
+        gen._lower_initializer(ct, init, "@s", False)
+        ops = [ins.op for ins in gen.instructions]
+        # Two scalar members → two store_member instructions
+        assert ops.count("store_member") == 2
+        # Verify member names
+        member_names = [ins.operand2 for ins in gen.instructions if ins.op == "store_member"]
+        assert member_names == ["x", "y"]
 
     def test_union_init_raises_not_implemented(self):
         layout = _make_struct_layout("U", 4, kind="union")
