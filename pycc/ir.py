@@ -1822,6 +1822,58 @@ class IRGenerator:
             return None
         return ast_type_to_ctype_resolved(mdecl_types[member], self._sema_ctx)
 
+    def _get_member_ctype(self, layout, member_name: str, sema_ctx=None) -> Optional[CType]:
+        """Get a member's fully resolved CType from a StructLayout.
+
+        Unlike _member_ctype_from_layout, this also handles array members
+        by consulting layout.member_array_info and wrapping the element
+        CType in ArrayType(s) for multi-dimensional arrays.
+
+        Args:
+            layout: StructLayout with member type info.
+            member_name: Name of the struct/union member.
+            sema_ctx: SemanticContext for typedef resolution. Falls back
+                       to self._sema_ctx if None.
+
+        Returns:
+            Fully resolved CType (including ArrayType wrapping for array
+            members), or None if the member type cannot be determined.
+        """
+        ctx = sema_ctx if sema_ctx is not None else self._sema_ctx
+        if layout is None or ctx is None:
+            return None
+        mdecl_types = getattr(layout, "member_decl_types", None)
+        if not mdecl_types or member_name not in mdecl_types:
+            return None
+
+        # Convert the element AST Type to a resolved CType.
+        elem_ct = ast_type_to_ctype_resolved(mdecl_types[member_name], ctx)
+
+        # Check if this member is an array.
+        arr_info = getattr(layout, "member_array_info", None)
+        if arr_info and member_name in arr_info:
+            array_size, array_dims = arr_info[member_name]
+            if isinstance(array_dims, list) and len(array_dims) >= 2:
+                # Multi-dimensional: wrap from innermost to outermost.
+                # array_dims is outer-to-inner, e.g. [2, 3] for int a[2][3].
+                ct = elem_ct
+                for dim in reversed(array_dims):
+                    ct = CArrayType(
+                        kind=TypeKind.ARRAY,
+                        element=ct,
+                        size=int(dim) if dim is not None else None,
+                    )
+                return ct
+            else:
+                # Single-dimension array.
+                return CArrayType(
+                    kind=TypeKind.ARRAY,
+                    element=elem_ct,
+                    size=int(array_size) if array_size is not None else None,
+                )
+
+        return elem_ct
+
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"
         self.label_counter += 1
