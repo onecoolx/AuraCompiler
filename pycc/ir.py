@@ -23,7 +23,7 @@ from pycc.types import (
     CType, TypedSymbolTable, ctype_to_ir_type, ast_type_to_ctype_resolved,
     TypeKind, IntegerType, FloatType, PointerType,
     ArrayType as CArrayType, StructType as CStructType,
-    type_sizeof, _str_to_ctype,
+    type_sizeof, _str_to_ctype, resolve_typedefs,
 )
 
 
@@ -1890,6 +1890,55 @@ class IRGenerator:
         ):
             return init.elements[0][1]
         return init
+
+    def _count_flat_inits(self, ctype: CType) -> int:
+        """Count the number of flat scalar elements in an aggregate type.
+
+        Used for brace elision to determine how many elements to consume
+        from a flat initializer list for a nested aggregate member.
+
+        - Array: element_flat_count * size
+        - Struct: sum of flat counts of all members
+        - Union: flat count of first member (C89 rule)
+        - Scalar: 1
+        """
+        ct = resolve_typedefs(ctype, self._sema_ctx)
+
+        if ct.kind == TypeKind.ARRAY and isinstance(ct, CArrayType):
+            elem_count = self._count_flat_inits(ct.element) if ct.element else 1
+            size = ct.size if ct.size is not None else 0
+            return elem_count * size
+
+        if ct.kind in (TypeKind.STRUCT, TypeKind.UNION):
+            tag = getattr(ct, 'tag', None)
+            if tag is None:
+                return 1
+            # Build the layout key: "struct Tag" or "union Tag"
+            prefix = 'union' if ct.kind == TypeKind.UNION else 'struct'
+            layout_key = f"{prefix} {tag}"
+            layouts = getattr(self._sema_ctx, 'layouts', {}) if self._sema_ctx else {}
+            layout = layouts.get(layout_key)
+            if layout is None:
+                # Try the tag directly (e.g. typedef-registered layouts)
+                layout = layouts.get(tag)
+            if layout is None:
+                return 1
+            members = list(getattr(layout, 'member_offsets', {}) or {})
+            if not members:
+                return 1
+            if ct.kind == TypeKind.UNION:
+                # C89: only first member is initialized
+                m_ct = self._get_member_ctype(layout, members[0])
+                return self._count_flat_inits(m_ct) if m_ct else 1
+            # Struct: sum of all members
+            total = 0
+            for m in members:
+                m_ct = self._get_member_ctype(layout, m)
+                total += self._count_flat_inits(m_ct) if m_ct else 1
+            return total
+
+        # Scalar types
+        return 1
 
     def _new_label(self, prefix: str = ".L") -> str:
         l = f"{prefix}{self.label_counter}"
