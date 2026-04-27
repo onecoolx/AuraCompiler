@@ -2019,17 +2019,33 @@ class IRGenerator:
         base_sym: str,
         is_ptr: bool,
     ) -> None:
-        """Lower a scalar initializer (stub — delegates to existing logic).
+        """Lower a scalar initializer to IR instructions.
 
-        Will be fully implemented in task 2.1.
+        Handles all scalar types uniformly: int, float, char, short, long,
+        pointer, and enum.  When *is_ptr* is False, emits a ``mov``
+        instruction (direct variable assignment).  When *is_ptr* is True
+        (base_sym holds a pointer to the target, e.g. from addr_of_member),
+        emits a ``store`` instruction (pointer dereference store).
+
+        Braces around a scalar initializer (``int x = {42}``) are unwrapped
+        before evaluation.  Volatile marking is applied when the target
+        symbol is volatile-qualified.
         """
         init = self._unwrap_single_init(init)
         v = self._gen_expr(init)
         _vol = self._is_volatile_sym(base_sym)
-        self.instructions.append(
-            IRInstruction(op="mov", result=base_sym, operand1=v,
-                          meta={"volatile": True} if _vol else None)
-        )
+        if is_ptr:
+            # base_sym is a pointer to the target location — store through it.
+            self.instructions.append(
+                IRInstruction(op="store", result=v, operand1=base_sym,
+                              meta={"volatile": True} if _vol else None)
+            )
+        else:
+            # base_sym is the target variable itself — direct assignment.
+            self.instructions.append(
+                IRInstruction(op="mov", result=base_sym, operand1=v,
+                              meta={"volatile": True} if _vol else None)
+            )
 
     def _lower_array_init(
         self,
