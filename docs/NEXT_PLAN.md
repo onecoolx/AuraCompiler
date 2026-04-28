@@ -1,19 +1,26 @@
 # AuraCompiler — Next Major Refactoring Plan
 
 > This document tracks planned architectural improvements for the next development phase.
-> Updated after each major version milestone. Current baseline: cJSON 1.7.19 + sqlite3 parser 100% passing, 2059 pycc tests passing.
+> Updated: 2026-04-28. Baseline: 2059 pycc tests passing, cJSON 1.7.19 + sqlite3 parser 100%.
 
-## ~~1. Unify local initializer lowering~~ — DONE
+## 1. Complete expression type annotation in semantic analysis
 
-Completed 2026-04. Replaced ~500 lines of ad-hoc initializer lowering with unified recursive `_lower_initializer` dispatching on CType kind (ARRAY/STRUCT/UNION/Scalar). Handles brace elision, designated initializers, trailing zero-fill, string init, multi-dim arrays. 10 property-based tests validate correctness. See `.kiro/specs/initializer-lowering/`.
+**Problem**: _expr_type() returns None for compound expressions, causing false positives and code duplication.
+
+**Proposed**: Bottom-up type annotation pass computing .resolved_type for every expression node based on C89 rules. All downstream consumers read .resolved_type.
+
+**Benefits**: Eliminates false positives, simplifies IR gen, enables multi-language frontend support.
+
+**Scope**: Large. 500-800 lines new + ~200 lines refactoring. Standalone spec.
+
 
 ## 2. Remove _var_types dictionary
 
-**Problem**: Stringly-typed dictionaries duplicating TypedSymbolTable information.
+**Problem**: Stringly-typed dictionaries (256 references across ir.py + codegen.py) duplicating TypedSymbolTable information.
 
-**Dependencies**: Plan 1 complete ✓.
+**Dependencies**: Plan 1 recommended first (`.resolved_type` reduces string-to-CType guesswork).
 
-**Scope**: Medium refactor. ~1-2 days.
+**Scope**: Large refactor. 12-16h.
 
 
 ## 3. IR Architecture Refactoring: Structured, Typed, Multi-Layer IR
@@ -45,14 +52,3 @@ Completed 2026-04. Replaced ~500 lines of ad-hoc initializer lowering with unifi
 **Dependencies**: Plan 3 (IR refactoring).
 
 **Scope**: Medium. ~250 lines.
-
-
-## 6. Complete expression type annotation in semantic analysis
-
-**Problem**: _expr_type() returns None for compound expressions, causing false positives and code duplication.
-
-**Proposed**: Bottom-up type annotation pass computing .resolved_type for every expression node based on C89 rules. All downstream consumers read .resolved_type.
-
-**Benefits**: Eliminates false positives, simplifies IR gen, enables multi-language frontend support.
-
-**Scope**: Large. 500-800 lines new + ~200 lines refactoring. Standalone spec.
