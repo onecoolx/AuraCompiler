@@ -910,4 +910,4 @@ The project is organized to be completed in 5-6 weeks with clear deliverables at
 
 **Current Version**: 0.1.0 - Core pipeline working end-to-end (C89 subset)
 
-**Next Steps**: struct by-value operations, va_arg builtin, designated initializers, preprocessor token-based expansion engine
+**Next Steps**: remove _var_types dictionary, IR architecture refactoring, preprocessor performance for large files

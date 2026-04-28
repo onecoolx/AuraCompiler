@@ -1,6 +1,6 @@
 # AuraCompiler (pycc) Architecture
 
-Last updated: 2025-07-14
+Last updated: 2026-04-28
 
 ## 1. Compiler Pipeline Overview
 
@@ -474,7 +474,7 @@ phases (IR gen, codegen) never encounter unresolved typedef names.
 | Operators | ✓ |
 | Type casting | ✓ |
 | Variable-length arrays | ⟳ |
-| Designated initializers | ⟳ |
+| Designated initializers | ✓ |
 | Compound literals | ⟳ |
 | Inline functions | ⟳ |
 | Restrict pointers | ⟳ |

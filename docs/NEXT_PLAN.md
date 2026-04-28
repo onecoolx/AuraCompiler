@@ -1,26 +1,19 @@
 # AuraCompiler — Next Major Refactoring Plan
 
 > This document tracks planned architectural improvements for the next development phase.
-> Updated after each major version milestone. Current baseline: cJSON 1.7.19 + sqlite3 parser 100% passing, 1925 pycc tests passing.
+> Updated after each major version milestone. Current baseline: cJSON 1.7.19 + sqlite3 parser 100% passing, 2059 pycc tests passing.
 
-## 1. Unify local initializer lowering into a recursive, type-driven function
+## ~~1. Unify local initializer lowering~~ — DONE
 
-**Problem**: Local variable initializer lowering uses ad-hoc if/elif branches per type combination (the "whitelist" anti-pattern from lesson 4).
-
-**Proposed design**: Single recursive entry point dispatching on CType kind (ARRAY/STRUCT/Scalar). Handles brace elision, designated initializers, trailing zero-fill.
-
-**Prerequisites**: TypedSymbolTable (done), ast_type_to_ctype_resolved (done).
-
-**Scope**: Medium. ~300 lines new replacing ~500 lines old.
-
+Completed 2026-04. Replaced ~500 lines of ad-hoc initializer lowering with unified recursive `_lower_initializer` dispatching on CType kind (ARRAY/STRUCT/UNION/Scalar). Handles brace elision, designated initializers, trailing zero-fill, string init, multi-dim arrays. 10 property-based tests validate correctness. See `.kiro/specs/initializer-lowering/`.
 
 ## 2. Remove _var_types dictionary
 
 **Problem**: Stringly-typed dictionaries duplicating TypedSymbolTable information.
 
-**Dependencies**: Plan 1 should be complete first.
+**Dependencies**: Plan 1 complete ✓.
 
-**Scope**: Medium refactor.
+**Scope**: Medium refactor. ~1-2 days.
 
 
 ## 3. IR Architecture Refactoring: Structured, Typed, Multi-Layer IR

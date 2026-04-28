@@ -1,10 +1,10 @@
 # C89 Implementation Roadmap
 
-Last updated: 2026-04-08
+Last updated: 2026-04-28
 
 ## Current Status
 
-- `pytest -q`: **1389 passed**
+- `pytest -q`: **2059 passed**
 - Compiler pipeline: Preprocessor → Lexer → Parser → Semantics → IR → Optimizer → Codegen → as/ld
 - Target: x86-64 SysV ABI, ELF executables via binutils
 
@@ -135,12 +135,15 @@ Legend: **DONE** = implemented + tested | **PARTIAL** = subset works | **TODO** 
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Scalar initializer | **DONE** | |
-| Array initializer | **DONE** | |
-| Struct initializer | **DONE** | |
-| Nested struct/array initializer | **DONE** | |
-| `char[]` from string literal | **DONE** | |
+| Scalar initializer | **DONE** | unified `_lower_initializer` |
+| Array initializer | **DONE** | unified `_lower_initializer` |
+| Struct initializer | **DONE** | unified `_lower_initializer` |
+| Nested struct/array initializer | **DONE** | unified `_lower_initializer` |
+| `char[]` from string literal | **DONE** | unified `_lower_initializer` |
 | Float/double global initializer | **DONE** | IEEE 754 in .data |
+| Designated initializers | **DONE** | `.member`, `[index]`, mixed, chained, zero-fill |
+| Brace elision | **DONE** | nested aggregates consume flat elements |
+| Union initializer (first member) | **DONE** | C89 rule |
 
 ### Floating Point
 
@@ -193,7 +196,7 @@ Additional bug fixes:
 - Pointer ++/-- step size scaling (commit 9ffa267)
 - Bit-field read/write codegen (commit df44cbf)
 
-**Current: 1389 tests passed, all C89 language features implemented.**
+**Current: 2059 tests passed, all C89 language features implemented.**
 
 ---
 
@@ -216,7 +219,7 @@ non-C89 quality-of-life items:
 | 4 | `va_arg` builtin | Codegen | Medium | Can pass `va_list` to libc but cannot extract args in user variadic functions |
 | 5 | `long double` type | IR + Codegen | Medium | Needs x87 FPU instructions (fld/fstp/fadd etc.) |
 | 6 | `volatile` codegen semantics | Codegen | Low | Prevent load/store reordering/elimination for volatile accesses |
-| 7 | Designated initializers | Parser + IR | Medium | `.member = val` and `[index] = val` — AST node defined but not implemented |
+| 7 | ~~Designated initializers~~ | ~~Parser + IR~~ | ~~Medium~~ | **DONE** — unified `_lower_initializer` with CType-driven dispatch, 10 PBT tests |
 | 8 | Function pointer param type checking | Semantics | Low | Currently only checks arity, not param types |
 | 9 | Reject non-constant `static` local init | IR | Low | `static int x = f();` should be rejected (C89 requires ICE) |
 
@@ -253,7 +256,7 @@ non-C89 quality-of-life items:
 | Expressions & Operators | 20 | 20 | 0 | 0 | **100%** |
 | Statements | 10 | 10 | 0 | 0 | **100%** |
 | Preprocessor (basic directives) | 17 | 17 | 0 | 0 | **100%** |
-| Initialization | 6 | 6 | 0 | 0 | **100%** |
+| Initialization | 9 | 9 | 0 | 0 | **100%** |
 | Floating Point | 11 | 11 | 0 | 0 | **100%** |
 | Code Generation | 9 | 9 | 0 | 0 | **100%** |
 | C89 must-have gaps | 9 | 0 | 0 | 9 | **0%** |
