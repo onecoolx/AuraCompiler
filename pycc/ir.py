@@ -1729,26 +1729,32 @@ class IRGenerator:
             return
         base_ctype = ast_type_to_ctype_resolved(ast_type, self._sema_ctx)
         if arr_sz is not None:
-            # Array declaration: wrap element CType in ArrayType.
-            # For multi-dim arrays, compute total element count.
-            total = int(arr_sz)
-            ad = getattr(decl, "array_dims", None)
-            if isinstance(ad, list) and len(ad) >= 2:
-                prod = 1
-                for d in ad:
-                    if isinstance(d, int):
-                        prod *= d
-                if prod > total:
-                    total = prod
-            # base_ctype may already be a PointerType if the element is a
-            # pointer (e.g. char *arr[N]). For arrays, the element type is
-            # the full base_ctype (including pointer levels).
-            arr_ctype = CArrayType(
-                kind=TypeKind.ARRAY,
-                element=base_ctype,
-                size=total,
-            )
-            self._sym_table.insert(ir_sym, arr_ctype)
+            # If base_ctype is already an ArrayType (e.g. from typedef array
+            # resolution in ast_type_to_ctype_resolved), use it directly
+            # instead of double-wrapping.
+            if isinstance(base_ctype, CArrayType):
+                self._sym_table.insert(ir_sym, base_ctype)
+            else:
+                # Array declaration: wrap element CType in ArrayType.
+                # For multi-dim arrays, compute total element count.
+                total = int(arr_sz)
+                ad = getattr(decl, "array_dims", None)
+                if isinstance(ad, list) and len(ad) >= 2:
+                    prod = 1
+                    for d in ad:
+                        if isinstance(d, int):
+                            prod *= d
+                    if prod > total:
+                        total = prod
+                # base_ctype may already be a PointerType if the element is a
+                # pointer (e.g. char *arr[N]). For arrays, the element type is
+                # the full base_ctype (including pointer levels).
+                arr_ctype = CArrayType(
+                    kind=TypeKind.ARRAY,
+                    element=base_ctype,
+                    size=total,
+                )
+                self._sym_table.insert(ir_sym, arr_ctype)
         else:
             self._sym_table.insert(ir_sym, base_ctype)
 
@@ -2988,6 +2994,25 @@ class IRGenerator:
                     if getattr(item, "storage_class", None) != "static":
                         self._declare_scoped(item.name)
 
+                    # Resolve typedef array types: if the base type is a
+                    # typedef with array dimensions (e.g. typedef int arr_t[5]),
+                    # propagate array_size/array_dims onto the Declaration so
+                    # downstream array handling works correctly.
+                    if (getattr(item, "array_size", None) is None
+                            and self._sema_ctx is not None):
+                        _td_base = getattr(item.type, "base", "")
+                        if isinstance(_td_base, str) and _td_base:
+                            _td_dict = getattr(self._sema_ctx, "typedefs", None)
+                            if isinstance(_td_dict, dict):
+                                _td_ty = _td_dict.get(_td_base)
+                            else:
+                                _td_ty = None
+                            if _td_ty is not None:
+                                _td_dims = getattr(_td_ty, "array_dims", None)
+                                if _td_dims:
+                                    item.array_size = getattr(_td_ty, "array_size", _td_dims[0])
+                                    item.array_dims = list(_td_dims)
+
                     # Track volatile-qualified local variables.
                     try:
                         if getattr(item.type, "is_volatile", False):
@@ -3072,8 +3097,14 @@ class IRGenerator:
                     op1 = None
                     if getattr(item, "array_size", None) is not None:
                         elem_ty = item.type.base
+                        # Resolve typedef element type to underlying type name
+                        # so codegen knows the correct element size.
+                        if isinstance(elem_ty, str) and self._sema_ctx is not None:
+                            _resolved_elem = self._resolve_elem_type(elem_ty.strip())
+                            if _resolved_elem:
+                                elem_ty = _resolved_elem
                         if getattr(item.type, "is_pointer", False):
-                            elem_ty = f"{item.type.base}*"
+                            elem_ty = f"{elem_ty}*"
                         # For multi-dimensional arrays, compute total element
                         # count as the product of all dimensions so the backing
                         # store is large enough.

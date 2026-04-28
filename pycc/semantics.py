@@ -321,7 +321,13 @@ class SemanticAnalyzer:
                     base = getattr(decl.type, 'base', '')
                     if isinstance(base, str) and (base.startswith("struct ") or base.startswith("union ")):
                         pass  # Layout will be registered when StructDecl is processed
-                self._declare_typedef_global(decl.name, decl.type)
+                # Propagate array dimensions from TypedefDecl onto the Type
+                # so downstream typedef resolution can construct ArrayType.
+                td_ty = decl.type
+                if getattr(decl, 'array_dims', None):
+                    td_ty.array_size = decl.array_size
+                    td_ty.array_dims = decl.array_dims
+                self._declare_typedef_global(decl.name, td_ty)
             elif isinstance(decl, (StructDecl, UnionDecl)):
                 self._register_layout_decl(decl)
             elif isinstance(decl, Declaration):

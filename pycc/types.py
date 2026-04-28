@@ -407,6 +407,17 @@ def ast_type_to_ctype_resolved(ast_type, sema_ctx=None) -> CType:
                 # Resolve the typedef base, preserving pointer/array wrapping
                 # from the original AST type node.
                 resolved_base = ast_type_to_ctype_resolved(td, sema_ctx)
+                # If the typedef itself is an array typedef (e.g.
+                # typedef int arr_t[23]), wrap in ArrayType from innermost
+                # to outermost dimension.
+                td_dims = getattr(td, 'array_dims', None)
+                if td_dims:
+                    for dim in reversed(td_dims):
+                        resolved_base = ArrayType(
+                            kind=TypeKind.ARRAY,
+                            element=resolved_base,
+                            size=int(dim) if dim is not None else None,
+                        )
                 # Re-apply pointer levels from the original declaration.
                 is_ptr = getattr(ast_type, 'is_pointer', False)
                 ptr_level = getattr(ast_type, 'pointer_level', 0)

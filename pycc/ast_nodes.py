@@ -225,6 +225,10 @@ class TypedefDecl(ASTNode):
     """Typedef declaration"""
     name: str
     type: Type
+    # Array typedef: typedef int arr_t[23];
+    # array_size is the outermost dimension, array_dims is the full list.
+    array_size: Optional[int] = None
+    array_dims: Optional[list] = None
 
 
 @dataclass

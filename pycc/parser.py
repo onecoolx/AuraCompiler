@@ -285,6 +285,23 @@ class Parser:
                 return td
 
             td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
+            # Array typedef: typedef int arr_t[23];
+            # Parse optional [N] suffix(es) after the name and record on the
+            # TypedefDecl so downstream (semantics / IR gen) can construct the
+            # correct ArrayType when the typedef is used.
+            td_array_dims: List[Optional[int]] = []
+            while self._at(TokenType.LBRACKET):
+                self.advance()  # consume '['
+                dim: Optional[int] = None
+                if not self._at(TokenType.RBRACKET):
+                    size_expr = self._parse_expression()
+                    if isinstance(size_expr, IntLiteral):
+                        dim = size_expr.value
+                self._expect(TokenType.RBRACKET, "Expected ']' in typedef array declarator")
+                td_array_dims.append(dim)
+            if td_array_dims:
+                td.array_size = td_array_dims[0]
+                td.array_dims = td_array_dims
             self._typedefs.add(td.name)
             results = [td]
 
