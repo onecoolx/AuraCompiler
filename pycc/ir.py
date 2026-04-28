@@ -2095,9 +2095,8 @@ class IRGenerator:
 
         Handles:
         - String literal initialization for char/unsigned char arrays
-          (task 3.1)
-        - General brace-enclosed initializer lists (task 3.2 — TODO)
-        - Designated array initializers (task 3.3 — TODO)
+        - General brace-enclosed initializer lists
+        - Designated array initializers
         """
         elem_ct = resolve_typedefs(ctype.element, self._sema_ctx) if ctype.element else None
 
@@ -2150,7 +2149,7 @@ class IRGenerator:
         else:
             n = int(n)
 
-        # Check for designated initializers — delegate to task 3.3 path.
+        # Check for designated initializers.
         has_desig = any(d is not None for d, _e in elems)
         if has_desig:
             self._lower_array_init_designated(ctype, init, base_sym)
@@ -2369,9 +2368,9 @@ class IRGenerator:
         """Lower a struct/union initializer to IR instructions.
 
         Handles:
-        - Sequential (non-designated) member initialization (task 4.1)
-        - Union initialization — first member only, C89 (task 4.2)
-        - Designated initializers — delegated to _lower_designated_struct_init_new (task 4.3)
+        - Sequential (non-designated) member initialization
+        - Union initialization — first member only, per C89
+        - Designated initializers
 
         For each member, uses CType-driven dispatch via _lower_initializer
         to recursively handle nested aggregates, brace elision, and
@@ -2404,7 +2403,7 @@ class IRGenerator:
             )
         elems = init.elements or []
 
-        # Check for designated initializers — delegate to task 4.3 path.
+        # Check for designated initializers.
         if self._has_any_designator(init):
             self._lower_designated_struct_init_new(ct, init, base_sym, is_ptr)
             return
