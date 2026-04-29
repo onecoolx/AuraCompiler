@@ -18,7 +18,7 @@ complexity (typedef/struct/union/enums). Those can be added iteratively.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple, Union, Set, Dict
 
 from pycc.lexer import Token, TokenType
@@ -65,6 +65,34 @@ from pycc.ast_nodes import (
     Initializer,
     Designator,
 )
+
+
+@dataclass
+class DeclaratorInfo:
+    """Result of parsing a C declarator.
+
+    Captures all information from the declarator portion of a C declaration:
+    pointer prefixes, the declared name, array suffixes, and function parameter
+    suffixes.  This is a pure data container — it does NOT hold the base type
+    (that comes from the declaration-specifiers parsed separately).
+
+    Grammar (C89 §6.5.4 / C99 §6.7.5):
+        declarator          = pointer? direct-declarator
+        pointer             = '*' type-qualifier-list? pointer?
+        direct-declarator   = identifier
+                            | '(' declarator ')'
+                            | direct-declarator '[' constant-expr? ']'
+                            | direct-declarator '(' parameter-list ')'
+    """
+    name: Optional[str] = None
+    name_tok: Optional[Token] = None
+    pointer_level: int = 0
+    pointer_quals: List[Set[str]] = field(default_factory=list)
+    array_dims: List[Optional[int]] = field(default_factory=list)
+    is_function: bool = False
+    fn_params: Optional[List] = None
+    fn_is_variadic: bool = False
+    is_paren_wrapped: bool = False
 
 
 class ParserError(Exception):
@@ -1797,6 +1825,220 @@ class Parser:
             decls.append(d)
         self._expect(TokenType.SEMICOLON, "Expected ';' after declaration")
         return decls
+
+    # ------------------------------------------------------------------ #
+    #  Unified declarator parser (C89 §6.5.4 / C99 §6.7.5)              #
+    # ------------------------------------------------------------------ #
+
+    def _parse_declarator(self, allow_abstract: bool = False) -> DeclaratorInfo:
+        """Parse a C declarator (recursive).
+
+        Grammar:
+            declarator          = pointer? direct-declarator
+            pointer             = '*' type-qualifier-list? pointer?
+            direct-declarator   = identifier
+                                | '(' declarator ')'
+                                | direct-declarator '[' constant-expr? ']'
+                                | direct-declarator '(' parameter-list ')'
+
+        Args:
+            allow_abstract: If True, the name is optional (for casts, sizeof).
+
+        Returns:
+            DeclaratorInfo with all parsed information.
+        """
+        info = DeclaratorInfo()
+
+        # --- 1. Pointer prefix: consume '*' and per-level qualifiers ---
+        # Stars are parsed left-to-right (innermost first, outermost last).
+        # The Type convention is outermost-first (index 0 = closest to name),
+        # so we reverse after collecting all levels.
+        _QUALS = {"const", "volatile", "restrict", "__restrict", "__restrict__"}
+        while self._match(TokenType.STAR):
+            info.pointer_level += 1
+            quals: Set[str] = set()
+            while (self.current_token
+                   and self.current_token.type == TokenType.KEYWORD
+                   and self.current_token.value in _QUALS):
+                q = self.current_token.value
+                if q in ("__restrict", "__restrict__"):
+                    q = "restrict"
+                quals.add(q)
+                self.advance()
+            info.pointer_quals.append(quals)
+        # Reverse so index 0 = outermost pointer level (closest to name).
+        info.pointer_quals.reverse()
+
+        # --- 2. Direct declarator ---
+        if self._at(TokenType.LPAREN):
+            # Disambiguate: '(' declarator ')' vs '(' parameter-list ')'
+            # Heuristic: if the token after '(' is '*' or '(' it is a
+            # parenthesized declarator.  If it is an identifier we need to
+            # peek further: identifier followed by ')' or ',' means it is
+            # just a parenthesized name (like Lua's `int (func)(params)`),
+            # while identifier followed by a type-start means parameter list.
+            if self._is_paren_declarator_start():
+                self.advance()  # consume '('
+                inner = self._parse_declarator(allow_abstract=allow_abstract)
+                self._expect(TokenType.RPAREN, "Expected ')' after parenthesized declarator")
+                # Merge: outer pointers wrap around inner declarator.
+                # The C declaration reading rule says inner binds first, then
+                # outer pointers are applied.  We record the paren-wrapped flag
+                # so callers can distinguish `int (x)` from `int x`.
+                inner.is_paren_wrapped = True
+                # Prepend outer pointer levels: outer pointers are "more indirect"
+                # than inner ones.  In `int *(*p)`, outer `*` is level 2, inner
+                # `*` is level 1.  pointer_quals list is outermost-first.
+                if info.pointer_level > 0:
+                    inner.pointer_quals = info.pointer_quals + inner.pointer_quals
+                    inner.pointer_level += info.pointer_level
+                info = inner
+            elif allow_abstract:
+                # Abstract declarator with no name — the '(' we see is NOT
+                # consumed; it belongs to the caller (e.g. a cast expression
+                # or sizeof).  Return what we have so far.
+                pass
+            else:
+                raise ParserError(
+                    "Expected identifier or '(' in declarator",
+                    self.current_token,
+                )
+        elif self._at(TokenType.IDENTIFIER):
+            info.name_tok = self.current_token
+            info.name = self.current_token.value
+            self.advance()
+        else:
+            if not allow_abstract:
+                raise ParserError(
+                    "Expected identifier in declarator",
+                    self.current_token,
+                )
+            # Abstract declarator — no name, just pointer/array/function suffixes.
+
+        # --- 3. Suffixes: array dimensions and function parameter lists ---
+        while True:
+            if self._match(TokenType.LBRACKET):
+                # Array suffix: [N] or []
+                dim: Optional[int] = None
+                if not self._at(TokenType.RBRACKET):
+                    size_expr = self._parse_expression()
+                    if isinstance(size_expr, IntLiteral):
+                        dim = size_expr.value
+                    elif isinstance(size_expr, UnaryOp) and size_expr.op == '-' and isinstance(size_expr.operand, IntLiteral):
+                        dim = -size_expr.operand.value
+                self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+                info.array_dims.append(dim)
+            elif self._at(TokenType.LPAREN) and not info.is_function:
+                # Function parameter suffix.
+                # Only parse if this looks like a parameter list, not an
+                # initializer expression like `int x = foo(1)`.
+                # After a declarator name, '(' always starts a parameter list
+                # in declaration context.  The caller is responsible for not
+                # calling _parse_declarator in expression context.
+                self.advance()  # consume '('
+                info.is_function = True
+                try:
+                    params = self._parse_parameter_list()
+                    info.fn_params = params
+                    info.fn_is_variadic = any(
+                        getattr(p, "name", None) == "..." for p in params
+                    )
+                except Exception:
+                    # Best-effort: skip to matching ')'
+                    info.fn_params = None
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._at(TokenType.LPAREN):
+                            depth += 1
+                        elif self._at(TokenType.RPAREN):
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        self.advance()
+                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+            else:
+                break
+
+        return info
+
+    def _is_paren_declarator_start(self) -> bool:
+        """Decide whether the current '(' begins a parenthesized declarator.
+
+        Called when current token is '('.  Returns True if the contents look
+        like a nested declarator rather than a parameter list.
+
+        Heuristics (in order):
+        1. '(' '*'  → pointer declarator like (*fp)
+        2. '(' '('  → nested parens like ((*fp))
+        3. '(' IDENT ')'  → parenthesized name like (func)
+        4. '(' IDENT '[' → parenthesized array like (arr[10])
+        5. Otherwise → assume parameter list
+        """
+        nxt = self.peek(1)
+        if nxt is None:
+            return False
+        # Case 1: '(' '*' — pointer declarator
+        if nxt.type == TokenType.STAR:
+            return True
+        # Case 2: '(' '(' — nested parens
+        if nxt.type == TokenType.LPAREN:
+            return True
+        # Case 3/4: '(' IDENT ...
+        if nxt.type == TokenType.IDENTIFIER:
+            nxt2 = self.peek(2)
+            if nxt2 is None:
+                return False
+            # '(' name ')' — parenthesized name
+            if nxt2.type == TokenType.RPAREN:
+                return True
+            # '(' name '[' — parenthesized array declarator
+            if nxt2.type == TokenType.LBRACKET:
+                return True
+            # '(' name '(' — could be function declarator name with params
+            # e.g. int (func)(int x) — the name is followed by '(' for params
+            # but that '(' is OUTSIDE the parens, so '(' name '(' means
+            # the inner '(' closes after name, then outer '(' starts params.
+            # Actually in `int (func)(int x)`, tokens are: ( func ) ( int x )
+            # So '(' IDENT ')' is already handled above.
+            # If we see '(' IDENT COMMA or '(' IDENT KEYWORD, it's a param list.
+            return False
+        return False
+
+    def _apply_declarator(self, base_type: Type, info: DeclaratorInfo) -> Type:
+        """Apply pointer levels from DeclaratorInfo onto a base Type.
+
+        This builds a new Type with the correct pointer_level and
+        pointer_quals.  It does NOT handle array_dims or fn_params — those
+        are stored on the Declaration node by the caller.
+
+        Args:
+            base_type: The type from declaration-specifiers (e.g. `int`,
+                       `const struct Foo`).
+            info: The parsed declarator information.
+
+        Returns:
+            A (possibly new) Type with pointer levels applied.
+        """
+        if info.pointer_level == 0:
+            return base_type
+
+        ty = Type(
+            base=base_type.base,
+            is_pointer=True,
+            pointer_level=info.pointer_level,
+            is_const=getattr(base_type, 'is_const', False),
+            is_volatile=getattr(base_type, 'is_volatile', False),
+            is_restrict=getattr(base_type, 'is_restrict', False),
+            is_unsigned=getattr(base_type, 'is_unsigned', False),
+            is_signed=getattr(base_type, 'is_signed', False),
+            line=base_type.line,
+            column=base_type.column,
+        )
+        # pointer_quals in DeclaratorInfo is outermost-first (closest to name
+        # first).  Type.pointer_quals uses the same convention.
+        ty.pointer_quals = [set(q) for q in info.pointer_quals]
+        ty._normalize_pointer_state()
+        return ty
 
     def _finish_declarator(self, base_type: Type, name_tok: Token, paren_declarator: bool = False) -> Declaration:
         ty = base_type
