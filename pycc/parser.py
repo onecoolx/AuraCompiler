@@ -495,16 +495,8 @@ class Parser:
                       line=ty.line, column=ty.column)
             ty._normalize_pointer_state()
 
-        # Build the variable Declaration via _finish_declarator.
-        # _finish_declarator handles array suffixes, function pointer suffixes,
-        # and initializer parsing.  Since _parse_declarator already consumed
-        # pointers, name, and suffixes, we pass the already-built type and
-        # name_tok.  _finish_declarator will handle any remaining suffixes
-        # (e.g. array dims for paren declarators) and the initializer.
+        # --- Build Declaration from DeclaratorInfo ---
         paren_decl = decl_info.is_paren_wrapped
-
-        # Build Declaration directly from decl_info instead of calling
-        # _finish_declarator (which would try to re-parse suffixes).
         array_dims = decl_info.array_dims
         array_size_val = None
         if array_dims:
@@ -1553,8 +1545,8 @@ class Parser:
     def _parse_declarator_suffixes(self, info: DeclaratorInfo) -> None:
         """Parse array and function suffixes into an existing DeclaratorInfo.
 
-        This is the shared suffix-parsing loop used by both _parse_declarator
-        and _finish_declarator.  It consumes:
+        This is the shared suffix-parsing loop used by _parse_declarator.
+        It consumes:
           - Array suffixes:    [N], [], [N][M]
           - Function suffixes: (parameter-list)
 
@@ -1618,114 +1610,6 @@ class Parser:
                 self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
             else:
                 break
-
-    def _finish_declarator(self, base_type: Type, name_tok: Token, paren_declarator: bool = False) -> Declaration:
-        """Finish parsing a declarator after the name has been consumed.
-
-        Uses _parse_declarator's pointer-parsing logic and the shared
-        _parse_declarator_suffixes helper for array/function suffixes.
-        Initializer parsing (= expr) is handled here.
-        """
-        # --- 1. Parse remaining pointer prefixes and qualifiers ---
-        # Build a DeclaratorInfo for any pointer tokens still in the stream.
-        # In most call sites the caller already consumed pointers before the
-        # name, but some paths (e.g. multi-declarator) may leave trailing
-        # qualifiers like `const`/`volatile` that belong to the base type.
-        info = DeclaratorInfo(name=name_tok.value, name_tok=name_tok)
-
-        _QUALS = {"const", "volatile", "restrict", "__restrict", "__restrict__"}
-        while True:
-            if self._match(TokenType.STAR):
-                info.pointer_level += 1
-                quals: Set[str] = set()
-                while (self.current_token
-                       and self.current_token.type == TokenType.KEYWORD
-                       and self.current_token.value in _QUALS):
-                    q = self.current_token.value
-                    if q in ("__restrict", "__restrict__"):
-                        q = "restrict"
-                    quals.add(q)
-                    self.advance()
-                info.pointer_quals.append(quals)
-                continue
-
-            # Qualifiers not after '*' belong to the base type.
-            if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
-                qual = self.current_token.value
-                if qual == "const":
-                    base_type.is_const = True
-                elif qual == "volatile":
-                    base_type.is_volatile = True
-                elif qual == "restrict":
-                    base_type.is_restrict = True
-                self.advance()
-                continue
-            break
-
-        # Reverse pointer_quals so index 0 = outermost (closest to name),
-        # matching the convention used by _apply_declarator.
-        info.pointer_quals.reverse()
-
-        # --- 2. Apply pointer levels to the base type ---
-        ty = self._apply_declarator(base_type, info)
-
-        # --- 3. Parse array and function suffixes via shared helper ---
-        suffix_info = DeclaratorInfo(name=name_tok.value, name_tok=name_tok)
-        self._parse_declarator_suffixes(suffix_info)
-
-        # --- 4. Apply array dimensions ---
-        array_size_val = None
-        array_dims = suffix_info.array_dims
-        if array_dims:
-            # For parenthesized declarators like int (*p)[N], the [N] describes
-            # the pointed-to array, not this variable's array dimension.
-            if not paren_declarator:
-                array_size_val = array_dims[0]
-
-        # --- 5. Apply function suffix (function pointer type) ---
-        if suffix_info.is_function:
-            fn_params = suffix_info.fn_params
-            fn_arity: Optional[int] = None
-            if fn_params is not None:
-                fn_arity = len([p for p in fn_params if getattr(p, "name", None) != "..."])
-
-            # Represent as pointer-to-function in a lightweight way.
-            if not ty.is_pointer:
-                ty = Type(base=ty.base, is_pointer=True, pointer_level=1, line=ty.line, column=ty.column)
-                ty._normalize_pointer_state()
-            ty = Type(base=f"{ty.base} (*)()", is_pointer=True,
-                      pointer_level=max(1, int(getattr(ty, "pointer_level", 0) or 1)),
-                      line=ty.line, column=ty.column)
-            ty._normalize_pointer_state()
-            try:
-                ty.fn_param_count = fn_arity
-                ty.fn_return_type = Type(base=base_type.base,
-                                         is_unsigned=getattr(base_type, 'is_unsigned', False),
-                                         is_signed=getattr(base_type, 'is_signed', False),
-                                         line=base_type.line, column=base_type.column)
-                if fn_params is not None:
-                    ty.fn_param_types = [p.type for p in fn_params if getattr(p, "name", None) != "..."]
-            except Exception:
-                pass
-
-        # --- 6. Initializer parsing (preserved as-is) ---
-        initializer = None
-
-        if self._match(TokenType.ASSIGN):
-            if self._at(TokenType.LBRACE):
-                initializer = self._parse_initializer()
-            else:
-                initializer = self._parse_assignment()
-
-        return Declaration(
-            name=name_tok.value,
-            type=ty,
-            initializer=initializer,
-            line=name_tok.line,
-            column=name_tok.column,
-            array_size=array_size_val,
-            array_dims=array_dims if array_dims else None,
-        )
 
     def _parse_initializer(self) -> Expression:
         """Parse an initializer.
