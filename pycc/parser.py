@@ -1916,48 +1916,7 @@ class Parser:
             # Abstract declarator — no name, just pointer/array/function suffixes.
 
         # --- 3. Suffixes: array dimensions and function parameter lists ---
-        while True:
-            if self._match(TokenType.LBRACKET):
-                # Array suffix: [N] or []
-                dim: Optional[int] = None
-                if not self._at(TokenType.RBRACKET):
-                    size_expr = self._parse_expression()
-                    if isinstance(size_expr, IntLiteral):
-                        dim = size_expr.value
-                    elif isinstance(size_expr, UnaryOp) and size_expr.op == '-' and isinstance(size_expr.operand, IntLiteral):
-                        dim = -size_expr.operand.value
-                self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
-                info.array_dims.append(dim)
-            elif self._at(TokenType.LPAREN) and not info.is_function:
-                # Function parameter suffix.
-                # Only parse if this looks like a parameter list, not an
-                # initializer expression like `int x = foo(1)`.
-                # After a declarator name, '(' always starts a parameter list
-                # in declaration context.  The caller is responsible for not
-                # calling _parse_declarator in expression context.
-                self.advance()  # consume '('
-                info.is_function = True
-                try:
-                    params = self._parse_parameter_list()
-                    info.fn_params = params
-                    info.fn_is_variadic = any(
-                        getattr(p, "name", None) == "..." for p in params
-                    )
-                except Exception:
-                    # Best-effort: skip to matching ')'
-                    info.fn_params = None
-                    depth = 1
-                    while self.current_token and depth > 0:
-                        if self._at(TokenType.LPAREN):
-                            depth += 1
-                        elif self._at(TokenType.RPAREN):
-                            depth -= 1
-                            if depth == 0:
-                                break
-                        self.advance()
-                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
-            else:
-                break
+        self._parse_declarator_suffixes(info)
 
         return info
 
@@ -2040,132 +1999,146 @@ class Parser:
         ty._normalize_pointer_state()
         return ty
 
+    def _parse_declarator_suffixes(self, info: DeclaratorInfo) -> None:
+        """Parse array and function suffixes into an existing DeclaratorInfo.
+
+        This is the shared suffix-parsing loop used by both _parse_declarator
+        and _finish_declarator.  It consumes:
+          - Array suffixes:    [N], [], [N][M]
+          - Function suffixes: (parameter-list)
+
+        The results are stored directly into *info*.
+        """
+        while True:
+            if self._match(TokenType.LBRACKET):
+                # Array suffix: [N] or []
+                dim: Optional[int] = None
+                if not self._at(TokenType.RBRACKET):
+                    size_expr = self._parse_expression()
+                    if isinstance(size_expr, IntLiteral):
+                        dim = size_expr.value
+                    elif (isinstance(size_expr, UnaryOp)
+                          and size_expr.op == '-'
+                          and isinstance(size_expr.operand, IntLiteral)):
+                        dim = -size_expr.operand.value
+                self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
+                info.array_dims.append(dim)
+            elif self._at(TokenType.LPAREN) and not info.is_function:
+                # Function parameter suffix.
+                self.advance()  # consume '('
+                info.is_function = True
+                try:
+                    params = self._parse_parameter_list()
+                    info.fn_params = params
+                    info.fn_is_variadic = any(
+                        getattr(p, "name", None) == "..." for p in params
+                    )
+                except Exception:
+                    # Best-effort: skip to matching ')'
+                    info.fn_params = None
+                    depth = 1
+                    while self.current_token and depth > 0:
+                        if self._at(TokenType.LPAREN):
+                            depth += 1
+                        elif self._at(TokenType.RPAREN):
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        self.advance()
+                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+            else:
+                break
+
     def _finish_declarator(self, base_type: Type, name_tok: Token, paren_declarator: bool = False) -> Declaration:
-        ty = base_type
-        if hasattr(ty, "_normalize_pointer_state"):
-            ty._normalize_pointer_state()
-        # pointers: consume leading '*'s and attach qualifiers per level.
-        # IMPORTANT: qualifiers belong to the pointer level they appear on.
-        # Example:
-        #   const int *p;      -> pointee const (innermost level)
-        #   int * const p;     -> pointer-object const (outermost level)
-        #   const int * const p; -> both
+        """Finish parsing a declarator after the name has been consumed.
+
+        Uses _parse_declarator's pointer-parsing logic and the shared
+        _parse_declarator_suffixes helper for array/function suffixes.
+        Initializer parsing (= expr) is handled here.
+        """
+        # --- 1. Parse remaining pointer prefixes and qualifiers ---
+        # Build a DeclaratorInfo for any pointer tokens still in the stream.
+        # In most call sites the caller already consumed pointers before the
+        # name, but some paths (e.g. multi-declarator) may leave trailing
+        # qualifiers like `const`/`volatile` that belong to the base type.
+        info = DeclaratorInfo(name=name_tok.value, name_tok=name_tok)
+
+        _QUALS = {"const", "volatile", "restrict", "__restrict", "__restrict__"}
         while True:
             if self._match(TokenType.STAR):
-                ty.pointer_level = int(getattr(ty, "pointer_level", 0)) + 1
-                if not getattr(ty, "pointer_quals", None):
-                    ty.pointer_quals = []
-                # Insert a new *outermost* pointer level (closest to the declared name).
-                ty.pointer_quals.insert(0, set())
-                ty._normalize_pointer_state()
-                # Capture pointer-level qualifiers immediately following this '*'.
-                while self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
-                    try:
-                        if not getattr(ty, "pointer_quals", None):
-                            ty.pointer_quals = [set()]
-                        ty.pointer_quals[0].add(self.current_token.value)
-                        ty._normalize_pointer_state()
-                    except Exception:
-                        pass
+                info.pointer_level += 1
+                quals: Set[str] = set()
+                while (self.current_token
+                       and self.current_token.type == TokenType.KEYWORD
+                       and self.current_token.value in _QUALS):
+                    q = self.current_token.value
+                    if q in ("__restrict", "__restrict__"):
+                        q = "restrict"
+                    quals.add(q)
                     self.advance()
+                info.pointer_quals.append(quals)
                 continue
 
-            # Qualifiers that occur here (not after a '*') belong to the base type.
-            if self._at(TokenType.KEYWORD) and self.current_token.value == "const":
-                try:
-                    ty.is_const = True
-                except Exception:
-                    pass
-                self.advance()
-                continue
-            if self._at(TokenType.KEYWORD) and self.current_token.value == "volatile":
-                try:
-                    ty.is_volatile = True
-                except Exception:
-                    pass
-                self.advance()
-                continue
-            if self._at(TokenType.KEYWORD) and self.current_token.value == "restrict":
-                try:
-                    ty.is_restrict = True
-                except Exception:
-                    pass
+            # Qualifiers not after '*' belong to the base type.
+            if self._at(TokenType.KEYWORD) and self.current_token.value in {"const", "volatile", "restrict"}:
+                qual = self.current_token.value
+                if qual == "const":
+                    base_type.is_const = True
+                elif qual == "volatile":
+                    base_type.is_volatile = True
+                elif qual == "restrict":
+                    base_type.is_restrict = True
                 self.advance()
                 continue
             break
 
-        # NOTE: Base-type qualifiers (e.g. `const int`) are represented on
-        # `Type.is_const/is_volatile/is_restrict` and must NOT be migrated to
-        # pointer_quals. Qualifiers in pointer_quals only represent
-        # `* const/* volatile/* restrict` (i.e. qualifiers on the pointer object).
+        # Reverse pointer_quals so index 0 = outermost (closest to name),
+        # matching the convention used by _apply_declarator.
+        info.pointer_quals.reverse()
 
-        # array declarator: name[expr]
-        # NOTE: this parser milestone supports only a single array suffix.
-        # Multi-dimensional arrays will be supported later once type and
-        # initializer lowering can represent nested array shapes.
+        # --- 2. Apply pointer levels to the base type ---
+        ty = self._apply_declarator(base_type, info)
+
+        # --- 3. Parse array and function suffixes via shared helper ---
+        suffix_info = DeclaratorInfo(name=name_tok.value, name_tok=name_tok)
+        self._parse_declarator_suffixes(suffix_info)
+
+        # --- 4. Apply array dimensions ---
         array_size_val = None
-        array_dims: List[Optional[int]] = []
-        while self._match(TokenType.LBRACKET):
-            size_expr = None
-            if not self._at(TokenType.RBRACKET):
-                size_expr = self._parse_expression()
-            self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
-
-            dim: Optional[int] = None
-            if isinstance(size_expr, IntLiteral):
-                dim = size_expr.value
-            array_dims.append(dim)
-
-        # Preserve backwards-compat: `array_size` is the *outermost* dim.
-        # For omitted outer dimension (e.g. `int a[][4]`), leave as None.
+        array_dims = suffix_info.array_dims
         if array_dims:
             # For parenthesized declarators like int (*p)[N], the [N] describes
             # the pointed-to array, not this variable's array dimension.
             if not paren_declarator:
                 array_size_val = array_dims[0]
 
-        # function declarator: name(params)
-        # Minimal support for function pointer declarations where the type is a
-        # pointer, but the declarator has a trailing parameter list.
-        if self._match(TokenType.LPAREN):
-            # Best-effort: extract arity by reusing the normal parameter-list parser.
-            # This supports `(void)` as 0 parameters.
-            try:
-                params = self._parse_parameter_list()
-                fn_arity: Optional[int] = len([p for p in params if getattr(p, "name", None) != "..."])
-            except Exception:
-                params = None
-                fn_arity = None
-                # If parsing fails for any reason, consume until matching ')'.
-                depth = 1
-                while self.current_token and depth > 0:
-                    if self._match(TokenType.LPAREN):
-                        depth += 1
-                        continue
-                    if self._match(TokenType.RPAREN):
-                        depth -= 1
-                        continue
-                    self.advance()
-            self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+        # --- 5. Apply function suffix (function pointer type) ---
+        if suffix_info.is_function:
+            fn_params = suffix_info.fn_params
+            fn_arity: Optional[int] = None
+            if fn_params is not None:
+                fn_arity = len([p for p in fn_params if getattr(p, "name", None) != "..."])
 
             # Represent as pointer-to-function in a lightweight way.
             if not ty.is_pointer:
                 ty = Type(base=ty.base, is_pointer=True, pointer_level=1, line=ty.line, column=ty.column)
                 ty._normalize_pointer_state()
-            ty = Type(base=f"{ty.base} (*)()", is_pointer=True, pointer_level=max(1, int(getattr(ty, "pointer_level", 0) or 1)), line=ty.line, column=ty.column)
+            ty = Type(base=f"{ty.base} (*)()", is_pointer=True,
+                      pointer_level=max(1, int(getattr(ty, "pointer_level", 0) or 1)),
+                      line=ty.line, column=ty.column)
             ty._normalize_pointer_state()
             try:
                 ty.fn_param_count = fn_arity
-                # Store full function pointer signature for type compatibility checks.
                 ty.fn_return_type = Type(base=base_type.base,
                                          is_unsigned=getattr(base_type, 'is_unsigned', False),
                                          is_signed=getattr(base_type, 'is_signed', False),
                                          line=base_type.line, column=base_type.column)
-                if params is not None:
-                    ty.fn_param_types = [p.type for p in params if getattr(p, "name", None) != "..."]
+                if fn_params is not None:
+                    ty.fn_param_types = [p.type for p in fn_params if getattr(p, "name", None) != "..."]
             except Exception:
                 pass
 
+        # --- 6. Initializer parsing (preserved as-is) ---
         initializer = None
 
         if self._match(TokenType.ASSIGN):
