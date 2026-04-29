@@ -674,12 +674,6 @@ class Parser:
                     raise ParserError("Unterminated struct/union member list", self.current_token)
                 mem_ty = self._parse_type_specifier()
 
-                # Support pointer members in struct/union definitions, e.g.
-                #   struct S { void *p; };
-                while self._match(TokenType.STAR):
-                    mem_ty = Type(base=mem_ty.base, is_pointer=True, line=mem_ty.line, column=mem_ty.column)
-                self._skip_pointer_qualifiers()
-
                 # C11 anonymous struct/union members: `union { ... };` with
                 # no member name.  Skip them gracefully (treat as padding).
                 if self._at(TokenType.SEMICOLON):
@@ -688,116 +682,50 @@ class Parser:
                         self.advance()  # consume ';'
                         continue
 
-                # Function pointer member: int (*name)(params);
-                # Also handles nested function pointers that return a
-                # function pointer, e.g.:
-                #   void (*(*xDlSym)(sqlite3_vfs*, void*, const char*))(void);
-                # The pattern is: `(` `*` followed by either:
-                #   - IDENTIFIER  → simple fnptr: `(*name)(params)`
-                #   - `(`         → nested fnptr: `(*(*name)(inner_params))(outer_params)`
-                if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
-                    self.advance()  # consume '('
-                    self.advance()  # consume '*'
-
-                    # Nested function pointer: (*(*name)(inner))(outer)
-                    if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
-                        self.advance()  # consume inner '('
-                        self.advance()  # consume inner '*'
-                        mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
-                        self._expect(TokenType.RPAREN, "Expected ')'")
-                        # Consume inner parameter list
-                        if self._match(TokenType.LPAREN):
-                            depth = 1
-                            while self.current_token and depth > 0:
-                                if self._at(TokenType.LPAREN):
-                                    depth += 1
-                                elif self._at(TokenType.RPAREN):
-                                    depth -= 1
-                                    if depth == 0:
-                                        break
-                                self.advance()
-                            self._expect(TokenType.RPAREN, "Expected ')'")
-                        self._expect(TokenType.RPAREN, "Expected ')' after nested declarator")
-                        # Consume outer parameter list
-                        if self._match(TokenType.LPAREN):
-                            depth = 1
-                            while self.current_token and depth > 0:
-                                if self._at(TokenType.LPAREN):
-                                    depth += 1
-                                elif self._at(TokenType.RPAREN):
-                                    depth -= 1
-                                    if depth == 0:
-                                        break
-                                self.advance()
-                            self._expect(TokenType.RPAREN, "Expected ')'")
-                        fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
-                                     line=mem_ty.line, column=mem_ty.column)
-                        fp_ty._normalize_pointer_state()
-                        self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
-                        members.append(Declaration(name=mem_name.value, type=fp_ty,
-                                                   line=mem_name.line, column=mem_name.column))
-                        continue
-
-                    # Consume additional pointer stars: (**name) means
-                    # pointer-to-function-pointer.
-                    while self._match(TokenType.STAR):
-                        pass
-                    self._skip_pointer_qualifiers()
-
-                    mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
-                    self._expect(TokenType.RPAREN, "Expected ')'")
-                    # Consume parameter list
-                    if self._match(TokenType.LPAREN):
-                        depth = 1
-                        while self.current_token and depth > 0:
-                            if self._at(TokenType.LPAREN):
-                                depth += 1
-                            elif self._at(TokenType.RPAREN):
-                                depth -= 1
-                                if depth == 0:
-                                    break
-                            self.advance()
-                        self._expect(TokenType.RPAREN, "Expected ')'")
-                    fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
-                                 line=mem_ty.line, column=mem_ty.column)
-                    fp_ty._normalize_pointer_state()
-                    self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
-                    members.append(Declaration(name=mem_name.value, type=fp_ty,
-                                               line=mem_name.line, column=mem_name.column))
-                    continue
-
                 # Anonymous bit-field: `int :32;` — padding, no member name.
                 if self._at(TokenType.COLON):
                     self.advance()  # consume ':'
                     bw_expr = self._parse_expression()
-                    bw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
-                    # Skip anonymous padding — don't add to members list.
                     self._expect(TokenType.SEMICOLON, "Expected ';' after anonymous bit-field")
                     continue
 
-                mem_name = self._expect(TokenType.IDENTIFIER, "Expected member name")
+                # --- Unified declarator parsing for struct members ---
+                decl_info = self._parse_declarator()
+                mem_ty_applied = self._apply_declarator(mem_ty, decl_info)
 
-                # Support fixed-size array members (incl. multi-dimensional):
-                mem_array_dims = []
-                while self._match(TokenType.LBRACKET):
-                    # Parse the size expression inside [...]
-                    if self._at(TokenType.RBRACKET):
-                        mem_array_dims.append(None)
-                    else:
-                        size_expr = self._parse_expression()
-                        if isinstance(size_expr, IntLiteral):
-                            mem_array_dims.append(int(size_expr.value))
-                        elif isinstance(size_expr, BinaryOp):
-                            # Constant fold simple expressions like 8*8
-                            try:
-                                from pycc.ir import _eval_const_int_expr
-                                val = _eval_const_int_expr(size_expr)
-                                mem_array_dims.append(int(val) if val is not None else None)
-                            except Exception:
-                                mem_array_dims.append(None)
-                        else:
-                            mem_array_dims.append(None)
-                    self._expect(TokenType.RBRACKET, "Expected ']' after array declarator")
+                # Function pointer member: _parse_declarator sets is_function
+                # for patterns like (*name)(params) and (*(*name)(inner))(outer).
+                if decl_info.is_function or decl_info.is_paren_wrapped:
+                    # For nested function pointers like (*(*xDlSym)(inner))(outer),
+                    # _parse_declarator consumes the inner params and sets
+                    # is_function=True, but the outer (outer) suffix remains
+                    # unconsumed because _parse_declarator_suffixes skips a
+                    # second function suffix.  Consume it here.
+                    # Also handles simple paren-wrapped declarators like (*fp)
+                    # where the trailing (params) wasn't consumed as a suffix.
+                    if self._at(TokenType.LPAREN):
+                        self.advance()  # consume '('
+                        try:
+                            self._parse_parameter_list()
+                        except Exception:
+                            depth = 1
+                            while self.current_token and depth > 0:
+                                if self._at(TokenType.LPAREN):
+                                    depth += 1
+                                elif self._at(TokenType.RPAREN):
+                                    depth -= 1
+                                    if depth == 0:
+                                        break
+                                self.advance()
+                        self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
+                    fp_ty = Type(base=f"{mem_ty.base} (*)()", is_pointer=True,
+                                 line=mem_ty.line, column=mem_ty.column)
+                    fp_ty._normalize_pointer_state()
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after member declaration")
+                    members.append(Declaration(name=decl_info.name, type=fp_ty,
+                                               line=decl_info.name_tok.line if decl_info.name_tok else mem_ty.line,
+                                               column=decl_info.name_tok.column if decl_info.name_tok else mem_ty.column))
+                    continue
 
                 # Bit-field: member_name : width
                 bit_width = None
@@ -808,35 +736,49 @@ class Parser:
                     else:
                         bit_width = 0
 
-                d = Declaration(name=mem_name.value, type=mem_ty, line=mem_name.line, column=mem_name.column)
-                if mem_array_dims:
-                    d.array_size = mem_array_dims[0]
-                    d.array_dims = mem_array_dims
+                array_dims = decl_info.array_dims
+                d = Declaration(
+                    name=decl_info.name,
+                    type=mem_ty_applied,
+                    line=decl_info.name_tok.line if decl_info.name_tok else mem_ty.line,
+                    column=decl_info.name_tok.column if decl_info.name_tok else mem_ty.column,
+                )
+                if array_dims:
+                    d.array_size = array_dims[0]
+                    d.array_dims = array_dims
                 if bit_width is not None:
                     d.bit_width = bit_width
                 members.append(d)
 
                 # Multi-declarator: int a, b, *c;
                 while self._match(TokenType.COMMA):
-                    extra_ty = Type(base=mem_ty.base, line=mem_ty.line, column=mem_ty.column)
-                    while self._match(TokenType.STAR):
-                        extra_ty = Type(base=extra_ty.base, is_pointer=True, line=extra_ty.line, column=extra_ty.column)
-                    en = self._expect(TokenType.IDENTIFIER, "Expected member name")
-                    if self._match(TokenType.LBRACKET):
-                        depth = 1
-                        while self.current_token and depth > 0:
-                            if self._match(TokenType.RBRACKET):
-                                depth -= 1
-                                break
-                            if self._match(TokenType.LBRACKET):
-                                depth += 1
-                                continue
-                            self.advance()
+                    extra_info = self._parse_declarator()
+                    extra_ty = self._apply_declarator(
+                        Type(
+                            base=mem_ty.base,
+                            is_const=mem_ty.is_const,
+                            is_volatile=mem_ty.is_volatile,
+                            is_unsigned=mem_ty.is_unsigned,
+                            is_signed=mem_ty.is_signed,
+                            line=mem_ty.line,
+                            column=mem_ty.column,
+                        ),
+                        extra_info,
+                    )
+                    extra_array_dims = extra_info.array_dims
                     ebw = None
                     if self._match(TokenType.COLON):
                         bw_expr = self._parse_expression()
                         ebw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
-                    ed = Declaration(name=en.value, type=extra_ty, line=en.line, column=en.column)
+                    ed = Declaration(
+                        name=extra_info.name,
+                        type=extra_ty,
+                        line=extra_info.name_tok.line if extra_info.name_tok else mem_ty.line,
+                        column=extra_info.name_tok.column if extra_info.name_tok else mem_ty.column,
+                    )
+                    if extra_array_dims:
+                        ed.array_size = extra_array_dims[0]
+                        ed.array_dims = extra_array_dims
                     if ebw is not None:
                         ed.bit_width = ebw
                     members.append(ed)
