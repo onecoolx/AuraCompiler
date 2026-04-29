@@ -246,106 +246,18 @@ class Parser:
         if self.current_token and self.current_token.type == TokenType.KEYWORD and self.current_token.value == "typedef":
             self.advance()
             base_type = self._parse_type_specifier()
-            while self._match(TokenType.STAR):
-                if isinstance(base_type, Type):
-                    base_type.pointer_level = int(getattr(base_type, "pointer_level", 0)) + 1
-                    if not getattr(base_type, "pointer_quals", None):
-                        base_type.pointer_quals = []
-                    base_type.pointer_quals.insert(0, set())
-                    base_type._normalize_pointer_state()
-                else:
-                    base_type = Type(base=getattr(base_type, "base", "int"), pointer_level=1, is_pointer=True, line=getattr(base_type, "line", 1), column=getattr(base_type, "column", 1))
-            self._skip_pointer_qualifiers()
 
-            # Function pointer typedef: typedef int (*name)(params);
-            if self._at(TokenType.LPAREN) and self.peek(1) and self.peek(1).type == TokenType.STAR:
-                self.advance()  # consume '('
-                self.advance()  # consume '*'
-                name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
-                self._expect(TokenType.RPAREN, "Expected ')' after function pointer name")
-                # Parse parameter list
-                if self._match(TokenType.LPAREN):
-                    depth = 1
-                    while self.current_token and depth > 0:
-                        if self._at(TokenType.LPAREN):
-                            depth += 1
-                        elif self._at(TokenType.RPAREN):
-                            depth -= 1
-                            if depth == 0:
-                                break
-                        self.advance()
-                    self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
-                fp_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
-                             line=base_type.line, column=base_type.column)
-                fp_ty._normalize_pointer_state()
-                self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
-                td = TypedefDecl(name=name_tok.value, type=fp_ty, line=name_tok.line, column=name_tok.column)
-                self._typedefs.add(td.name)
-                return td
-
-            name_tok = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
-
-            # Function type typedef: typedef int func_t(int, int);
-            # Treat as function pointer type for downstream compatibility.
-            if self._at(TokenType.LPAREN):
-                self.advance()  # consume '('
-                try:
-                    fp_params = self._parse_parameter_list()
-                except Exception:
-                    # Skip to closing paren on parse failure
-                    depth = 1
-                    while self.current_token and depth > 0:
-                        if self._at(TokenType.LPAREN):
-                            depth += 1
-                        elif self._at(TokenType.RPAREN):
-                            depth -= 1
-                            if depth == 0:
-                                break
-                        self.advance()
-                self._expect(TokenType.RPAREN, "Expected ')' after parameter list")
-                fp_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
-                             line=base_type.line, column=base_type.column)
-                fp_ty._normalize_pointer_state()
-                self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
-                td = TypedefDecl(name=name_tok.value, type=fp_ty,
-                                 line=name_tok.line, column=name_tok.column)
-                self._typedefs.add(td.name)
-                return td
-
-            td = TypedefDecl(name=name_tok.value, type=base_type, line=name_tok.line, column=name_tok.column)
-            # Array typedef: typedef int arr_t[23];
-            # Parse optional [N] suffix(es) after the name and record on the
-            # TypedefDecl so downstream (semantics / IR gen) can construct the
-            # correct ArrayType when the typedef is used.
-            td_array_dims: List[Optional[int]] = []
-            while self._at(TokenType.LBRACKET):
-                self.advance()  # consume '['
-                dim: Optional[int] = None
-                if not self._at(TokenType.RBRACKET):
-                    size_expr = self._parse_expression()
-                    if isinstance(size_expr, IntLiteral):
-                        dim = size_expr.value
-                self._expect(TokenType.RBRACKET, "Expected ']' in typedef array declarator")
-                td_array_dims.append(dim)
-            if td_array_dims:
-                td.array_size = td_array_dims[0]
-                td.array_dims = td_array_dims
+            # Use unified _parse_declarator for the first typedef declarator.
+            decl_info = self._parse_declarator()
+            td = self._build_typedef_decl(base_type, decl_info)
             self._typedefs.add(td.name)
             results = [td]
 
             # Multi-name typedef: typedef struct _XOC *XOC, *XFontSet;
             while self._match(TokenType.COMMA):
-                extra_ty = Type(base=getattr(base_type, "base", "int"),
-                                line=base_type.line, column=base_type.column)
-                while self._match(TokenType.STAR):
-                    extra_ty.pointer_level = int(getattr(extra_ty, "pointer_level", 0)) + 1
-                    if not getattr(extra_ty, "pointer_quals", None):
-                        extra_ty.pointer_quals = []
-                    extra_ty.pointer_quals.insert(0, set())
-                    extra_ty._normalize_pointer_state()
-                en = self._expect(TokenType.IDENTIFIER, "Expected identifier for typedef")
-                etd = TypedefDecl(name=en.value, type=extra_ty, line=en.line, column=en.column)
-                self._typedefs.add(en.value)
+                extra_info = self._parse_declarator()
+                etd = self._build_typedef_decl(base_type, extra_info)
+                self._typedefs.add(etd.name)
                 results.append(etd)
 
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
@@ -1792,6 +1704,53 @@ class Parser:
         ty.pointer_quals = [set(q) for q in info.pointer_quals]
         ty._normalize_pointer_state()
         return ty
+
+    def _build_typedef_decl(self, base_type: Type, info: DeclaratorInfo) -> 'TypedefDecl':
+        """Build a TypedefDecl from a base type and parsed DeclaratorInfo.
+
+        Handles all typedef forms:
+          - Simple:          typedef int myint;
+          - Pointer:         typedef int *intptr;
+          - Function pointer: typedef int (*fp)(int);
+          - Function type:   typedef int func_t(int);
+          - Array:           typedef int arr_t[23];
+          - Multi-dim array: typedef int mat_t[3][4];
+
+        Args:
+            base_type: The type from declaration-specifiers.
+            info: The parsed declarator information.
+
+        Returns:
+            A TypedefDecl node.
+        """
+        name = info.name
+        name_tok = info.name_tok
+        line = name_tok.line if name_tok else base_type.line
+        col = name_tok.column if name_tok else base_type.column
+
+        # Determine if this is a function pointer or function type typedef.
+        if info.is_function:
+            # Build function pointer type for downstream compatibility.
+            # Both `typedef int (*fp)(int)` and `typedef int func_t(int)`
+            # produce a function pointer type `base (*)()`.
+            ty = self._apply_declarator(base_type, info)
+            fp_ty = Type(base=f"{base_type.base} (*)()", is_pointer=True,
+                         line=base_type.line, column=base_type.column)
+            fp_ty._normalize_pointer_state()
+            td = TypedefDecl(name=name, type=fp_ty, line=line, column=col)
+            return td
+
+        # Apply pointer levels from declarator to base type.
+        ty = self._apply_declarator(base_type, info)
+
+        td = TypedefDecl(name=name, type=ty, line=line, column=col)
+
+        # Record array dimensions if present.
+        if info.array_dims:
+            td.array_size = info.array_dims[0]
+            td.array_dims = list(info.array_dims)
+
+        return td
 
     def _parse_declarator_suffixes(self, info: DeclaratorInfo) -> None:
         """Parse array and function suffixes into an existing DeclaratorInfo.
