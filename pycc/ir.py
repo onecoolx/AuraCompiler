@@ -304,6 +304,17 @@ class IRGenerator:
         self._shadow_counter = 0
         self._sym_table: Optional[TypedSymbolTable] = None
         self._target = None  # resolved lazily from sema_ctx in generate()
+
+    def _sizeof(self, ty: object) -> int:
+        """Return sizeof(ty) using the module-level _type_size with sema_ctx.
+
+        All IRGenerator code should call self._sizeof() instead of the
+        module-level _type_size() directly.  This ensures the semantic
+        context (struct/union layouts, typedefs) is always available and
+        eliminates the class of bugs where a caller forgets to pass
+        sema_ctx.
+        """
+        return _type_size(ty, self._sema_ctx)
     
     def generate(self, ast: Program) -> List[IRInstruction]:
         """Generate IR from AST"""
@@ -786,7 +797,7 @@ class IRGenerator:
                     if self._is_struct_or_union_type(mty) or mty.startswith("array("):
                         return None
                     align = _type_align(mty)
-                    sz = _type_size(mty, self._sema_ctx)
+                    sz = self._sizeof(mty)
                     if align > 1:
                         pad = (-cur) % align
                         if pad:
@@ -3032,7 +3043,7 @@ class IRGenerator:
                             arr_sz = getattr(item, "array_size", None)
                             if arr_sz is not None:
                                 # Local static array: emit as BSS with correct total size.
-                                elem_sz = _type_size(item.type, self._sema_ctx)
+                                elem_sz = self._sizeof(item.type)
                                 total = int(arr_sz) * elem_sz
                                 self.instructions.append(IRInstruction(
                                     op="gdecl", result=f"@{gname}",
@@ -3600,7 +3611,7 @@ class IRGenerator:
             return t
         if isinstance(expr, SizeOf):
             if expr.type is not None:
-                return f"${_type_size(expr.type, self._sema_ctx)}"
+                return f"${self._sizeof(expr.type)}"
             # sizeof(expression): handle a few common expression shapes.
             op = expr.operand
             if op is None:
@@ -3644,7 +3655,7 @@ class IRGenerator:
             try:
                 op_ty = getattr(op, "type", None)
                 if op_ty is not None:
-                    return f"${_type_size(op_ty, self._sema_ctx)}"
+                    return f"${self._sizeof(op_ty)}"
             except Exception:
                 pass
             from pycc.ast_nodes import (
@@ -3693,7 +3704,7 @@ class IRGenerator:
                             except Exception:
                                 pass
 
-                        return f"${_type_size(base_part, self._sema_ctx) * max(0, n)}"
+                        return f"${self._sizeof(base_part) * max(0, n)}"
                     # fallback for local arrays
                     return "$4"
 
@@ -3722,7 +3733,7 @@ class IRGenerator:
                                 n = 0
                                 break
                             n *= int(d)
-                        return f"${_type_size(base_part, self._sema_ctx) * int(n)}"
+                        return f"${self._sizeof(base_part) * int(n)}"
                 except Exception:
                     pass
                 # Global arrays: infer total byte size using semantic context
@@ -3745,13 +3756,13 @@ class IRGenerator:
                                     n *= int(d)
                             else:
                                 n = 0
-                            return f"${_type_size(str(base_s), self._sema_ctx) * int(n)}"
+                            return f"${self._sizeof(str(base_s)) * int(n)}"
                 except Exception:
                     pass
                 # Use declared local/global type when available.
                 ty_s = self._operand_type_string(f"@{op.name}")
                 if isinstance(ty_s, str) and ty_s:
-                    return f"${_type_size(ty_s, self._sema_ctx)}"
+                    return f"${self._sizeof(ty_s)}"
                 # fallback
                 return "$4"
             if isinstance(op, ASTUnaryOp) and op.operator == "*":
@@ -3769,7 +3780,7 @@ class IRGenerator:
                     except Exception:
                         pass
                     if isinstance(pty, str) and "*" in pty:
-                        return f"${_type_size(pty.split('*', 1)[0].strip(), self._sema_ctx)}"
+                        return f"${self._sizeof(pty.split('*', 1)[0].strip())}"
             if isinstance(op, ASTArrayAccess):
                 # element size: int arrays are 4, char* indexing is 1. Default to 4.
                 return "$4"
@@ -4575,7 +4586,7 @@ class IRGenerator:
                 if bop in {"+", "-"} and cur_is_ptr and not rhs_is_ptr:
                     # String primary, CType fallback (casts update _var_types
                     # but not _sym_table for named vars).
-                    sz = _type_size(cty.split("*", 1)[0].strip(), self._sema_ctx) if isinstance(cty, str) and "*" in cty else 0
+                    sz = self._sizeof(cty.split("*", 1)[0].strip()) if isinstance(cty, str) and "*" in cty else 0
                     if sz <= 0:
                         ct_sz = self._pointee_size_from_ctype(cur)
                         if ct_sz is not None and ct_sz > 0:
@@ -4669,7 +4680,7 @@ class IRGenerator:
                 rhs_is_ptr2 = isinstance(rty, str) and "*" in rty
                 if bop in {"+", "-"} and cur_is_ptr2 and not rhs_is_ptr2:
                     # String primary, CType fallback.
-                    sz = _type_size(cty.split("*", 1)[0].strip(), self._sema_ctx) if isinstance(cty, str) and "*" in cty else 0
+                    sz = self._sizeof(cty.split("*", 1)[0].strip()) if isinstance(cty, str) and "*" in cty else 0
                     if sz <= 0:
                         ct_sz = self._pointee_size_from_ctype(cur)
                         if ct_sz is not None and ct_sz > 0:
@@ -4920,7 +4931,7 @@ class IRGenerator:
                     vty = self._var_types.get(sym, "")
                     if isinstance(vty, str) and "*" in vty:
                         base_ty = vty.split("*", 1)[0].strip()
-                        step = _type_size(base_ty, self._sema_ctx) if base_ty else 1
+                        step = self._sizeof(base_ty) if base_ty else 1
                         if step > 1:
                             delta = f"${step}"
                     _inc_vol = self._is_volatile_sym(sym)
@@ -5166,7 +5177,7 @@ class IRGenerator:
                             return _type_size_bytes(self._sema_ctx, base)
                         except Exception:
                             pass
-                    return _type_size(base, self._sema_ctx)
+                    return self._sizeof(base)
 
                 def _resolve_ptr_scale(operand: str, str_ty: object) -> int:
                     """Resolve pointee element size: string primary, CType fallback.
@@ -5287,7 +5298,7 @@ class IRGenerator:
                     # String-based path is primary (casts update _var_types
                     # but not _sym_table for named vars, so _var_types is
                     # more accurate after casts).
-                    sz = _type_size(lty2.split("*", 1)[0].strip(), self._sema_ctx)
+                    sz = self._sizeof(lty2.split("*", 1)[0].strip())
                     # Only use CType as fallback when string path gives 0.
                     if sz <= 0:
                         ct_sz = self._pointee_size_from_ctype(l)
