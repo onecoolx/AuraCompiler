@@ -3745,7 +3745,7 @@ class IRGenerator:
                                     n *= int(d)
                             else:
                                 n = 0
-                            return f"${_type_size(str(base_s)) * int(n)}"
+                            return f"${_type_size(str(base_s), self._sema_ctx) * int(n)}"
                 except Exception:
                     pass
                 # Use declared local/global type when available.
@@ -3769,7 +3769,7 @@ class IRGenerator:
                     except Exception:
                         pass
                     if isinstance(pty, str) and "*" in pty:
-                        return f"${_type_size(pty.split('*', 1)[0].strip())}"
+                        return f"${_type_size(pty.split('*', 1)[0].strip(), self._sema_ctx)}"
             if isinstance(op, ASTArrayAccess):
                 # element size: int arrays are 4, char* indexing is 1. Default to 4.
                 return "$4"
@@ -4575,7 +4575,7 @@ class IRGenerator:
                 if bop in {"+", "-"} and cur_is_ptr and not rhs_is_ptr:
                     # String primary, CType fallback (casts update _var_types
                     # but not _sym_table for named vars).
-                    sz = _type_size(cty.split("*", 1)[0].strip()) if isinstance(cty, str) and "*" in cty else 0
+                    sz = _type_size(cty.split("*", 1)[0].strip(), self._sema_ctx) if isinstance(cty, str) and "*" in cty else 0
                     if sz <= 0:
                         ct_sz = self._pointee_size_from_ctype(cur)
                         if ct_sz is not None and ct_sz > 0:
@@ -4669,7 +4669,7 @@ class IRGenerator:
                 rhs_is_ptr2 = isinstance(rty, str) and "*" in rty
                 if bop in {"+", "-"} and cur_is_ptr2 and not rhs_is_ptr2:
                     # String primary, CType fallback.
-                    sz = _type_size(cty.split("*", 1)[0].strip()) if isinstance(cty, str) and "*" in cty else 0
+                    sz = _type_size(cty.split("*", 1)[0].strip(), self._sema_ctx) if isinstance(cty, str) and "*" in cty else 0
                     if sz <= 0:
                         ct_sz = self._pointee_size_from_ctype(cur)
                         if ct_sz is not None and ct_sz > 0:
@@ -4920,7 +4920,7 @@ class IRGenerator:
                     vty = self._var_types.get(sym, "")
                     if isinstance(vty, str) and "*" in vty:
                         base_ty = vty.split("*", 1)[0].strip()
-                        step = _type_size(base_ty) if base_ty else 1
+                        step = _type_size(base_ty, self._sema_ctx) if base_ty else 1
                         if step > 1:
                             delta = f"${step}"
                     _inc_vol = self._is_volatile_sym(sym)
@@ -5166,7 +5166,7 @@ class IRGenerator:
                             return _type_size_bytes(self._sema_ctx, base)
                         except Exception:
                             pass
-                    return _type_size(base)
+                    return _type_size(base, self._sema_ctx)
 
                 def _resolve_ptr_scale(operand: str, str_ty: object) -> int:
                     """Resolve pointee element size: string primary, CType fallback.
@@ -5287,7 +5287,7 @@ class IRGenerator:
                     # String-based path is primary (casts update _var_types
                     # but not _sym_table for named vars, so _var_types is
                     # more accurate after casts).
-                    sz = _type_size(lty2.split("*", 1)[0].strip())
+                    sz = _type_size(lty2.split("*", 1)[0].strip(), self._sema_ctx)
                     # Only use CType as fallback when string path gives 0.
                     if sz <= 0:
                         ct_sz = self._pointee_size_from_ctype(l)
