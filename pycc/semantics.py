@@ -832,6 +832,46 @@ class SemanticAnalyzer:
             ty = getattr(self, "_global_decl_types", {}).get(name)
         return ty
 
+    def _is_pointer_type(self, ty: Optional[Type]) -> bool:
+        """Check if a type is a pointer, resolving through typedefs.
+
+        Handles cases like `typedef struct T *StkId;` where a variable
+        declared as `StkId o` has ty.base="StkId", is_pointer=False, but
+        the underlying typedef target is a pointer.
+        """
+        if ty is None:
+            return False
+        if getattr(ty, "is_pointer", False):
+            return True
+        if (getattr(ty, "pointer_level", 0) or 0) > 0:
+            return True
+        # Resolve typedef chain to check underlying type.
+        base = getattr(ty, "base", None)
+        if isinstance(base, str):
+            td = self._resolve_typedef(base)
+            if td is not None:
+                return self._is_pointer_type(td)
+        return False
+
+    def _resolve_pointer_base(self, ty: Optional[Type]) -> str:
+        """Get the pointee base type string, resolving through typedefs.
+
+        For `typedef struct T *StkId;`, given ty with base="StkId",
+        returns "struct T" (the base that the pointer points to).
+        For a direct pointer like Type(base="struct T", is_pointer=True),
+        returns "struct T".
+        """
+        if ty is None:
+            return "int"
+        if getattr(ty, "is_pointer", False):
+            return str(getattr(ty, "base", "int"))
+        base = getattr(ty, "base", None)
+        if isinstance(base, str):
+            td = self._resolve_typedef(base)
+            if td is not None:
+                return self._resolve_pointer_base(td)
+        return str(base or "int")
+
     def _pointer_level_count(self, ty: Optional[Type]) -> int:
         if ty is None:
             return 0
@@ -2249,7 +2289,7 @@ class SemanticAnalyzer:
                 base_ty = self._lookup_decl_type(expr.object.name)
                 if base_ty is not None:
                     # '.' expects non-pointer struct/union object
-                    if base_ty.is_pointer:
+                    if self._is_pointer_type(base_ty):
                         self.errors.append(f"'.' used on pointer: {expr.object.name}")
                     else:
                         self._validate_member(base_ty, expr.member, expr.object.name)
@@ -2262,14 +2302,15 @@ class SemanticAnalyzer:
                 base_ty = self._lookup_decl_type(expr.pointer.name)
                 if base_ty is not None:
                     # '->' expects a pointer or array (which decays to pointer).
-                    is_ptr_like = getattr(base_ty, "is_pointer", False)
+                    is_ptr_like = self._is_pointer_type(base_ty)
                     # Arrays decay to pointers: T buf[N] used with -> is valid.
                     if not is_ptr_like and expr.pointer.name in getattr(self, "_local_array_names", set()):
                         is_ptr_like = True
                     if not is_ptr_like and expr.pointer.name in getattr(self, "_global_arrays", {}):
                         is_ptr_like = True
                     if is_ptr_like:
-                        pointee = Type(base=base_ty.base, line=base_ty.line, column=base_ty.column)
+                        resolved = self._resolve_pointer_base(base_ty)
+                        pointee = Type(base=resolved, line=base_ty.line, column=base_ty.column)
                         self._validate_member(pointee, expr.member, expr.pointer.name)
                     else:
                         self.errors.append(f"'->' used on non-pointer: {expr.pointer.name}")

@@ -93,6 +93,7 @@ class DeclaratorInfo:
     fn_params: Optional[List] = None
     fn_is_variadic: bool = False
     is_paren_wrapped: bool = False
+    outer_pointer_level: int = 0  # pointer levels outside parentheses
 
 
 class ParserError(Exception):
@@ -377,11 +378,18 @@ class Parser:
         # a real function, not a function pointer variable.
         _is_real_function = decl_info.is_function
         if _is_real_function and decl_info.is_paren_wrapped and decl_info.pointer_level > 0:
-            # Paren-wrapped pointer declarator with function suffix.
-            # Check what follows to distinguish function vs variable.
-            if self._at(TokenType.ASSIGN) or self._at(TokenType.SEMICOLON) or self._at(TokenType.COMMA) or self._at(TokenType.LBRACKET):
-                # Next token indicates variable declaration, not function.
-                _is_real_function = False
+            # Distinguish function pointer variable from function returning
+            # pointer.  When ALL pointer levels come from outside the
+            # parentheses (outer_pointer_level == pointer_level), the '*'
+            # belongs to the return type: `char *(func)(params)` is a
+            # function returning `char *`.  When some pointer levels are
+            # inside the parentheses (outer < total), it is a function
+            # pointer variable: `int (*fp)(params)`.
+            inner_ptr = decl_info.pointer_level - decl_info.outer_pointer_level
+            if inner_ptr > 0:
+                # Has inner pointer — function pointer variable.
+                if self._at(TokenType.ASSIGN) or self._at(TokenType.SEMICOLON) or self._at(TokenType.COMMA) or self._at(TokenType.LBRACKET):
+                    _is_real_function = False
 
         if _is_real_function:
             # Function declaration or definition.
@@ -1386,6 +1394,7 @@ class Parser:
                 # than inner ones.  In `int *(*p)`, outer `*` is level 2, inner
                 # `*` is level 1.  pointer_quals list is outermost-first.
                 if info.pointer_level > 0:
+                    inner.outer_pointer_level = info.pointer_level
                     inner.pointer_quals = info.pointer_quals + inner.pointer_quals
                     inner.pointer_level += info.pointer_level
                 info = inner
