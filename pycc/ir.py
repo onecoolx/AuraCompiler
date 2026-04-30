@@ -909,9 +909,17 @@ class IRGenerator:
                         continue
 
                     # Scalar member: element must be a scalar expression.
-                    if isinstance(elems3[eidx], Initializer):
-                        return False
-                    imm = self._const_expr_to_int(elems3[eidx])
+                    # C89 §6.5.7: a scalar initializer may be optionally
+                    # enclosed in braces, e.g. `{0}` for an int member.
+                    # Unwrap single-element brace initializers.
+                    elem = elems3[eidx]
+                    if isinstance(elem, Initializer):
+                        sub = self._const_initializer_list(elem)
+                        if sub is not None and len(sub) == 1 and not isinstance(sub[0], Initializer):
+                            elem = sub[0]
+                        else:
+                            return False
+                    imm = self._const_expr_to_int(elem)
                     if imm is None:
                         return False
                     v = int(imm)
