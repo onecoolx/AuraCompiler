@@ -1575,24 +1575,17 @@ class IRGenerator:
         return True
 
     def _const_initializer_imm(self, init: Any) -> Optional[str]:
-        """Return an immediate like "$42" for supported constant initializers."""
-        from pycc.ast_nodes import IntLiteral, CharLiteral, UnaryOp
+        """Return an immediate like "$42" for supported constant initializers.
 
-        if isinstance(init, IntLiteral):
-            return f"${int(init.value)}"
-        if isinstance(init, CharLiteral):
-            # CharLiteral.value is a single-character string (e.g. "h").
-            # Use its code point as the integer value.
-            return f"${ord(init.value)}"
-        if isinstance(init, UnaryOp) and init.operator in {"+", "-"}:
-            inner = self._const_initializer_imm(init.operand)
-            if inner is None:
-                return None
-            v = int(inner.lstrip("$"))
-            if init.operator == "-":
-                v = -v
+        Uses the unified ICE evaluator to handle arbitrary compile-time
+        integer constant expressions (casts, bitwise ops, enum constants,
+        sizeof, ternary, etc.) instead of a fragile whitelist.
+        """
+        try:
+            v = _eval_const_int_expr(init, self._enum_constants)
             return f"${v}"
-        return None
+        except (IRGenError, Exception):
+            return None
 
     def _const_initializer_ptr(self, init: Any) -> Optional[str]:
         """Return a pointer constant operand for supported global pointer initializers.
