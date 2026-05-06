@@ -129,11 +129,20 @@ def _eval_const_int_expr(expr: Expression, enum_constants: dict = None) -> int:
     # Cast: evaluate inner expression
     if isinstance(expr, Cast):
         return _eval_const_int_expr(expr.expression, enum_constants)
-    # sizeof(type-name)
+    # sizeof(type-name) or sizeof(expression)
     from pycc.ast_nodes import SizeOf
     if isinstance(expr, SizeOf):
         if expr.type is not None:
             return int(_type_size(expr.type))
+        # sizeof(expression): handle common constant cases
+        op = expr.operand
+        if op is not None:
+            # sizeof("string") = strlen + 1
+            from pycc.ast_nodes import StringLiteral as _SL
+            if isinstance(op, _SL):
+                return len(op.value) + 1
+            # sizeof(identifier) where identifier has a known type
+            # (not supported in module-level context without sema_ctx)
         raise IRGenError("sizeof(expression) is not an integer constant expression")
     # Identifier: check attached enum value or enum_constants dict
     if isinstance(expr, Identifier):
