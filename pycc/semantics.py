@@ -1542,7 +1542,29 @@ class SemanticAnalyzer:
         if ty is not None:
             return ty
         if isinstance(expr, Identifier):
-            return self._lookup_decl_type(expr.name)
+            ty = self._lookup_decl_type(expr.name)
+            # Array decay: in expression context, arrays decay to pointers
+            # (C89 §6.2.2.1).  If the identifier is a known array variable,
+            # return a pointer type so downstream checks (pointer arithmetic,
+            # scalar type, etc.) work correctly.
+            if ty is not None and not getattr(ty, "is_pointer", False):
+                is_array = (
+                    expr.name in getattr(self, "_local_array_names", set())
+                    or expr.name in getattr(self, "_global_arrays", {})
+                )
+                if is_array:
+                    return Type(
+                        base=ty.base,
+                        is_pointer=True,
+                        pointer_level=max(1, (getattr(ty, "pointer_level", 0) or 0) + 1),
+                        is_const=bool(getattr(ty, "is_const", False)),
+                        is_volatile=bool(getattr(ty, "is_volatile", False)),
+                        is_unsigned=bool(getattr(ty, "is_unsigned", False)),
+                        is_signed=bool(getattr(ty, "is_signed", False)),
+                        line=getattr(ty, "line", 0),
+                        column=getattr(ty, "column", 0),
+                    )
+            return ty
 
         if isinstance(expr, UnaryOp):
             if expr.operator == "&":
@@ -1631,11 +1653,14 @@ class SemanticAnalyzer:
             if expr.operator in {"+", "-"}:
                 left_ty = self._expr_type(expr.left)
                 right_ty = self._expr_type(expr.right)
-                if left_ty and getattr(left_ty, "is_pointer", False):
-                    if expr.operator == "-" and right_ty and getattr(right_ty, "is_pointer", False):
+                left_is_ptr = self._is_pointer_type(left_ty)
+                right_is_ptr = self._is_pointer_type(right_ty)
+                if left_is_ptr:
+                    if expr.operator == "-" and right_is_ptr:
+                        # pointer - pointer → ptrdiff_t
                         return Type(base="long", line=0, column=0)
                     return left_ty
-                if right_ty and getattr(right_ty, "is_pointer", False):
+                if right_is_ptr:
                     return right_ty
             return None
 
