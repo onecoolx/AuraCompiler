@@ -2674,11 +2674,11 @@ class SemanticAnalyzer:
 
     def _validate_member(self, base_ty: Type, member: str, base_name: str) -> None:
         b = base_ty.base
-        # Resolve typedef to underlying type
+        # Resolve typedef chain to underlying struct/union type.
         if isinstance(b, str) and not b.startswith("struct ") and not b.startswith("union "):
-            resolved = self._resolve_typedef(b)
-            if resolved is not None:
-                b = getattr(resolved, 'base', b)
+            resolved_name = self._resolve_typedef_base(b)
+            if resolved_name != b:
+                b = resolved_name
         if not (isinstance(b, str) and (b.startswith("struct ") or b.startswith("union "))):
             self.errors.append(f"Member access on non-struct/union: {base_name}")
             return
