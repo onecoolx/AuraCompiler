@@ -1257,6 +1257,9 @@ class IRGenerator:
         # Already a struct/union literal name — no further resolution needed.
         if name.startswith("struct ") or name.startswith("union "):
             return name
+        # C89 §6.5.2.2: enum types have underlying type int.
+        if name.startswith("enum "):
+            return "int"
         if self._sema_ctx is not None:
             td = getattr(self._sema_ctx, "typedefs", {}).get(name)
             if td is not None:
