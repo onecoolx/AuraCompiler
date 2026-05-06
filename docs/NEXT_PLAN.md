@@ -52,3 +52,29 @@
 **Dependencies**: Plan 3 (IR refactoring).
 
 **Scope**: Medium. ~250 lines.
+
+
+## 6. Type system: distinguish arrays from pointers
+
+**Problem**: `Type` dataclass has no `is_array` field. `Type(base="char", is_pointer=True, pointer_level=1)` is ambiguous — could be `char *p` or `char arr[N]` after decay. This causes:
+- `_expr_type` for `ArrayAccess` can't distinguish "subscript of pointer array member" (result is still a pointer) from "subscript of plain pointer" (result is pointee type). Current workaround: `_is_scalar_expr` skips struct/union rejection for `ArrayAccess` expressions.
+- `_lookup_member_type` for pointer array members returns a pointer type, then `ArrayAccess` dereferences it, incorrectly producing a non-pointer struct type.
+- IR gen and codegen have separate `_local_array_names` / `_global_arrays` sets to track array-ness outside the type system.
+
+**Current mitigations**:
+- `_expr_type` for `Identifier` checks `_local_array_names`/`_global_arrays` and returns a pointer type (array decay). This fixes `BinaryOp` pointer arithmetic.
+- `_is_scalar_expr` is lenient for `ArrayAccess` to avoid false positives from incorrect type inference.
+
+**Proposed design**:
+1. Add `is_array: bool = False` and `array_element_type: Optional[Type] = None` to `Type` dataclass.
+2. Parser sets `is_array=True` for array declarations (already has `array_size`/`array_dims`).
+3. `_expr_type` for `Identifier`: if `is_array`, return element pointer type (decay).
+4. `_expr_type` for `ArrayAccess`: if base type `is_array`, return element type (preserving pointer level of element). If base type is plain pointer, dereference.
+5. Remove `_local_array_names` / `_global_arrays` tracking — the type itself carries the information.
+6. `_lookup_member_type` returns `Type(is_array=True, ...)` for array members, enabling correct subscript handling.
+
+**Benefits**: Eliminates the array/pointer ambiguity at the type level. All downstream consumers (semantics, IR gen, codegen) can make correct decisions without side-channel tracking.
+
+**Dependencies**: Plan 1 (expression type annotation) would benefit from this but is not strictly required.
+
+**Scope**: Medium. ~200 lines Type changes + ~150 lines consumer updates. Should be a standalone spec.
