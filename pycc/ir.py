@@ -315,7 +315,91 @@ class IRGenerator:
         sema_ctx.
         """
         return _type_size(ty, self._sema_ctx)
-    
+
+    def _emit_constant_initializer(self, gname: str, item, sc: str) -> bool:
+        """Emit IR instructions for a constant initializer (global or local static).
+
+        Handles all constant initializer forms in a single unified method:
+        - Aggregate blobs (arrays, structs with scalar members)
+        - Float scalars
+        - Integer/char constant scalars
+        - String literal pointers
+        - Pointer arrays (strings, symbols, NULL, mixed)
+        - Struct member-by-member initialization (function pointers, symbols)
+
+        Returns True if the initializer was successfully emitted, False otherwise.
+        """
+        init = getattr(item, "initializer", None)
+        if init is None:
+            return False
+
+        # 1. Try aggregate blob (arrays, structs with scalar members).
+        blob = self._const_initializer_blob(item)
+        if blob is not None:
+            self.instructions.append(
+                IRInstruction(op="gdef_blob", result=f"@{gname}",
+                              operand1=item.type.base, operand2=blob, label=sc)
+            )
+            return True
+
+        # 2. Try scalar immediate or string pointer.
+        imm = self._const_initializer_imm(init)
+        ptr = self._const_initializer_ptr(init)
+
+        # 3. Float scalar.
+        if isinstance(init, FloatLiteral):
+            suffix = getattr(init, 'suffix', '')
+            fp_type = "long double" if suffix in ('l', 'L') else "float" if suffix in ('f', 'F') else "double"
+            self.instructions.append(
+                IRInstruction(op="gdef_float", result=f"@{gname}",
+                              operand1=str(init.value), label=sc,
+                              meta={"fp_type": fp_type})
+            )
+            return True
+
+        # 4. Integer/char constant or string pointer.
+        if imm is not None or ptr is not None:
+            self.instructions.append(
+                IRInstruction(op="gdef", result=f"@{gname}",
+                              operand1=item.type.base,
+                              operand2=imm if imm is not None else ptr, label=sc)
+            )
+            return True
+
+        # 5. Struct member-by-member initialization.
+        _saved_name = getattr(item, 'name', None)
+        item.name = gname
+        if self._try_struct_member_init(item, sc):
+            item.name = _saved_name
+            return True
+        item.name = _saved_name
+
+        # 6. Pointer array (strings, symbols, NULL, mixed).
+        if isinstance(init, Initializer) and getattr(item.type, "is_pointer", False):
+            inits_list = self._const_initializer_list(init)
+            if inits_list:
+                entries = []
+                all_ok = True
+                for e in inits_list:
+                    if isinstance(e, StringLiteral):
+                        entries.append(("string", e.value))
+                    elif isinstance(e, Identifier):
+                        entries.append(("symbol", e.name))
+                    elif self._is_null_pointer_constant(e):
+                        entries.append(("null", 0))
+                    else:
+                        all_ok = False
+                        break
+                if all_ok and entries:
+                    self.instructions.append(
+                        IRInstruction(op="gdef_ptr_array", result=f"@{gname}",
+                                      operand1=item.type.base, label=sc,
+                                      meta={"entries": entries})
+                    )
+                    return True
+
+        return False
+
     def generate(self, ast: Program) -> List[IRInstruction]:
         """Generate IR from AST"""
         self.instructions = []
@@ -3081,37 +3165,10 @@ class IRGenerator:
                             else:
                                 self.instructions.append(IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2="$0", label="static"))
                         else:
-                            # Try aggregate blob first (arrays, structs).
-                            blob = self._const_initializer_blob(item)
-                            if blob is not None:
-                                self.instructions.append(
-                                    IRInstruction(op="gdef_blob", result=f"@{gname}", operand1=item.type.base, operand2=blob, label="static")
+                            if not self._emit_constant_initializer(gname, item, "static"):
+                                raise IRGenError(
+                                    f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
                                 )
-                            else:
-                                imm = self._const_initializer_imm(item.initializer)
-                                ptr = self._const_initializer_ptr(item.initializer)
-                                # Float scalar
-                                if isinstance(item.initializer, FloatLiteral):
-                                    suffix = getattr(item.initializer, 'suffix', '')
-                                    fp_type = "long double" if suffix in ('l','L') else "float" if suffix in ('f','F') else "double"
-                                    self.instructions.append(
-                                        IRInstruction(op="gdef_float", result=f"@{gname}", operand1=str(item.initializer.value), label="static", meta={"fp_type": fp_type})
-                                    )
-                                elif imm is not None or ptr is not None:
-                                    self.instructions.append(
-                                        IRInstruction(op="gdef", result=f"@{gname}", operand1=item.type.base, operand2=imm if imm is not None else ptr, label="static")
-                                    )
-                                else:
-                                    # Try struct member-by-member init (handles function pointers, symbols).
-                                    _saved_name = item.name
-                                    item.name = gname  # _try_struct_member_init uses decl.name
-                                    if self._try_struct_member_init(item, "static"):
-                                        item.name = _saved_name
-                                    else:
-                                        item.name = _saved_name
-                                        raise IRGenError(
-                                            f"unsupported local static initializer for {item.name}: only integer/char constants and string-literal pointers supported"
-                                        )
 
                         # Record type for the lowered global symbol.
                         arr_sz = getattr(item, "array_size", None)
