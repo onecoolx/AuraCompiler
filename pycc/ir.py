@@ -5479,7 +5479,24 @@ class IRGenerator:
             # Rewrite __builtin_foo(args) to c_library_equivalent(args).
             if isinstance(expr.function, Identifier):
                 from pycc.builtins import get_c_library_name
-                c_name = get_c_library_name(expr.function.name)
+                fname = expr.function.name
+                # Compile-time constant builtins: emit as float literals.
+                _CONST_BUILTINS = {
+                    "__builtin_huge_val": ("inf", "double"),
+                    "__builtin_huge_valf": ("inf", "float"),
+                    "__builtin_inf": ("inf", "double"),
+                    "__builtin_inff": ("inf", "float"),
+                }
+                if fname in _CONST_BUILTINS:
+                    val_str, fp_type = _CONST_BUILTINS[fname]
+                    t = self._new_temp()
+                    self.instructions.append(IRInstruction(
+                        op="fmov", result=t, operand1=val_str,
+                        meta={"fp_type": fp_type}
+                    ))
+                    self._var_types[t] = fp_type
+                    return t
+                c_name = get_c_library_name(fname)
                 if c_name is not None:
                     expr.function.name = c_name
 
