@@ -1499,7 +1499,7 @@ class SemanticAnalyzer:
             ty._normalize_pointer_state()
         except Exception:
             pass
-        if getattr(ty, "is_pointer", False) or getattr(ty, "pointer_level", 0) > 0:
+        if self._is_pointer_type(ty):
             return True
         base = str(getattr(ty, "base", "")).strip()
         if base.startswith("struct ") or base.startswith("union "):
@@ -1713,7 +1713,43 @@ class SemanticAnalyzer:
         return None
 
     def _is_scalar_expr(self, expr: Expression) -> bool:
-        return self._is_scalar_type(self._expr_type(expr))
+        """Check if an expression has scalar type (best-effort).
+
+        Returns False only when we have high confidence the expression is
+        a non-scalar aggregate type.  For complex expressions where type
+        inference is unreliable (e.g. array subscripts on member accesses),
+        defaults to True to avoid false positives.
+        """
+        ty = self._expr_type(expr)
+        if ty is None:
+            return True  # Unknown type — assume scalar
+        # Use _is_pointer_type which resolves typedefs
+        if self._is_pointer_type(ty):
+            return True
+        if getattr(ty, "pointer_level", 0) > 0:
+            return True
+        base = str(getattr(ty, "base", "")).strip()
+        if base.startswith("struct ") or base.startswith("union "):
+            # Only reject for simple identifiers where we're confident about
+            # the type.  For complex expressions (member access, array subscript,
+            # function calls), _expr_type may incorrectly resolve pointer array
+            # members as struct values.
+            if isinstance(expr, Identifier):
+                return False
+            # For other expressions, check if the type could plausibly be a
+            # pointer that was incorrectly dereferenced by _expr_type.
+            # If the struct has no registered layout, it's likely a forward
+            # declaration used through pointers — allow it.
+            layout = self._layouts.get(base)
+            if layout is None or int(getattr(layout, "size", 0)) == 0:
+                return True
+            # For non-identifier expressions with a known struct type,
+            # still reject — but only if the expression is a direct member
+            # access (not array subscript which has known type inference bugs).
+            if isinstance(expr, ArrayAccess):
+                return True  # Array subscript type inference is unreliable
+            return False
+        return True
 
     def _is_integer_expr(self, expr: Expression) -> bool:
         return self._is_integer_type(self._expr_type(expr))

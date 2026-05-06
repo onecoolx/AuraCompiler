@@ -80,6 +80,11 @@ _register("__builtin_abort",        0, "void",   "abort",   "<stdlib.h>")
 _register("__builtin_exit",         1, "void",   "exit",    "<stdlib.h>")
 _register("__builtin_printf",      -1, "int",    "printf",  "<stdio.h>")
 
+# --- Varargs builtins ---
+_register("__builtin_va_start",     2, "void",   "__builtin_va_start", "<stdarg.h>")
+_register("__builtin_va_end",       1, "void",   "__builtin_va_end",   "<stdarg.h>")
+_register("__builtin_va_copy",      2, "void",   "__builtin_va_copy",  "<stdarg.h>")
+
 
 # --- Public API ---
 
