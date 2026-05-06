@@ -1581,6 +1581,7 @@ class IRGenerator:
 
         Handles structs with mixed member types including function pointers
         and symbol references that the blob path cannot encode.
+        Also handles arrays of such structs (e.g. luaL_Reg[]).
 
         Returns True if successful (instruction emitted), False otherwise.
         """
@@ -1600,9 +1601,67 @@ class IRGenerator:
         if layout is None:
             return False
 
+        # --- Array of structs: each top-level element is a struct initializer ---
+        arr_sz = getattr(decl, "array_size", None)
+        arr_dims = getattr(decl, "array_dims", None)
+        is_array = arr_sz is not None or arr_dims is not None
+        if is_array:
+            inits_top = self._const_initializer_list(init)
+            if inits_top is None:
+                return False
+            elem_size = int(getattr(layout, "size", 0))
+            if elem_size <= 0:
+                return False
+            # Build member descriptors for all elements concatenated.
+            all_descs = []
+            for elem_init in inits_top:
+                elem_descs = self._struct_member_descs(layout, elem_init)
+                if elem_descs is None:
+                    return False
+                all_descs.extend(elem_descs)
+            total_size = elem_size * len(inits_top)
+            self.instructions.append(
+                IRInstruction(
+                    op="gdef_struct",
+                    result=f"@{decl.name}",
+                    operand1=str(base),
+                    label=sc,
+                    meta={"members": all_descs, "size": total_size},
+                )
+            )
+            return True
+            return False
+
         inits0 = self._const_initializer_list(init)
         if inits0 is None:
             return False
+
+        member_descs = self._struct_member_descs(layout, init)
+        if member_descs is None:
+            return False
+
+        struct_size = int(getattr(layout, "size", 0))
+        self.instructions.append(
+            IRInstruction(
+                op="gdef_struct",
+                result=f"@{decl.name}",
+                operand1=str(base),
+                label=sc,
+                meta={"members": member_descs, "size": struct_size},
+            )
+        )
+        return True
+
+    def _struct_member_descs(self, layout, init_or_list) -> Optional[list]:
+        """Build member descriptors for a single struct/union initializer.
+
+        Returns a list of (kind, size, value) tuples, or None if any member
+        cannot be encoded as a constant.
+        """
+        inits0 = self._const_initializer_list(init_or_list)
+        if inits0 is None:
+            # Scalar shorthand: treat as first-member initializer
+            inits0 = [init_or_list]
 
         members = list(getattr(layout, "member_offsets", {}).keys())
         offsets = getattr(layout, "member_offsets", {})
@@ -1610,15 +1669,12 @@ class IRGenerator:
         mtypes = getattr(layout, "member_types", {})
         struct_size = int(getattr(layout, "size", 0))
 
-        # Build member descriptors: list of (kind, size, value)
-        # kind: "int", "symbol", "float", "zero"
         member_descs = []
         prev_end = 0
 
         for midx, m in enumerate(members):
             off = int(offsets.get(m, 0))
             sz = int(sizes.get(m, 8))
-            mty = mtypes.get(m, "")
 
             # Emit padding before this member
             if off > prev_end:
@@ -1631,6 +1687,12 @@ class IRGenerator:
                 continue
 
             elem = inits0[midx]
+
+            # Try string literal (for pointer members like const char *)
+            if isinstance(elem, StringLiteral):
+                member_descs.append(("string", sz, elem.value))
+                prev_end = off + sz
+                continue
 
             # Try integer constant
             imm = self._const_expr_to_int(elem)
@@ -1652,31 +1714,20 @@ class IRGenerator:
                 prev_end = off + sz
                 continue
 
-            # Try cast of 0 to pointer (NULL)
-            if isinstance(elem, Cast):
-                inner = self._const_expr_to_int(elem.expression)
-                if inner is not None:
-                    member_descs.append(("int", sz, int(inner)))
-                    prev_end = off + sz
-                    continue
+            # Try NULL pointer constant
+            if self._is_null_pointer_constant(elem):
+                member_descs.append(("int", sz, 0))
+                prev_end = off + sz
+                continue
 
             # Unsupported member initializer
-            return False
+            return None
 
         # Trailing padding
         if prev_end < struct_size:
             member_descs.append(("zero", struct_size - prev_end, 0))
 
-        self.instructions.append(
-            IRInstruction(
-                op="gdef_struct",
-                result=f"@{decl.name}",
-                operand1=str(base),
-                label=sc,
-                meta={"members": member_descs, "size": struct_size},
-            )
-        )
-        return True
+        return member_descs
 
     def _const_initializer_imm(self, init: Any) -> Optional[str]:
         """Return an immediate like "$42" for supported constant initializers.

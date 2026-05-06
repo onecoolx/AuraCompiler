@@ -448,6 +448,9 @@ class CodeGenerator:
                         self._emit(f"  .zero {sz}")
                     elif kind == "symbol":
                         self._emit(f"  .quad {val}")
+                    elif kind == "string":
+                        lbl = self._intern_string(val)
+                        self._emit(f"  .quad {lbl}")
                     elif kind == "float":
                         if sz == 4:
                             self._emit(f"  .long {_struct.pack('<f', val).hex()}")
