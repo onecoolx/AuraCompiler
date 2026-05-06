@@ -119,6 +119,9 @@ class Parser:
         self._typedefs: Set[str] = set()
         # map for recent struct/union definitions: key "struct Tag"/"union Tag" -> member declarations
         self._tag_members: Dict[str, List[Declaration]] = {}
+        # counter for generating unique synthetic tags for anonymous nested
+        # struct/union definitions (e.g. `struct S { union { int a; float b; } u; }`)
+        self._anon_tag_counter: int = 0
     
     def parse(self) -> Program:
         """Parse entire program"""
@@ -790,6 +793,19 @@ class Parser:
             # can be materialized as a StructDecl/UnionDecl node.
             if tag_tok is not None:
                 self._tag_members[f"{kind} {tag_tok.value}"] = members
+
+        # Generate a unique synthetic tag for anonymous struct/union definitions.
+        # This gives nested anonymous types a stable identity so downstream
+        # passes (semantics layout, blob packer, sizeof, codegen) can look them
+        # up by type name.  Without this, every anonymous nested struct/union
+        # would collide on the string "struct <anonymous>" / "union <anonymous>".
+        if tag_tok is None and members is not None:
+            self._anon_tag_counter += 1
+            synth_tag = f"__anon_{kind}_{self._anon_tag_counter}"
+            self._tag_members[f"{kind} {synth_tag}"] = members
+            base_ty = Type(base=f"{kind} {synth_tag}", line=cur.line, column=cur.column)
+            base_ty._anon_members = members
+            return base_ty
 
         # record a textual type name for now: e.g. "struct Point"
         tag_name = tag_tok.value if tag_tok else "<anonymous>"
