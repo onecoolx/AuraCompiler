@@ -13,10 +13,8 @@ def test_unified_error_format_parser(tmp_path: Path):
     assert not res.success
     msg = "\n".join(res.errors)
 
-    # New unified format (phase 2):
-    #   error: syntax: <message> (at <file>:<line>:<col>)
-    assert msg.startswith("error: syntax:"), msg
-    assert "(at" in msg and ")" in msg, msg
+    # GCC-compatible format: <file>:<line>:<col>: error: syntax: <message>
+    assert "error: syntax:" in msg, msg
     assert "t.c:" in msg, msg
 
 
@@ -38,6 +36,6 @@ def test_unified_error_format_semantics(tmp_path: Path):
     assert not res.success
     msg = "\n".join(res.errors)
 
-    assert msg.startswith("error: semantics:"), msg
-    assert "(at" in msg and ")" in msg, msg
+    # GCC-compatible format: <file>:<line>:<col>: error: semantics: <message>
+    assert "error: semantics:" in msg, msg
     assert "t.c:" in msg, msg

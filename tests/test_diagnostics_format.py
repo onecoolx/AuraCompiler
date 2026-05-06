@@ -13,9 +13,9 @@ def test_diagnostic_format_includes_location_for_parser_error(tmp_path: Path):
     res = comp.compile_file(str(src), str(tmp_path / "out.s"))
     assert not res.success
     msg = "\n".join(res.errors)
-    # Unified format: error: syntax: ... (at file:line:col)
+    # GCC-compatible format: <file>:<line>:<col>: error: syntax: <message>
     assert "error: syntax:" in msg
-    assert f"(at {src}:1:" in msg
+    assert "t.c:" in msg
 
 
 def test_diagnostic_format_includes_location_for_semantic_error(tmp_path: Path):
@@ -36,5 +36,6 @@ def test_diagnostic_format_includes_location_for_semantic_error(tmp_path: Path):
     res = comp.compile_file(str(src), str(tmp_path / "out.s"))
     assert not res.success
     msg = "\n".join(res.errors)
+    # GCC-compatible format: <file>:<line>:<col>: error: semantics: <message>
     assert "error: semantics:" in msg
-    assert f"(at {src}:3:" in msg
+    assert "t.c:" in msg

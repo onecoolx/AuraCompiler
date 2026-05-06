@@ -65,6 +65,29 @@ class Compiler:
 
         # Toolchain (assembler + linker).
         self._toolchain = Toolchain()
+
+    @staticmethod
+    def _fmt_warning(raw: str, source_path: str) -> str:
+        """Format a semantic warning with source file name.
+
+        Input format from semantics:  "warning: <msg> at <line>:<col>"
+        Output format (GCC-compatible): "<file>:<line>:<col>: warning: <msg>"
+        """
+        # Extract location from "... at L:C" suffix
+        if " at " in raw:
+            left, loc = raw.rsplit(" at ", 1)
+            loc = loc.strip()
+            # Remove "warning: " prefix if present
+            msg = left
+            if msg.startswith("warning: "):
+                msg = msg[len("warning: "):]
+            # loc is "line:col"
+            return f"{source_path}:{loc}: warning: {msg}"
+        # No location info — just prepend file
+        msg = raw
+        if msg.startswith("warning: "):
+            msg = msg[len("warning: "):]
+        return f"{source_path}: warning: {msg}"
     
     def compile_file(
         self,
@@ -418,11 +441,10 @@ class Compiler:
         assembly = None
 
         def _fmt_error(*, phase: str, msg: str) -> str:
-            """Format an error in a consistent, testable way.
+            """Format an error in GCC-compatible diagnostic format.
 
-            Format:
-              error: <phase>: <message> (at <file>:<line>:<col>)
-            Location is best-effort.
+            Format: <file>:<line>:<col>: error: <message>
+            Location is best-effort (extracted from exception messages).
             """
 
             loc = None
@@ -435,9 +457,9 @@ class Compiler:
                     msg = left.strip()
 
             if loc is None:
-                loc = "?:?:?"
+                return f"{source_path}: error: {phase}: {msg}"
 
-            return f"error: {phase}: {msg} (at {source_path}:{loc})"
+            return f"{source_path}:{loc}: error: {phase}: {msg}"
         
         # Phase 1: Lexical Analysis
         try:
@@ -456,7 +478,9 @@ class Compiler:
         # Phase 3: Semantic Analysis
         try:
             sema_ctx, analyzer = self.analyze_semantics(ast)
-            warnings.extend(list(getattr(analyzer, "warnings", []) or []))
+            # Format warnings with source file name (GCC-compatible format).
+            for w in (getattr(analyzer, "warnings", []) or []):
+                warnings.append(self._fmt_warning(w, source_path))
         except Exception as e:
             return CompilationResult(success=False, errors=[_fmt_error(phase="semantics", msg=str(e))], warnings=warnings)
 

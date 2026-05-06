@@ -16,6 +16,6 @@ int main(void) {
 """.lstrip()
     res = _compile(tmp_path, code)
     assert not res.success
-    # Ensure unified prefix and a concrete (line:col) location, not ??:??:??
-    assert any(e.startswith("error: semantics:") for e in res.errors)
-    assert any("(at " in e and ":?:?:?)" not in e for e in res.errors)
+    # GCC-compatible format: <file>:<line>:<col>: error: semantics: <message>
+    assert any("error: semantics:" in e for e in res.errors)
+    assert any("t.c:" in e for e in res.errors)

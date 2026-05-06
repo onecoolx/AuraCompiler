@@ -57,5 +57,5 @@ def test_error_has_line_number(tmp_path):
     c.write_text("void f(void) { }\nint main(void) { f(1); return 0; }\n")
     res = Compiler(optimize=False).compile_file(str(c), str(tmp_path / "t"))
     assert not res.success
-    # Error should contain "at N:M" line/column info
-    assert any("at " in e and ":" in e for e in res.errors)
+    # GCC-compatible format: <file>:<line>:<col>: error: ...
+    assert any("t.c:" in e and "error:" in e for e in res.errors)
