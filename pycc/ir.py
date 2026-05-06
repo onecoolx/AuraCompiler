@@ -418,38 +418,47 @@ class IRGenerator:
                             struct_init = self._try_struct_member_init(decl, sc)
                             if struct_init:
                                 continue
-                            # Try: array of string-literal pointers
-                            # e.g. char *arr[] = {"str1", "str2"};
-                            # or   void (*fn_arr[])(T*) = {f, g};  (function pointer array)
+                            # Try: array of pointer constants (string literals,
+                            # NULL, symbol references, or any mix thereof).
+                            # e.g. char *arr[] = {"str1", "str2", NULL};
                             if isinstance(init, Initializer) and getattr(decl.type, "is_pointer", False):
                                 inits_list = self._const_initializer_list(init)
-                                if inits_list and all(isinstance(e, StringLiteral) for e in inits_list):
-                                    # Emit pointer array with string literal references.
-                                    # Codegen will intern each string and emit .quad <label>.
-                                    str_values = [e.value for e in inits_list]
-                                    self.instructions.append(
-                                        IRInstruction(
-                                            op="gdef_ptr_array",
-                                            result=f"@{decl.name}",
-                                            operand1=decl.type.base,
-                                            label=sc,
-                                            meta={"strings": str_values},
+                                if inits_list:
+                                    # Classify each element: string, symbol, or null.
+                                    str_values = []  # (index, value) for strings
+                                    sym_labels = []  # (index, name) for symbols
+                                    null_indices = []  # indices that are null
+                                    all_ok = True
+                                    for idx, e in enumerate(inits_list):
+                                        if isinstance(e, StringLiteral):
+                                            str_values.append((idx, e.value))
+                                        elif isinstance(e, Identifier):
+                                            sym_labels.append((idx, e.name))
+                                        elif self._is_null_pointer_constant(e):
+                                            null_indices.append(idx)
+                                        else:
+                                            all_ok = False
+                                            break
+                                    if all_ok:
+                                        # Build a unified pointer array descriptor.
+                                        # Each entry is ("string", val) / ("symbol", name) / ("null", 0).
+                                        entries = [None] * len(inits_list)
+                                        for i, v in str_values:
+                                            entries[i] = ("string", v)
+                                        for i, n in sym_labels:
+                                            entries[i] = ("symbol", n)
+                                        for i in null_indices:
+                                            entries[i] = ("null", 0)
+                                        self.instructions.append(
+                                            IRInstruction(
+                                                op="gdef_ptr_array",
+                                                result=f"@{decl.name}",
+                                                operand1=decl.type.base,
+                                                label=sc,
+                                                meta={"entries": entries},
+                                            )
                                         )
-                                    )
-                                    continue
-                                # Function pointer array: emit each name as a symbol ref
-                                if inits_list and all(isinstance(e, Identifier) for e in inits_list):
-                                    sym_labels = [e.name for e in inits_list]
-                                    self.instructions.append(
-                                        IRInstruction(
-                                            op="gdef_ptr_array",
-                                            result=f"@{decl.name}",
-                                            operand1=decl.type.base,
-                                            label=sc,
-                                            meta={"symbols": sym_labels},
-                                        )
-                                    )
-                                    continue
+                                        continue
                             raise IRGenError(
                                 f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
                             )
@@ -1607,6 +1616,20 @@ class IRGenerator:
         if isinstance(init, StringLiteral):
             return f"=str:{init.value}"
         return None
+
+    def _is_null_pointer_constant(self, expr: Any) -> bool:
+        """Check if an expression is a null pointer constant.
+
+        C89 §6.2.2.3: A null pointer constant is an integral constant
+        expression with value 0, or such an expression cast to void*.
+        Common forms: 0, (void*)0, ((void*)0), (void*)0L, etc.
+        """
+        if isinstance(expr, IntLiteral) and int(expr.value) == 0:
+            return True
+        if isinstance(expr, Cast):
+            return self._is_null_pointer_constant(expr.expression)
+        # Parenthesized expressions are already unwrapped by the parser.
+        return False
 
     def _const_initializer_list(self, init: Any) -> Optional[list[Any]]:
         """Decode a non-designated initializer-list into a flat list.

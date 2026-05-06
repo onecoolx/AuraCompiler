@@ -417,7 +417,17 @@ class CodeGenerator:
                     self._emit(f".globl {name}")
                 self._emit(f"  .align 8")
                 self._emit(f"{name}:")
-                if "strings" in meta:
+                if "entries" in meta:
+                    # Unified format: each entry is ("string", val) / ("symbol", name) / ("null", 0)
+                    for kind, val in meta["entries"]:
+                        if kind == "string":
+                            lbl = self._intern_string(val)
+                            self._emit(f"  .quad {lbl}")
+                        elif kind == "symbol":
+                            self._emit(f"  .quad {val}")
+                        elif kind == "null":
+                            self._emit(f"  .quad 0")
+                elif "strings" in meta:
                     for s in meta["strings"]:
                         lbl = self._intern_string(s)
                         self._emit(f"  .quad {lbl}")
