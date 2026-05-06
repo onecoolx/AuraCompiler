@@ -375,7 +375,18 @@ class IRGenerator:
         item.name = _saved_name
 
         # 6. Pointer array (strings, symbols, NULL, mixed).
-        if isinstance(init, Initializer) and getattr(item.type, "is_pointer", False):
+        # Use _is_pointer_type to resolve typedef pointers (e.g. lua_CFunction).
+        is_ptr_type = getattr(item.type, "is_pointer", False)
+        if not is_ptr_type and self._sema_ctx is not None:
+            base = getattr(item.type, "base", "")
+            if isinstance(base, str):
+                td = getattr(self._sema_ctx, "typedefs", {}).get(base)
+                if td is not None and getattr(td, "is_pointer", False):
+                    is_ptr_type = True
+                # Function pointer typedefs: base contains "(*)("
+                elif isinstance(base, str) and "(*)" in base:
+                    is_ptr_type = True
+        if isinstance(init, Initializer) and is_ptr_type:
             inits_list = self._const_initializer_list(init)
             if inits_list:
                 entries = []

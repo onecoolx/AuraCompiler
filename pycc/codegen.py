@@ -3817,15 +3817,34 @@ class CodeGenerator:
         return lbl
 
     def _gas_escape(self, s: str) -> str:
-        # Produce a GAS-compatible quoted string literal
-        escaped = (
-            s.replace("\\", "\\\\")
-            .replace("\n", "\\n")
-            .replace("\t", "\\t")
-            .replace("\r", "\\r")
-            .replace('"', '\\"')
-        )
-        return f'"{escaped}"'
+        """Produce a GAS-compatible quoted string literal.
+
+        All non-printable and non-ASCII bytes are escaped using octal
+        notation (\\ooo) which GNU as accepts universally.
+        """
+        out = []
+        for ch in s:
+            cp = ord(ch)
+            if ch == '\\':
+                out.append('\\\\')
+            elif ch == '"':
+                out.append('\\"')
+            elif ch == '\n':
+                out.append('\\n')
+            elif ch == '\t':
+                out.append('\\t')
+            elif ch == '\r':
+                out.append('\\r')
+            elif ch == '\0':
+                out.append('\\0')
+            elif 32 <= cp <= 126:
+                out.append(ch)
+            else:
+                # Non-ASCII or non-printable: use octal escape
+                # For multi-byte UTF-8, encode each byte separately
+                for b in ch.encode('utf-8'):
+                    out.append(f'\\{b:03o}')
+        return '"' + ''.join(out) + '"'
 
     def _emit(self, line: str) -> None:
         self.assembly_lines.append(line)
