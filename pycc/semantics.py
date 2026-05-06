@@ -1542,29 +1542,7 @@ class SemanticAnalyzer:
         if ty is not None:
             return ty
         if isinstance(expr, Identifier):
-            ty = self._lookup_decl_type(expr.name)
-            # Array decay: in expression context, arrays decay to pointers
-            # (C89 §6.2.2.1).  If the identifier is a known array variable,
-            # return a pointer type so downstream checks (pointer arithmetic,
-            # scalar type, etc.) work correctly.
-            if ty is not None and not getattr(ty, "is_pointer", False):
-                is_array = (
-                    expr.name in getattr(self, "_local_array_names", set())
-                    or expr.name in getattr(self, "_global_arrays", {})
-                )
-                if is_array:
-                    return Type(
-                        base=ty.base,
-                        is_pointer=True,
-                        pointer_level=max(1, (getattr(ty, "pointer_level", 0) or 0) + 1),
-                        is_const=bool(getattr(ty, "is_const", False)),
-                        is_volatile=bool(getattr(ty, "is_volatile", False)),
-                        is_unsigned=bool(getattr(ty, "is_unsigned", False)),
-                        is_signed=bool(getattr(ty, "is_signed", False)),
-                        line=getattr(ty, "line", 0),
-                        column=getattr(ty, "column", 0),
-                    )
-            return ty
+            return self._lookup_decl_type(expr.name)
 
         if isinstance(expr, UnaryOp):
             if expr.operator == "&":
@@ -1655,6 +1633,17 @@ class SemanticAnalyzer:
                 right_ty = self._expr_type(expr.right)
                 left_is_ptr = self._is_pointer_type(left_ty)
                 right_is_ptr = self._is_pointer_type(right_ty)
+                # Array variables decay to pointers in expression context.
+                if not left_is_ptr and isinstance(expr.left, Identifier):
+                    if expr.left.name in getattr(self, "_local_array_names", set()):
+                        left_is_ptr = True
+                    if expr.left.name in getattr(self, "_global_arrays", {}):
+                        left_is_ptr = True
+                if not right_is_ptr and isinstance(expr.right, Identifier):
+                    if expr.right.name in getattr(self, "_local_array_names", set()):
+                        right_is_ptr = True
+                    if expr.right.name in getattr(self, "_global_arrays", {}):
+                        right_is_ptr = True
                 if left_is_ptr:
                     if expr.operator == "-" and right_is_ptr:
                         # pointer - pointer → ptrdiff_t
