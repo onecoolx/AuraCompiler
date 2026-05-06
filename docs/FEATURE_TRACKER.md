@@ -1,6 +1,6 @@
 # AuraCompiler Feature Tracker (Living)
 
-Last updated: 2026-04-13
+Last updated: 2026-05-06
 
 Status: **DEPRECATED** (kept for historical context). See `docs/PROJECT_SUMMARY.md` for current status.
 
@@ -40,7 +40,7 @@ Rule: every new feature must add/extend tests under `tests/`.
   - [x] accept `register` locals (treated as normal locals) — `tests/test_storage_class_register_local_ok.py`
   - [x] accept `auto` locals (treated as normal locals) — `tests/test_storage_class_auto_local_ok.py`
   - [x] support local `static` (subset) — `tests/test_local_static.py`, `tests/test_local_static_basic.py`
-- **PARTIAL** full declarator grammar (function pointers etc.) — TODO
+- **DONE** full declarator grammar (unified recursive `_parse_declarator()` method) — `tests/test_parse_declarator.py`, `tests/test_complex_declarators.py`, `tests/test_unified_declarator_e2e.py`
 - **PARTIAL** `const` qualifier: reject assignment and compound assignment to const locals/globals (subset) — `tests/test_const.py`
 - **PARTIAL** `const` qualifier: reject assignment through `*p` when `p` is const-qualified pointer (subset) — `tests/test_const_pointer.py`
 - **PARTIAL** function pointer local declarations + indirect calls (subset) — `tests/test_declarators.py`

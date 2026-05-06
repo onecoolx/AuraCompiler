@@ -1,6 +1,6 @@
 # AuraCompiler (pycc): Practical C89 Compiler - Project Summary
 
-Last updated: 2026-04-13
+Last updated: 2026-05-06
 
 ## Executive Summary
 
@@ -54,26 +54,21 @@ pycc/
 
 **Working end-to-end:** Lexer → Parser → Semantics → IR → Codegen → `as`/`ld`.
 
-**Test status:** `pytest -q` is the source of truth. Current tree: **1389 passed**.
+**Test status:** `pytest -q` is the source of truth. Current tree: **2126 passed**.
 
 ### Recent changes
 
-- Fixed libc varargs crash cases by ensuring SysV x86-64 call-site stack alignment (16-byte aligned at each `call`).
-- Fixed local-scope `extern` function prototypes used with calls (e.g. `extern int printf(const char*, ...);` inside a function) so they resolve as direct symbol calls.
-- Added regression test: `tests/test_variadic_printf_local_extern_proto.py`.
-- Fixed a for-loop infinite-loop bug caused by stack slot aliasing between user locals (`@i/@j`) and IR temporaries (`%t*`). Root cause was an inconsistent frame-offset scheme when reserving a fixed spill area; compare results were accidentally stored into the loop variable slot.
-- Implemented a consistent frame layout rule in `pycc/codegen.py`: declared locals occupy the top of the frame; temps/spills use a reserved spill region below locals; any late-discovered locals are allocated below the spill region. This prevents overlaps and stabilizes control-flow correctness.
-- Preprocessor: improved `#if` expression compatibility for system headers by accepting integer literal suffixes (e.g. `201710L`) and tolerating function-like macro calls in `#if` (treated as 0). Also enhanced `#if`/`#elif` error diagnostics with directive file:line.
-- Preprocessor: macro-expanded `#include` operands (subset) and additional token-boundary / termination hardening for macro expansion (pp-number boundaries; self-referential termination subsets).
-
-- Variadic ABI (SysV AMD64): fixed glibc-compatible `va_list` handling so a `va_list` can be passed to libc `v*` entrypoints (e.g. `vsnprintf`). Documented in `docs/ARCHITECTURE.md` (2.6.1) and covered by regression tests.
-
-- Multi-translation-unit (multi-TU) behavior improved (tentative definitions as `.comm`, `extern` without storage in TU, cross-TU conflicts checked in driver tests).
-- Multi-dimensional arrays (2D) groundwork added:
-    - Parser records `Declaration.array_dims` (outer→inner).
-    - 2D array decay to pointer-to-row uses IR metadata (`ptr_step_bytes`) and codegen scaling.
-    - `sizeof(local 2D array)` computes total bytes.
-    - Nested `a[i][j]` is implemented and covered by tests.
+- **Unified declarator parser**: Replaced 5+ scattered declarator parsing paths with a single recursive `_parse_declarator()` method. All declaration contexts (functions, typedefs, locals, parameters, struct members) now use the same unified logic. Supports parenthesized function names, complex nested declarators, and typedef arrays.
+- **Anonymous nested struct/union identity**: Parser generates unique synthetic tags (`__anon_struct_N`/`__anon_union_N`) for anonymous nested types, ensuring layout registration and downstream lookup.
+- **GCC-compatible diagnostics**: All errors and warnings now use `file:line:col: error/warning: message` format.
+- **Typedef pointer resolution in semantics**: `_is_pointer_type()` and `_resolve_pointer_base()` methods resolve typedef chains for `->` and `.` operator checks.
+- **Array decay in expression type inference**: `_expr_type` for identifiers applies C89 §6.2.2.1 array-to-pointer decay, fixing false positives in pointer arithmetic and scalar type checks.
+- **IR `self._sizeof()` instance method**: Replaces error-prone module-level `_type_size()` calls, ensuring sema_ctx is always available for struct/union layout lookup.
+- **ICE evaluator for static initializers**: `_const_initializer_imm` delegates to the unified `_eval_const_int_expr` instead of maintaining a separate whitelist.
+- **Mixed pointer array initializers**: Pointer arrays can contain strings, NULL, and symbol references in any combination.
+- **Brace-wrapped scalar initializers**: C89 §6.5.7 allows `{0}` for scalar struct members; blob packer now unwraps them.
+- **Builtin registry**: Added `__builtin_va_start`, `__builtin_va_end`, `__builtin_va_copy`.
+- **Real-world validation**: Lua 5.5 `lapi.c`, `lcode.c`, `lgc.c`, `lobject.c` compile successfully (object files).
 
 **Implemented highlights (see tests/):**
 - Globals + initializers (including global `char*` string literal pointer init)
