@@ -117,6 +117,8 @@ class Parser:
         self.current_token: Optional[Token] = self.tokens[0] if self.tokens else None
         # track typedef names seen so far while parsing
         self._typedefs: Set[str] = set()
+        # map typedef name -> underlying Type for sizeof evaluation at parse time
+        self._typedef_types: Dict[str, Type] = {}
         # map for recent struct/union definitions: key "struct Tag"/"union Tag" -> member declarations
         self._tag_members: Dict[str, List[Declaration]] = {}
         # counter for generating unique synthetic tags for anonymous nested
@@ -255,6 +257,7 @@ class Parser:
             decl_info = self._parse_declarator()
             td = self._build_typedef_decl(base_type, decl_info)
             self._typedefs.add(td.name)
+            self._typedef_types[td.name] = td.type
             results = [td]
 
             # Multi-name typedef: typedef struct _XOC *XOC, *XFontSet;
@@ -262,6 +265,7 @@ class Parser:
                 extra_info = self._parse_declarator()
                 etd = self._build_typedef_decl(base_type, extra_info)
                 self._typedefs.add(etd.name)
+                self._typedef_types[etd.name] = etd.type
                 results.append(etd)
 
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
@@ -1203,11 +1207,13 @@ class Parser:
             decl_info = self._parse_declarator()
             td = self._build_typedef_decl(base_type, decl_info)
             self._typedefs.add(td.name)
+            self._typedef_types[td.name] = td.type
             # Multi-name local typedef: typedef struct _S *A, *B;
             while self._match(TokenType.COMMA):
                 extra_info = self._parse_declarator()
                 etd = self._build_typedef_decl(base_type, extra_info)
                 self._typedefs.add(etd.name)
+                self._typedef_types[etd.name] = etd.type
             self._expect(TokenType.SEMICOLON, "Expected ';' after typedef")
             return td
 
@@ -1658,6 +1664,10 @@ class Parser:
                 sz = _SIZES.get(base)
                 if sz is not None:
                     return sz
+                # Resolve typedef names recursively to find underlying type size.
+                resolved = self._resolve_typedef_for_sizeof(base)
+                if resolved is not None:
+                    return resolved
             return None
         # sizeof(expression) — limited support
         op = expr.operand
@@ -1665,6 +1675,40 @@ class Parser:
             from pycc.ast_nodes import StringLiteral
             if isinstance(op, StringLiteral):
                 return len(op.value) + 1
+        return None
+
+    def _resolve_typedef_for_sizeof(self, name: str) -> Optional[int]:
+        """Recursively resolve a typedef name to compute its size for sizeof."""
+        _SIZES = {
+            'char': 1, 'signed char': 1, 'unsigned char': 1,
+            'short': 2, 'signed short': 2, 'unsigned short': 2,
+            'short int': 2, 'signed short int': 2, 'unsigned short int': 2,
+            'int': 4, 'signed int': 4, 'unsigned int': 4,
+            'long': 8, 'signed long': 8, 'unsigned long': 8,
+            'long int': 8, 'signed long int': 8, 'unsigned long int': 8,
+            'long long': 8, 'signed long long': 8, 'unsigned long long': 8,
+            'long long int': 8, 'signed long long int': 8, 'unsigned long long int': 8,
+            'float': 4, 'double': 8, 'long double': 16,
+            'void': 1,
+        }
+        visited = set()
+        current = name
+        while current and current not in visited:
+            visited.add(current)
+            ty = self._typedef_types.get(current)
+            if ty is None:
+                return None
+            # If the resolved type is a pointer, size is 8
+            if getattr(ty, 'is_pointer', False) or (getattr(ty, 'pointer_level', 0) or 0) > 0:
+                return 8
+            base = getattr(ty, 'base', None)
+            if not isinstance(base, str):
+                return None
+            sz = _SIZES.get(base)
+            if sz is not None:
+                return sz
+            # base might be another typedef name — continue resolving
+            current = base
         return None
 
     def _parse_declarator_suffixes(self, info: DeclaratorInfo) -> None:
