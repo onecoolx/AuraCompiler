@@ -819,9 +819,12 @@ class Parser:
                         bit_width = 0
 
                 array_dims = decl_info.array_dims
+                mem_decl_ty = mem_ty_applied
+                if array_dims:
+                    mem_decl_ty = _build_array_type(mem_ty_applied, array_dims)
                 d = Declaration(
                     name=decl_info.name,
-                    type=mem_ty_applied,
+                    type=mem_decl_ty,
                     line=decl_info.name_tok.line if decl_info.name_tok else mem_ty.line,
                     column=decl_info.name_tok.column if decl_info.name_tok else mem_ty.column,
                 )
@@ -852,9 +855,12 @@ class Parser:
                     if self._match(TokenType.COLON):
                         bw_expr = self._parse_expression()
                         ebw = int(bw_expr.value) if isinstance(bw_expr, IntLiteral) else 0
+                    extra_mem_ty = extra_ty
+                    if extra_array_dims:
+                        extra_mem_ty = _build_array_type(extra_ty, extra_array_dims)
                     ed = Declaration(
                         name=extra_info.name,
-                        type=extra_ty,
+                        type=extra_mem_ty,
                         line=extra_info.name_tok.line if extra_info.name_tok else mem_ty.line,
                         column=extra_info.name_tok.column if extra_info.name_tok else mem_ty.column,
                     )
