@@ -157,6 +157,8 @@ def _build_array_type(base_type: Type, dims: List[Optional[int]]) -> Type:
         is_array=True,
         array_element_type=result,
         array_dimensions=list(dims),
+        is_const=base_type.is_const,
+        is_volatile=base_type.is_volatile,
         line=base_type.line,
         column=base_type.column,
     )
@@ -1388,9 +1390,14 @@ class Parser:
             else:
                 initializer = self._parse_assignment()
 
+        # Build array type when array dimensions are present
+        decl_ty = ty
+        if array_dims and not paren_decl:
+            decl_ty = _build_array_type(ty, array_dims)
+
         decl = Declaration(
             name=name_tok.value,
-            type=ty,
+            type=decl_ty,
             initializer=initializer,
             line=name_tok.line,
             column=name_tok.column,
@@ -1421,6 +1428,10 @@ class Parser:
             )
             extra_array_dims = extra_info.array_dims
             extra_array_size = extra_array_dims[0] if extra_array_dims else None
+            # Build array type for extra declarator
+            extra_decl_ty = extra_ty
+            if extra_array_dims and not extra_info.is_paren_wrapped:
+                extra_decl_ty = _build_array_type(extra_ty, extra_array_dims)
             # Parse initializer for extra declarator
             extra_init = None
             if self._match(TokenType.ASSIGN):
@@ -1430,7 +1441,7 @@ class Parser:
                     extra_init = self._parse_assignment()
             d = Declaration(
                 name=extra_info.name,
-                type=extra_ty,
+                type=extra_decl_ty,
                 initializer=extra_init,
                 line=extra_info.name_tok.line if extra_info.name_tok else base_type.line,
                 column=extra_info.name_tok.column if extra_info.name_tok else base_type.column,
