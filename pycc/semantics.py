@@ -1609,6 +1609,14 @@ class SemanticAnalyzer:
 
         if isinstance(expr, ArrayAccess):
             base_ty = self._expr_type(expr.array)
+            # Priority 1: if base type is directly an array (is_array=True),
+            # subscript yields the element type. This handles multi-dimensional
+            # inner subscripts and non-Identifier array expressions.
+            if base_ty and getattr(base_ty, 'is_array', False):
+                elem = base_ty.array_element_type
+                if elem is not None:
+                    return elem
+            # Priority 2: if base type is a pointer, dereference it.
             if base_ty and (getattr(base_ty, "pointer_level", 0) or 0) > 0:
                 # Check if the base is a declared array variable.  For pointer
                 # arrays like `T *arr[N]`, the Type has pointer_level=1 for the
