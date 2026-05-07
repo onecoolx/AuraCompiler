@@ -3043,6 +3043,42 @@ class IRGenerator:
                 return True
         return False
 
+    def _is_function_pointer_operand(self, ir_sym: str, ast_expr=None) -> bool:
+        """Check if an IR operand represents a function pointer value.
+
+        Used to detect cases where unary * (dereference) on a function
+        pointer should be a no-op (C89 §6.3.2.2).
+
+        Checks three sources of type information:
+        1. String type in _var_types (e.g. "int (*)()" contains "(*)")
+        2. Typedef resolution via sema_ctx (e.g. "lua_Alloc" → "... (*)()")
+        3. CType in symbol table (PointerType with FUNCTION pointee)
+        """
+        # 1. Check string type
+        op_ty = getattr(self, "_var_types", {}).get(ir_sym)
+        if not op_ty and ast_expr is not None and isinstance(ast_expr, Identifier):
+            op_ty = getattr(self, "_var_types", {}).get(f"@{ast_expr.name}")
+        if isinstance(op_ty, str):
+            if "(*)" in op_ty:
+                return True
+            # Resolve typedef to check underlying type
+            if self._sema_ctx is not None:
+                resolved = self._resolve_elem_type(op_ty.strip())
+                if "(*)" in resolved:
+                    return True
+                # Also check global_types for "function ..." marker
+                gt = getattr(self._sema_ctx, "global_types", {}).get(
+                    ast_expr.name if ast_expr and isinstance(ast_expr, Identifier) else "")
+                if isinstance(gt, str) and gt.startswith("function "):
+                    return True
+        # 2. Check CType system
+        if self._sym_table:
+            ct = self._sym_table.lookup(ir_sym)
+            if isinstance(ct, PointerType) and ct.pointee is not None:
+                if ct.pointee.kind == TypeKind.FUNCTION:
+                    return True
+        return False
+
     def _has_any_designator(self, init: Initializer) -> bool:
         """Return True if any element in the initializer has a Designator."""
         for desig, _val in (init.elements or []):
@@ -5053,6 +5089,12 @@ class IRGenerator:
                             pointee_ty = stripped[:-1].rstrip()
                 except Exception:
                     pass
+
+                # C89 §6.3.2.2: Dereferencing a function pointer is a no-op.
+                # (*f) where f is a function pointer yields f back (the function
+                # designator immediately decays to a pointer again).
+                if self._is_function_pointer_operand(base, expr.operand):
+                    return base
                 # If the pointee is a struct/union, dereferencing produces an
                 # lvalue (address), not a scalar load. Return the pointer as-is
                 # so that downstream member access and struct-copy operations
