@@ -1567,6 +1567,93 @@ class Parser:
 
         return td
 
+    def _try_eval_const_expr(self, expr) -> Optional[int]:
+        """Best-effort compile-time integer constant expression evaluator.
+
+        Used by the parser to evaluate array dimension expressions like
+        `sizeof(void*) + sizeof(long)`. Returns None if the expression
+        cannot be evaluated at parse time.
+        """
+        if isinstance(expr, IntLiteral):
+            return int(expr.value)
+        if isinstance(expr, CharLiteral):
+            return ord(expr.value)
+        if isinstance(expr, SizeOf):
+            return self._try_eval_sizeof(expr)
+        if isinstance(expr, UnaryOp):
+            v = self._try_eval_const_expr(expr.operand)
+            if v is None:
+                return None
+            if expr.operator == '+': return v
+            if expr.operator == '-': return -v
+            if expr.operator == '~': return ~v
+            if expr.operator == '!': return 0 if v != 0 else 1
+            return None
+        if isinstance(expr, BinaryOp):
+            l = self._try_eval_const_expr(expr.left)
+            r = self._try_eval_const_expr(expr.right)
+            if l is None or r is None:
+                return None
+            op = expr.operator
+            if op == '+': return l + r
+            if op == '-': return l - r
+            if op == '*': return l * r
+            if op == '/': return l // r if r != 0 else None
+            if op == '%': return l % r if r != 0 else None
+            if op == '|': return l | r
+            if op == '&': return l & r
+            if op == '^': return l ^ r
+            if op == '<<': return l << r
+            if op == '>>': return l >> r
+            if op == '<': return 1 if l < r else 0
+            if op == '>': return 1 if l > r else 0
+            if op == '<=': return 1 if l <= r else 0
+            if op == '>=': return 1 if l >= r else 0
+            if op == '==': return 1 if l == r else 0
+            if op == '!=': return 1 if l != r else 0
+            return None
+        if isinstance(expr, Cast):
+            return self._try_eval_const_expr(expr.expression)
+        if isinstance(expr, TernaryOp):
+            cond = self._try_eval_const_expr(expr.condition)
+            if cond is None:
+                return None
+            if cond != 0:
+                return self._try_eval_const_expr(expr.true_expr)
+            return self._try_eval_const_expr(expr.false_expr)
+        return None
+
+    def _try_eval_sizeof(self, expr) -> Optional[int]:
+        """Evaluate sizeof at parse time (best-effort)."""
+        # sizeof(type-name)
+        if expr.type is not None:
+            ty = expr.type
+            base = getattr(ty, 'base', None)
+            if isinstance(base, str):
+                # Primitive types
+                _SIZES = {
+                    'char': 1, 'signed char': 1, 'unsigned char': 1,
+                    'short': 2, 'signed short': 2, 'unsigned short': 2,
+                    'int': 4, 'signed int': 4, 'unsigned int': 4,
+                    'long': 8, 'signed long': 8, 'unsigned long': 8,
+                    'long long': 8, 'signed long long': 8, 'unsigned long long': 8,
+                    'float': 4, 'double': 8, 'long double': 16,
+                    'void': 1,
+                }
+                if getattr(ty, 'is_pointer', False) or (getattr(ty, 'pointer_level', 0) or 0) > 0:
+                    return 8  # LP64 pointer size
+                sz = _SIZES.get(base)
+                if sz is not None:
+                    return sz
+            return None
+        # sizeof(expression) — limited support
+        op = expr.operand
+        if op is not None:
+            from pycc.ast_nodes import StringLiteral
+            if isinstance(op, StringLiteral):
+                return len(op.value) + 1
+        return None
+
     def _parse_declarator_suffixes(self, info: DeclaratorInfo) -> None:
         """Parse array and function suffixes into an existing DeclaratorInfo.
 
@@ -1583,12 +1670,9 @@ class Parser:
                 dim: Optional[int] = None
                 if not self._at(TokenType.RBRACKET):
                     size_expr = self._parse_expression()
-                    if isinstance(size_expr, IntLiteral):
-                        dim = size_expr.value
-                    elif (isinstance(size_expr, UnaryOp)
-                          and size_expr.op == '-'
-                          and isinstance(size_expr.operand, IntLiteral)):
-                        dim = -size_expr.operand.value
+                    # Evaluate constant expression for array dimension.
+                    # Handles sizeof, arithmetic, casts, etc.
+                    dim = self._try_eval_const_expr(size_expr)
                 self._expect(TokenType.RBRACKET, "Expected ']' in array declarator")
                 info.array_dims.append(dim)
             elif self._at(TokenType.LPAREN) and not info.is_function:
