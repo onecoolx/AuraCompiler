@@ -1542,7 +1542,30 @@ class SemanticAnalyzer:
         if ty is not None:
             return ty
         if isinstance(expr, Identifier):
-            return self._lookup_decl_type(expr.name)
+            ty = self._lookup_decl_type(expr.name)
+            # Array decay: if the declared type is an array, decay to pointer
+            # to element type. This uses the new Type.is_array field and takes
+            # priority over the old _local_array_names/_global_arrays fallback.
+            if ty and getattr(ty, 'is_array', False):
+                elem = ty.array_element_type
+                if elem is not None:
+                    elem_ptr_level = (getattr(elem, 'pointer_level', 0) or 0)
+                    return Type(
+                        base=elem.base,
+                        is_pointer=True,
+                        pointer_level=elem_ptr_level + 1,
+                        is_const=bool(getattr(elem, 'is_const', False)),
+                        is_volatile=bool(getattr(elem, 'is_volatile', False)),
+                        is_unsigned=bool(getattr(elem, 'is_unsigned', False)),
+                        is_signed=bool(getattr(elem, 'is_signed', False)),
+                        line=getattr(elem, 'line', 0),
+                        column=getattr(elem, 'column', 0),
+                    )
+            # Fallback: old side-channel array decay (transition period).
+            # If the variable is known to be an array via _local_array_names or
+            # _global_arrays but Type.is_array was not set, still return the
+            # looked-up type as-is (existing behavior — decay handled downstream).
+            return ty
 
         if isinstance(expr, UnaryOp):
             if expr.operator == "&":
