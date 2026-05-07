@@ -62,7 +62,17 @@ class Type(ASTNode):
     # fn_return_type: the return Type of the function pointer (None if unknown)
     fn_param_types: Optional[List['Type']] = None
     fn_return_type: Optional['Type'] = None
-    
+
+    # Array type support
+    # Whether this Type represents a C array (e.g. int arr[10]).
+    is_array: bool = False
+    # Element type for arrays. For `int arr[10]`, this is Type(base="int").
+    # For multi-dimensional arrays, this is itself an array Type.
+    array_element_type: Optional['Type'] = None
+    # Dimension sizes, outer-to-inner. [10] for 1D, [3,4] for 2D.
+    # None entries represent unsized dimensions (e.g. `int arr[]`).
+    array_dimensions: Optional[List[Optional[int]]] = None
+
     def __str__(self) -> str:
         result = ""
         if self.is_const:
@@ -99,6 +109,12 @@ class Type(ASTNode):
                     result += " volatile"
                 if "restrict" in quals:
                     result += " restrict"
+        if self.is_array and self.array_dimensions is not None:
+            for dim in self.array_dimensions:
+                if dim is None:
+                    result += "[]"
+                else:
+                    result += f"[{dim}]"
         return result
 
     def _normalize_pointer_state(self) -> None:
@@ -144,12 +160,6 @@ class Type(ASTNode):
         )
         t._normalize_pointer_state()
         return t
-
-    @property
-    def is_array(self) -> bool:
-        # Parser encodes arrays via Declaration.array_size; the Type itself
-        # remains the element type. Keep this as a conservative default.
-        return False
 
 
 @dataclass
