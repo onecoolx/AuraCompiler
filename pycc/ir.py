@@ -4356,6 +4356,26 @@ class IRGenerator:
                                 _aom_op = "addr_of_member_ptr" if _base_is_ptr else "addr_of_member"
                                 self.instructions.append(IRInstruction(op=_aom_op, result=taddr, operand1=base, operand2=expr.member, meta=aom_meta, result_type=rt))
                                 return taddr
+                            # If the member is an array, return an lvalue address
+                            # (array-to-pointer decay). s.arr must yield the address
+                            # of the first element, not load a value.
+                            if isinstance(mty, str):
+                                mai = getattr(layout, "member_array_info", None) or {}
+                                if expr.member in mai:
+                                    taddr = self._new_temp()
+                                    self._var_types[taddr] = f"{mty}*"
+                                    aom_meta = {"member_type": mty}
+                                    _base_is_ptr = False
+                                    _bty_c = self._var_types.get(base, "")
+                                    if isinstance(_bty_c, str) and ("*" in _bty_c or _bty_c.strip() == "ptr"):
+                                        _base_is_ptr = True
+                                    elif self._sym_table:
+                                        _base_ct = self._sym_table.lookup(base)
+                                        if _base_ct is not None and isinstance(_base_ct, PointerType):
+                                            _base_is_ptr = True
+                                    _aom_op = "addr_of_member_ptr" if _base_is_ptr else "addr_of_member"
+                                    self.instructions.append(IRInstruction(op=_aom_op, result=taddr, operand1=base, operand2=expr.member, meta=aom_meta))
+                                    return taddr
             except Exception:
                 pass
 
@@ -4680,6 +4700,17 @@ class IRGenerator:
                                 rt = PointerType(kind=TypeKind.POINTER, pointee=member_ctype) if member_ctype else None
                                 self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base, operand2=expr.member, meta=aom_meta, result_type=rt))
                                 return taddr
+                            # If the member is an array, return an lvalue address
+                            # (array-to-pointer decay). Arrays accessed via p->arr
+                            # must yield the address of the first element, not load
+                            # a value from the member.
+                            mai = getattr(layout, "member_array_info", None) or {}
+                            if expr.member in mai:
+                                taddr = self._new_temp()
+                                self._var_types[taddr] = f"{mty}*"
+                                aom_meta = dict(meta)
+                                self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base, operand2=expr.member, meta=aom_meta))
+                                return taddr
                             if "*" in mty or mty.strip() in ("float", "double", "long double"):
                                 self._var_types[base + "_member_" + expr.member] = mty
             except Exception:
@@ -4691,13 +4722,13 @@ class IRGenerator:
                 meta["member_ctype"] = member_ct
                 if self._sym_table:
                     self._sym_table.insert(t, member_ct)
-            # Propagate float/double type to _var_types for codegen.
+            # Propagate member type to _var_types so downstream operations
+            # (function pointer dereference detection, pointer arithmetic,
+            # load width) can determine the correct type.
             try:
                 mty_str = meta.get("member_type", "")
-                if isinstance(mty_str, str) and mty_str.strip() in ("float", "double", "long double"):
+                if isinstance(mty_str, str) and mty_str.strip():
                     self._var_types[t] = mty_str.strip()
-                elif isinstance(mty_str, str) and "*" in mty_str:
-                    self._var_types[t] = mty_str
             except Exception:
                 pass
             self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None, result_type=member_ct))
@@ -5459,7 +5490,20 @@ class IRGenerator:
                             self._operand_type_string(r))
                         if _arith_ct is not None:
                             self._sym_table.insert(t, _arith_ct)
-                self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator))
+                _binop_meta = {}
+                # For division/modulo, propagate unsigned type info so codegen
+                # can select unsigned div/mod (divq) vs signed (idivq).
+                if expr.operator in {"/", "%"}:
+                    lty_d = self._var_types.get(l, "") if isinstance(l, str) else ""
+                    rty_d = self._var_types.get(r, "") if isinstance(r, str) else ""
+                    if isinstance(lty_d, str) and lty_d.strip():
+                        lty_d = self._resolve_elem_type(lty_d.strip())
+                    if isinstance(rty_d, str) and rty_d.strip():
+                        rty_d = self._resolve_elem_type(rty_d.strip())
+                    if (isinstance(lty_d, str) and "unsigned" in lty_d.lower()) or \
+                       (isinstance(rty_d, str) and "unsigned" in rty_d.lower()):
+                        _binop_meta["unsigned_div"] = True
+                self.instructions.append(IRInstruction(op="binop", result=t, operand1=l, operand2=r, label=expr.operator, meta=_binop_meta if _binop_meta else {}))
 
             # Best-effort: preserve pointer type when doing pointer +/- integer.
             # This is needed so later unary dereference or loads can interpret

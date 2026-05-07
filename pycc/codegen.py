@@ -521,9 +521,15 @@ class CodeGenerator:
                     if d.op == "addr_index" and d.result:
                         if d.result not in self._var_types:
                             self._var_types[d.result] = "ptr"
-                    if d.op == "addr_of_member" and d.result:
+                    if d.op in ("addr_of_member", "addr_of_member_ptr") and d.result:
                         if d.result not in self._var_types:
-                            self._var_types[d.result] = "ptr"
+                            # Use member_type from meta for correct pointer type
+                            # (array-to-pointer decay needs element type info).
+                            _mty = d.meta.get("member_type") if isinstance(d.meta, dict) else None
+                            if isinstance(_mty, str) and _mty.strip():
+                                self._var_types[d.result] = f"{_mty}*"
+                            else:
+                                self._var_types[d.result] = "ptr"
                     j += 1
                 # Collect ALL decl/param instructions in the function body
                 # (not just top-of-function). C89 allows declarations after
@@ -1677,6 +1683,12 @@ class CodeGenerator:
             if off:
                 self._emit(f"  addq ${off}, %rax")
             self._store_result(ins.result, "%rax")
+            # Propagate member type as pointer for correct element size in
+            # downstream load_index/store_index (array-to-pointer decay).
+            if ins.result and isinstance(ins.meta, dict) and "member_type" in ins.meta:
+                mty = ins.meta["member_type"]
+                if isinstance(mty, str) and mty.strip():
+                    self._var_types[ins.result] = f"{mty}*"
             return
 
         if op == "load_member_ptr":
@@ -1850,8 +1862,12 @@ class CodeGenerator:
                 ty1 = getattr(self._sema_ctx, "global_types", {}).get(ins.operand1[1:], "")
             if not ty2 and isinstance(ins.operand2, str) and ins.operand2.startswith("@") and self._sema_ctx is not None:
                 ty2 = getattr(self._sema_ctx, "global_types", {}).get(ins.operand2[1:], "")
-            ty1n = ty1.strip().lower() if isinstance(ty1, str) else ""
-            ty2n = ty2.strip().lower() if isinstance(ty2, str) else ""
+            # Resolve typedefs to detect unsigned types correctly
+            # (e.g. size_t -> unsigned long)
+            ty1r = self._resolve_type(ty1) if isinstance(ty1, str) and ty1.strip() else ""
+            ty2r = self._resolve_type(ty2) if isinstance(ty2, str) and ty2.strip() else ""
+            ty1n = ty1r.strip().lower() if isinstance(ty1r, str) else ""
+            ty2n = ty2r.strip().lower() if isinstance(ty2r, str) else ""
             u32_arith = ty1n.startswith("unsigned int") or ty2n.startswith("unsigned int")
             u64_arith = ty1n.startswith("unsigned long") or ty2n.startswith("unsigned long")
 
@@ -1880,7 +1896,7 @@ class CodeGenerator:
                     # unsigned 32-bit division: edx:eax / ecx
                     self._emit("  xorl %edx, %edx")
                     self._emit("  divl %ecx")
-                elif u64_arith:
+                elif u64_arith or (isinstance(ins.meta, dict) and ins.meta.get("unsigned_div")):
                     # unsigned 64-bit division: rdx:rax / rcx
                     self._emit("  xorq %rdx, %rdx")
                     self._emit("  divq %rcx")
@@ -1892,7 +1908,7 @@ class CodeGenerator:
                     self._emit("  xorl %edx, %edx")
                     self._emit("  divl %ecx")
                     self._emit("  movl %edx, %eax")
-                elif u64_arith:
+                elif u64_arith or (isinstance(ins.meta, dict) and ins.meta.get("unsigned_div")):
                     self._emit("  xorq %rdx, %rdx")
                     self._emit("  divq %rcx")
                     self._emit("  movq %rdx, %rax")
@@ -3509,30 +3525,23 @@ class CodeGenerator:
         if ptr_ty is None:
             return 8
         if isinstance(ptr_ty, str):
-            s = ptr_ty.replace(" ", "")
+            s = ptr_ty.strip()
         else:
             base = getattr(ptr_ty, "base", None)
-            s = base.replace(" ", "") if isinstance(base, str) else ""
+            s = base.strip() if isinstance(base, str) else ""
 
         if not s or not s.endswith("*"):
             return 8
         # peel exactly one '*' to get pointee type
-        s = s[:-1]
-        if not s:
+        pointee = s[:-1].strip()
+        if not pointee:
             return 8
         # if pointee is itself a pointer, size is 8
-        if s.endswith("*"):
+        if pointee.endswith("*"):
             return 8
-        # handle common pointee bases
-        if s.endswith("char") or s.endswith("unsignedchar") or s.endswith("signedchar"):
-            return 1
-        if s.endswith("short") or s.endswith("shortint") or s.endswith("unsignedshort") or s.endswith("unsignedshortint"):
-            return 2
-        if s.endswith("int") or s.endswith("unsignedint") or s.endswith("signedint") or s.startswith("enum"):
-            return 4
-        if s.endswith("long") or s.endswith("longint") or s.endswith("unsignedlong") or s.endswith("unsignedlongint"):
-            return 8
-        return 8
+        # Use _type_size_bytes which resolves typedefs and handles all types
+        sz = self._type_size_bytes(pointee)
+        return sz if sz > 0 else 8
 
     def _pointee_is_unsigned(self, ptr_ty: object) -> bool:
         """Check unsignedness for T* pointer types."""
