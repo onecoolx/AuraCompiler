@@ -922,7 +922,7 @@ class Parser:
             t.is_signed = (sign == "signed")
 
             # size + base combinations
-            if base == "int" and size in {"short", "long"}:
+            if base == "int" and size in {"short", "long", "long long"}:
                 t.base = f"{size} int"
             if base == "double" and size == "long":
                 t.base = "long double"
@@ -943,6 +943,9 @@ class Parser:
             elif t.base == "long int":
                 if sign == "unsigned":
                     t.base = "unsigned long"
+            elif t.base == "long long int":
+                if sign == "unsigned":
+                    t.base = "unsigned long long"
 
             return t
 
@@ -954,7 +957,7 @@ class Parser:
             t.is_unsigned = (sign == "unsigned")
             t.is_signed = (sign == "signed")
 
-            if size in {"short", "long"}:
+            if size in {"short", "long", "long long"}:
                 t.base = f"{size} int"
 
             # Normalize unsigned into base string
@@ -964,6 +967,8 @@ class Parser:
                 t.base = "unsigned short"
             elif t.base == "long int" and sign == "unsigned":
                 t.base = "unsigned long"
+            elif t.base == "long long int" and sign == "unsigned":
+                t.base = "unsigned long long"
 
             return t
 
@@ -1011,7 +1016,11 @@ class Parser:
                     self.advance()
                     continue
                 if v in {"short", "long"}:
-                    size = v
+                    # Accumulate 'long long' when two consecutive 'long' appear.
+                    if v == "long" and size == "long":
+                        size = "long long"
+                    else:
+                        size = v
                     self.advance()
                     continue
                 # --- Base type keywords ---
@@ -1630,13 +1639,17 @@ class Parser:
             ty = expr.type
             base = getattr(ty, 'base', None)
             if isinstance(base, str):
-                # Primitive types
+                # Primitive types — includes all normalized forms produced by
+                # _build_type_from_specifiers (e.g. 'long int', 'short int').
                 _SIZES = {
                     'char': 1, 'signed char': 1, 'unsigned char': 1,
                     'short': 2, 'signed short': 2, 'unsigned short': 2,
+                    'short int': 2, 'signed short int': 2, 'unsigned short int': 2,
                     'int': 4, 'signed int': 4, 'unsigned int': 4,
                     'long': 8, 'signed long': 8, 'unsigned long': 8,
+                    'long int': 8, 'signed long int': 8, 'unsigned long int': 8,
                     'long long': 8, 'signed long long': 8, 'unsigned long long': 8,
+                    'long long int': 8, 'signed long long int': 8, 'unsigned long long int': 8,
                     'float': 4, 'double': 8, 'long double': 16,
                     'void': 1,
                 }
