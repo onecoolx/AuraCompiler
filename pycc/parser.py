@@ -96,6 +96,72 @@ class DeclaratorInfo:
     outer_pointer_level: int = 0  # pointer levels outside parentheses
 
 
+def _build_array_type(base_type: Type, dims: List[Optional[int]]) -> Type:
+    """Construct an array Type from a base element type and dimension list.
+
+    For ``int arr[3][4]`` with base_type=Type(base="int") and dims=[3,4],
+    the result is::
+
+        Type(base="int", is_array=True,
+             array_element_type=Type(base="int", is_array=True,
+                 array_element_type=Type(base="int"),
+                 array_dimensions=[4]),
+             array_dimensions=[3, 4])
+
+    The innermost element type preserves the base_type's qualifiers (pointer,
+    const, etc.) but strips any existing array markers.
+    """
+    if not dims:
+        return base_type
+
+    # Build the leaf element type — a copy of base_type without array fields.
+    elem = Type(
+        base=base_type.base,
+        is_pointer=base_type.is_pointer,
+        pointer_level=base_type.pointer_level,
+        is_const=base_type.is_const,
+        is_volatile=base_type.is_volatile,
+        is_restrict=base_type.is_restrict,
+        is_unsigned=base_type.is_unsigned,
+        is_signed=base_type.is_signed,
+        ptr_is_const=base_type.ptr_is_const,
+        ptr_is_volatile=base_type.ptr_is_volatile,
+        ptr_is_restrict=base_type.ptr_is_restrict,
+        pointer_quals=list(base_type.pointer_quals) if base_type.pointer_quals else [],
+        fn_param_count=base_type.fn_param_count,
+        fn_param_types=base_type.fn_param_types,
+        fn_return_type=base_type.fn_return_type,
+        line=base_type.line,
+        column=base_type.column,
+    )
+
+    # Build from innermost dimension outward.
+    result = elem
+    for dim in reversed(dims[1:]):
+        result = Type(
+            base=base_type.base,
+            is_pointer=base_type.is_pointer,
+            pointer_level=base_type.pointer_level,
+            is_array=True,
+            array_element_type=result,
+            array_dimensions=[dim],
+            line=base_type.line,
+            column=base_type.column,
+        )
+
+    # Outermost layer carries the full dimensions list.
+    return Type(
+        base=base_type.base,
+        is_pointer=base_type.is_pointer,
+        pointer_level=base_type.pointer_level,
+        is_array=True,
+        array_element_type=result,
+        array_dimensions=list(dims),
+        line=base_type.line,
+        column=base_type.column,
+    )
+
+
 class ParserError(Exception):
     """Parser error"""
     def __init__(self, message: str, token: Optional[Token] = None):
