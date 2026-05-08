@@ -3873,7 +3873,21 @@ class IRGenerator:
                 UnaryOp as ASTUnaryOp,
             )
             if isinstance(op, ASTIdentifier):
-                # Best-effort: if identifier is a known local array, return its
+                # Priority path: use Type.is_array + array_dimensions from AST Type.
+                _ast_ty = getattr(self, "_local_ast_types", {}).get(op.name)
+                if _ast_ty is None and self._sema_ctx is not None:
+                    _ast_ty = getattr(self._sema_ctx, "global_decl_types", {}).get(op.name)
+                if _ast_ty is not None and getattr(_ast_ty, "is_array", False):
+                    _dims = getattr(_ast_ty, "array_dimensions", None)
+                    _elem_ty = getattr(_ast_ty, "array_element_type", None)
+                    if _dims and _elem_ty is not None and all(d is not None for d in _dims):
+                        _total = 1
+                        for _d in _dims:
+                            _total *= int(_d)
+                        _elem_sz = self._sizeof(_elem_ty)
+                        return f"${_total * _elem_sz}"
+
+                # Fallback: if identifier is a known local array, return its
                 # byte size (not pointer size).
                 if hasattr(self, "_local_arrays") and op.name in getattr(self, "_local_arrays"):
                     ty = getattr(self, "_var_types", {}).get(f"@{op.name}")
