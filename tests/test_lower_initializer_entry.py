@@ -72,7 +72,6 @@ def _make_struct_layout(name, size, kind="struct"):
         "x": Type(base="int", line=0, column=0),
         "y": Type(base="int", line=0, column=0),
     }
-    layout.member_array_info = None
     return layout
 
 

@@ -77,9 +77,6 @@ class StructLayout:
     bit_fields: set | None = None  # set of member names that are bit-fields
     # Full Type objects for members, used by _expr_type() for type inference.
     member_decl_types: Dict[str, Type] | None = None
-    # Array info for members: name -> (array_size, array_dims).
-    # Only populated for members that are arrays.
-    member_array_info: Dict[str, tuple] | None = None
 
 
 @dataclass
@@ -704,18 +701,16 @@ class SemanticAnalyzer:
 
         # Build member_decl_types: full Type objects for each member.
         mdecl_types: Dict[str, Type] = {}
-        m_array_info: Dict[str, tuple] = {}
         for m in members:
             if m.name is not None and getattr(m, "type", None) is not None:
                 mty = m.type
                 arr_sz = getattr(m, 'array_size', None)
                 if arr_sz is not None:
-                    arr_dims = getattr(m, 'array_dims', None)
-                    m_array_info[m.name] = (arr_sz, arr_dims)
                     # Ensure the Type stored in member_decl_types has is_array
                     # set when the member is an array. The parser normally sets
                     # this, but we enforce it here as the canonical source.
                     if not getattr(mty, 'is_array', False):
+                        arr_dims = getattr(m, 'array_dims', None)
                         dims = arr_dims if isinstance(arr_dims, list) and arr_dims else [int(arr_sz)]
                         # Build element type (base type without array markers)
                         elem = Type(
@@ -744,7 +739,7 @@ class SemanticAnalyzer:
                             column=mty.column,
                         )
                 mdecl_types[m.name] = mty
-        layout = StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None, member_decl_types=mdecl_types if mdecl_types else None, member_array_info=m_array_info if m_array_info else None)
+        layout = StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None, member_decl_types=mdecl_types if mdecl_types else None)
         if bf_members:
             layout._bf_info = {}
             for m in members:

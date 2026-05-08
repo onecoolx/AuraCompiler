@@ -2026,8 +2026,7 @@ class IRGenerator:
         """Get a member's fully resolved CType from a StructLayout.
 
         Unlike _member_ctype_from_layout, this also handles array members.
-        Priority: uses member_decl_types[name].is_array from the Type object,
-        falling back to layout.member_array_info for backward compatibility.
+        Uses member_decl_types[name].is_array from the Type object.
 
         Args:
             layout: StructLayout with member type info.
@@ -2048,7 +2047,7 @@ class IRGenerator:
 
         member_type = mdecl_types[member_name]
 
-        # Priority: check Type.is_array from member_decl_types.
+        # Check Type.is_array from member_decl_types.
         if getattr(member_type, 'is_array', False):
             elem = member_type.array_element_type
             dims = member_type.array_dimensions
@@ -2073,30 +2072,7 @@ class IRGenerator:
                     size=int(size) if size is not None else None,
                 )
 
-        # Fallback: check member_array_info (transition period).
-        elem_ct = ast_type_to_ctype_resolved(member_type, ctx)
-        arr_info = getattr(layout, "member_array_info", None)
-        if arr_info and member_name in arr_info:
-            array_size, array_dims = arr_info[member_name]
-            if isinstance(array_dims, list) and len(array_dims) >= 2:
-                # Multi-dimensional: wrap from innermost to outermost.
-                ct = elem_ct
-                for dim in reversed(array_dims):
-                    ct = CArrayType(
-                        kind=TypeKind.ARRAY,
-                        element=ct,
-                        size=int(dim) if dim is not None else None,
-                    )
-                return ct
-            else:
-                # Single-dimension array.
-                return CArrayType(
-                    kind=TypeKind.ARRAY,
-                    element=elem_ct,
-                    size=int(array_size) if array_size is not None else None,
-                )
-
-        return elem_ct
+        return ast_type_to_ctype_resolved(member_type, ctx)
 
     @staticmethod
     def _unwrap_single_init(init: Expression) -> Expression:
@@ -4352,11 +4328,6 @@ class IRGenerator:
                                 _mdt = _mdecl[expr.member]
                                 if getattr(_mdt, 'is_array', False):
                                     _member_is_array = True
-                            # Fallback: check member_array_info
-                            if not _member_is_array and isinstance(mty, str):
-                                mai = getattr(layout, "member_array_info", None) or {}
-                                if expr.member in mai:
-                                    _member_is_array = True
                             if _member_is_array:
                                 if isinstance(mty, str):
                                     taddr = self._new_temp()
@@ -4708,11 +4679,6 @@ class IRGenerator:
                             if _mdecl and expr.member in _mdecl:
                                 _mdt = _mdecl[expr.member]
                                 if getattr(_mdt, 'is_array', False):
-                                    _member_is_array = True
-                            # Fallback: check member_array_info
-                            if not _member_is_array:
-                                mai = getattr(layout, "member_array_info", None) or {}
-                                if expr.member in mai:
                                     _member_is_array = True
                             if _member_is_array:
                                 taddr = self._new_temp()

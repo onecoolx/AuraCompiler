@@ -53,7 +53,6 @@ def _make_layout(kind, name, members, array_info=None):
         kind=kind, name=name, size=offset, align=8,
         member_offsets=offsets, member_sizes=sizes,
         member_types=types_str, member_decl_types=decl_types,
-        member_array_info=array_info,
     )
 
 
@@ -154,10 +153,16 @@ class TestCountFlatInitsStruct:
 
     def test_struct_with_array_member(self):
         """struct { int arr[3]; int y; } -> 4."""
+        arr_type = Type(
+            base="int", is_array=True,
+            array_element_type=Type(base="int", line=0, column=0),
+            array_dimensions=[3],
+            line=0, column=0,
+        )
         layout = _make_layout("struct", "S", [
-            ("arr", Type(base="int", line=0, column=0), 12),
+            ("arr", arr_type, 12),
             ("y", Type(base="int", line=0, column=0), 4),
-        ], array_info={"arr": (3, None)})
+        ])
         ctx = _make_sema_ctx(layouts={"struct S": layout})
         gen = _make_ir_gen(ctx)
         ct = CStructType(kind=TypeKind.STRUCT, tag="S")
@@ -205,10 +210,16 @@ class TestCountFlatInitsUnion:
 
     def test_union_first_member_is_array(self):
         """union { int arr[3]; float f; } -> 3 (first member is int[3])."""
+        arr_type = Type(
+            base="int", is_array=True,
+            array_element_type=Type(base="int", line=0, column=0),
+            array_dimensions=[3],
+            line=0, column=0,
+        )
         layout = _make_layout("union", "U", [
-            ("arr", Type(base="int", line=0, column=0), 12),
+            ("arr", arr_type, 12),
             ("f", Type(base="float", line=0, column=0), 4),
-        ], array_info={"arr": (3, None)})
+        ])
         ctx = _make_sema_ctx(layouts={"union U": layout})
         gen = _make_ir_gen(ctx)
         ct = CStructType(kind=TypeKind.UNION, tag="U")
@@ -259,9 +270,15 @@ class TestCountFlatInitsComplex:
 
     def test_struct_with_nested_struct_and_array(self):
         """struct O { struct I { int a[2]; } inner; int c; } -> 3."""
+        arr_type = Type(
+            base="int", is_array=True,
+            array_element_type=Type(base="int", line=0, column=0),
+            array_dimensions=[2],
+            line=0, column=0,
+        )
         inner_layout = _make_layout("struct", "I", [
-            ("a", Type(base="int", line=0, column=0), 8),
-        ], array_info={"a": (2, None)})
+            ("a", arr_type, 8),
+        ])
         outer_layout = _make_layout("struct", "O", [
             ("inner", Type(base="struct I", line=0, column=0), 8),
             ("c", Type(base="int", line=0, column=0), 4),

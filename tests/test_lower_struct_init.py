@@ -74,7 +74,6 @@ def _make_layout(name, members, kind="struct"):
     layout.member_sizes = {}
     layout.member_types = {}
     layout.member_decl_types = {}
-    layout.member_array_info = None
     for mname, mtype, moffset, msize in members:
         layout.member_offsets[mname] = moffset
         layout.member_sizes[mname] = msize
