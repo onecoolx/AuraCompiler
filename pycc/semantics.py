@@ -741,11 +741,43 @@ class SemanticAnalyzer:
         m_array_info: Dict[str, tuple] = {}
         for m in members:
             if m.name is not None and getattr(m, "type", None) is not None:
-                mdecl_types[m.name] = m.type
+                mty = m.type
                 arr_sz = getattr(m, 'array_size', None)
                 if arr_sz is not None:
                     arr_dims = getattr(m, 'array_dims', None)
                     m_array_info[m.name] = (arr_sz, arr_dims)
+                    # Ensure the Type stored in member_decl_types has is_array
+                    # set when the member is an array. The parser normally sets
+                    # this, but we enforce it here as the canonical source.
+                    if not getattr(mty, 'is_array', False):
+                        dims = arr_dims if isinstance(arr_dims, list) and arr_dims else [int(arr_sz)]
+                        # Build element type (base type without array markers)
+                        elem = Type(
+                            base=mty.base,
+                            is_pointer=mty.is_pointer,
+                            pointer_level=mty.pointer_level,
+                            is_const=mty.is_const,
+                            is_volatile=getattr(mty, 'is_volatile', False),
+                            is_unsigned=getattr(mty, 'is_unsigned', False),
+                            is_signed=getattr(mty, 'is_signed', False),
+                            line=mty.line,
+                            column=mty.column,
+                        )
+                        mty = Type(
+                            base=mty.base,
+                            is_pointer=mty.is_pointer,
+                            pointer_level=mty.pointer_level,
+                            is_array=True,
+                            array_element_type=elem,
+                            array_dimensions=dims,
+                            is_const=mty.is_const,
+                            is_volatile=getattr(mty, 'is_volatile', False),
+                            is_unsigned=getattr(mty, 'is_unsigned', False),
+                            is_signed=getattr(mty, 'is_signed', False),
+                            line=mty.line,
+                            column=mty.column,
+                        )
+                mdecl_types[m.name] = mty
         layout = StructLayout(kind=kind, name=tag, size=size, align=max_align, member_offsets=offsets, member_sizes=sizes, member_types=mtypes, bit_fields=bf_members if bf_members else None, member_decl_types=mdecl_types if mdecl_types else None, member_array_info=m_array_info if m_array_info else None)
         if bf_members:
             layout._bf_info = {}
