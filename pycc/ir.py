@@ -433,6 +433,9 @@ class IRGenerator:
         self._ptr_step_bytes: dict[str, int] = {}
         self._enum_constants: dict[str, int] = {}
         self._local_arrays: set[str] = set()
+        # Maps local variable name (plain, without '@') to its AST Type object.
+        # Used by Identifier handling to check Type.is_array for array decay.
+        self._local_ast_types: dict = {}
         if self._sema_ctx is not None:
             self._sym_table = TypedSymbolTable(self._sema_ctx)
         else:
@@ -3135,6 +3138,7 @@ class IRGenerator:
             self.instructions.append(IRInstruction(op="func_ret", operand1=self._fn_ret_type))
         # reset per-function array set
         self._local_arrays = set()
+        self._local_ast_types = {}
         # Track declared types of locals/params for signedness decisions.
         #
         # NOTE: _var_types CANNOT be removed yet (task 7.2 deferred).
@@ -3181,6 +3185,9 @@ class IRGenerator:
             self._var_types[f"@{p.name}"] = ty_s
             self._scope_stack[-1][p.name] = f"@{p.name}"
             self.instructions.append(IRInstruction(op="param", result=f"@{p.name}", operand1=ty_s))
+            # Store AST Type for Type.is_array checks in Identifier handling.
+            if p.type is not None:
+                self._local_ast_types[p.name] = p.type
             # Insert parameter CType into symbol table (dual-populate).
             if self._sym_table:
                 ctype = ast_type_to_ctype_resolved(p.type, self._sema_ctx)
@@ -3390,6 +3397,9 @@ class IRGenerator:
                     if op1 is not None:
                         self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=op1))
                         self._local_arrays.add(item.name)
+                        # Store AST Type for Type.is_array checks in Identifier handling.
+                        if item.type is not None:
+                            self._local_ast_types[item.name] = item.type
                         self._var_types[self._resolve_name(item.name)] = str(op1)
                         # Insert array CType into symbol table (dual-populate).
                         self._insert_decl_ctype(self._resolve_name(item.name), item)
@@ -3405,6 +3415,9 @@ class IRGenerator:
                         decl_op1 = str(item.type.base)
                         self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
                         self._var_types[self._resolve_name(item.name)] = decl_op1
+                        # Store AST Type for Type.is_array checks in Identifier handling.
+                        if item.type is not None:
+                            self._local_ast_types[item.name] = item.type
                         # Insert struct/union CType into symbol table (dual-populate).
                         self._insert_decl_ctype(self._resolve_name(item.name), item)
                     else:
@@ -3433,6 +3446,9 @@ class IRGenerator:
                                     decl_op1 = f"{decl_op1}{stars}"
                             self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
                             self._var_types[self._resolve_name(item.name)] = str(decl_op1)
+                            # Store AST Type for Type.is_array checks in Identifier handling.
+                            if item.type is not None:
+                                self._local_ast_types[item.name] = item.type
                             # Insert scalar CType into symbol table (dual-populate).
                             self._insert_decl_ctype(self._resolve_name(item.name), item)
                     # If this is a pointer variable, record its declared pointee
@@ -4220,12 +4236,18 @@ class IRGenerator:
 
             sym = self._resolve_name(expr.name)
             # Array-to-pointer decay in rvalue context: emit explicit addr-of.
-            # Our semantic/type system is minimal; detect arrays by the presence of
-            # a declared array_size on the declaration node (recorded earlier by decl).
-            # Since IR is stringly-typed, we conservatively treat any symbol that was
-            # declared as an array in this function as decaying to its address.
-            # NOTE: `self._local_arrays` stores plain names (without '@').
-            if hasattr(self, "_local_arrays") and expr.name in getattr(self, "_local_arrays"):
+            # Primary: check the declaration's Type.is_array field (local vars only).
+            # Fallback: check _local_arrays set (legacy, to be removed in task 8.2).
+            # NOTE: Global arrays do NOT need mov_addr — their @symbol reference
+            # already resolves to the data section address in codegen.
+            _is_arr = False
+            _ast_ty = getattr(self, "_local_ast_types", {}).get(expr.name)
+            if _ast_ty is not None and getattr(_ast_ty, "is_array", False):
+                _is_arr = True
+            # Fallback to legacy _local_arrays set.
+            if not _is_arr and hasattr(self, "_local_arrays") and expr.name in getattr(self, "_local_arrays"):
+                _is_arr = True
+            if _is_arr:
                 t = self._new_temp()
                 ins = IRInstruction(op="mov_addr", result=t, operand1=sym)
                 # Preserve array element type info on the decayed pointer temp
