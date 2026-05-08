@@ -249,3 +249,117 @@ class TestGetMemberCtypeEdgeCases:
         ct_f = gen._get_member_ctype(layout, "f", ctx)
         assert ct_i.kind == TypeKind.INT
         assert ct_f.kind == TypeKind.FLOAT
+
+
+class TestGetMemberCtypeFromTypeIsArray:
+    """Array detection via member_decl_types[name].is_array (task 6.3).
+
+    These tests verify that _get_member_ctype uses Type.is_array from
+    member_decl_types as the primary source for array information,
+    without needing member_array_info.
+    """
+
+    def test_1d_array_from_type_no_array_info(self):
+        """Type.is_array should be sufficient without member_array_info."""
+        ctx = _make_sema_ctx()
+        gen = _make_ir_gen(ctx)
+        # Member type has is_array=True, no member_array_info provided.
+        arr_type = Type(
+            base="int", is_array=True,
+            array_element_type=Type(base="int", line=0, column=0),
+            array_dimensions=[10],
+            line=0, column=0,
+        )
+        layout = _make_layout("struct", "S", [
+            ("arr", arr_type, 40),
+        ], array_info=None)
+        ct = gen._get_member_ctype(layout, "arr", ctx)
+        assert ct is not None
+        assert isinstance(ct, CArrayType)
+        assert ct.kind == TypeKind.ARRAY
+        assert ct.size == 10
+        assert ct.element.kind == TypeKind.INT
+
+    def test_2d_array_from_type_no_array_info(self):
+        """Multi-dim array from Type.is_array without member_array_info."""
+        ctx = _make_sema_ctx()
+        gen = _make_ir_gen(ctx)
+        arr_type = Type(
+            base="int", is_array=True,
+            array_element_type=Type(base="int", line=0, column=0),
+            array_dimensions=[3, 4],
+            line=0, column=0,
+        )
+        layout = _make_layout("struct", "S", [
+            ("matrix", arr_type, 48),
+        ], array_info=None)
+        ct = gen._get_member_ctype(layout, "matrix", ctx)
+        assert ct is not None
+        assert isinstance(ct, CArrayType)
+        assert ct.size == 3
+        inner = ct.element
+        assert isinstance(inner, CArrayType)
+        assert inner.size == 4
+        assert inner.element.kind == TypeKind.INT
+
+    def test_char_array_from_type_no_array_info(self):
+        """char name[32] from Type.is_array without member_array_info."""
+        ctx = _make_sema_ctx()
+        gen = _make_ir_gen(ctx)
+        arr_type = Type(
+            base="char", is_array=True,
+            array_element_type=Type(base="char", line=0, column=0),
+            array_dimensions=[32],
+            line=0, column=0,
+        )
+        layout = _make_layout("struct", "S", [
+            ("name", arr_type, 32),
+        ], array_info=None)
+        ct = gen._get_member_ctype(layout, "name", ctx)
+        assert ct is not None
+        assert isinstance(ct, CArrayType)
+        assert ct.size == 32
+        assert ct.element.kind == TypeKind.CHAR
+
+    def test_type_is_array_takes_priority_over_array_info(self):
+        """Type.is_array should take priority over member_array_info."""
+        ctx = _make_sema_ctx()
+        gen = _make_ir_gen(ctx)
+        # Type says [5], array_info says (10, None) — Type should win.
+        arr_type = Type(
+            base="int", is_array=True,
+            array_element_type=Type(base="int", line=0, column=0),
+            array_dimensions=[5],
+            line=0, column=0,
+        )
+        layout = _make_layout("struct", "S", [
+            ("arr", arr_type, 20),
+        ], array_info={"arr": (10, None)})
+        ct = gen._get_member_ctype(layout, "arr", ctx)
+        assert ct is not None
+        assert isinstance(ct, CArrayType)
+        # Type.is_array wins: size should be 5, not 10.
+        assert ct.size == 5
+        assert ct.element.kind == TypeKind.INT
+
+    def test_pointer_array_from_type(self):
+        """int *ptrs[5] from Type.is_array."""
+        ctx = _make_sema_ctx()
+        gen = _make_ir_gen(ctx)
+        arr_type = Type(
+            base="int", is_array=True,
+            array_element_type=Type(
+                base="int", is_pointer=True, pointer_level=1,
+                line=0, column=0,
+            ),
+            array_dimensions=[5],
+            line=0, column=0,
+        )
+        layout = _make_layout("struct", "S", [
+            ("ptrs", arr_type, 40),
+        ], array_info=None)
+        ct = gen._get_member_ctype(layout, "ptrs", ctx)
+        assert ct is not None
+        assert isinstance(ct, CArrayType)
+        assert ct.size == 5
+        assert ct.element.kind == TypeKind.POINTER

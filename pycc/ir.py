@@ -2027,9 +2027,9 @@ class IRGenerator:
     def _get_member_ctype(self, layout, member_name: str, sema_ctx=None) -> Optional[CType]:
         """Get a member's fully resolved CType from a StructLayout.
 
-        Unlike _member_ctype_from_layout, this also handles array members
-        by consulting layout.member_array_info and wrapping the element
-        CType in ArrayType(s) for multi-dimensional arrays.
+        Unlike _member_ctype_from_layout, this also handles array members.
+        Priority: uses member_decl_types[name].is_array from the Type object,
+        falling back to layout.member_array_info for backward compatibility.
 
         Args:
             layout: StructLayout with member type info.
@@ -2048,16 +2048,40 @@ class IRGenerator:
         if not mdecl_types or member_name not in mdecl_types:
             return None
 
-        # Convert the element AST Type to a resolved CType.
-        elem_ct = ast_type_to_ctype_resolved(mdecl_types[member_name], ctx)
+        member_type = mdecl_types[member_name]
 
-        # Check if this member is an array.
+        # Priority: check Type.is_array from member_decl_types.
+        if getattr(member_type, 'is_array', False):
+            elem = member_type.array_element_type
+            dims = member_type.array_dimensions
+            # Convert the element type (without array markers) to CType.
+            elem_ct = ast_type_to_ctype_resolved(elem, ctx)
+            if isinstance(dims, list) and len(dims) >= 2:
+                # Multi-dimensional: wrap from innermost to outermost.
+                ct = elem_ct
+                for dim in reversed(dims):
+                    ct = CArrayType(
+                        kind=TypeKind.ARRAY,
+                        element=ct,
+                        size=int(dim) if dim is not None else None,
+                    )
+                return ct
+            else:
+                # Single-dimension array.
+                size = dims[0] if dims else None
+                return CArrayType(
+                    kind=TypeKind.ARRAY,
+                    element=elem_ct,
+                    size=int(size) if size is not None else None,
+                )
+
+        # Fallback: check member_array_info (transition period).
+        elem_ct = ast_type_to_ctype_resolved(member_type, ctx)
         arr_info = getattr(layout, "member_array_info", None)
         if arr_info and member_name in arr_info:
             array_size, array_dims = arr_info[member_name]
             if isinstance(array_dims, list) and len(array_dims) >= 2:
                 # Multi-dimensional: wrap from innermost to outermost.
-                # array_dims is outer-to-inner, e.g. [2, 3] for int a[2][3].
                 ct = elem_ct
                 for dim in reversed(array_dims):
                     ct = CArrayType(
@@ -4395,9 +4419,20 @@ class IRGenerator:
                             # If the member is an array, return an lvalue address
                             # (array-to-pointer decay). s.arr must yield the address
                             # of the first element, not load a value.
-                            if isinstance(mty, str):
+                            # Priority: check member_decl_types[name].is_array
+                            _mdecl = getattr(layout, "member_decl_types", None)
+                            _member_is_array = False
+                            if _mdecl and expr.member in _mdecl:
+                                _mdt = _mdecl[expr.member]
+                                if getattr(_mdt, 'is_array', False):
+                                    _member_is_array = True
+                            # Fallback: check member_array_info
+                            if not _member_is_array and isinstance(mty, str):
                                 mai = getattr(layout, "member_array_info", None) or {}
                                 if expr.member in mai:
+                                    _member_is_array = True
+                            if _member_is_array:
+                                if isinstance(mty, str):
                                     taddr = self._new_temp()
                                     self._var_types[taddr] = f"{mty}*"
                                     aom_meta = {"member_type": mty}
@@ -4740,8 +4775,19 @@ class IRGenerator:
                             # (array-to-pointer decay). Arrays accessed via p->arr
                             # must yield the address of the first element, not load
                             # a value from the member.
-                            mai = getattr(layout, "member_array_info", None) or {}
-                            if expr.member in mai:
+                            # Priority: check member_decl_types[name].is_array
+                            _mdecl = getattr(layout, "member_decl_types", None)
+                            _member_is_array = False
+                            if _mdecl and expr.member in _mdecl:
+                                _mdt = _mdecl[expr.member]
+                                if getattr(_mdt, 'is_array', False):
+                                    _member_is_array = True
+                            # Fallback: check member_array_info
+                            if not _member_is_array:
+                                mai = getattr(layout, "member_array_info", None) or {}
+                                if expr.member in mai:
+                                    _member_is_array = True
+                            if _member_is_array:
                                 taddr = self._new_temp()
                                 self._var_types[taddr] = f"{mty}*"
                                 aom_meta = dict(meta)
