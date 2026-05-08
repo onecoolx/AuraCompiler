@@ -42,11 +42,9 @@ def _make_ir_gen(sema_ctx=None):
     gen.temp_counter = 0
     gen.label_counter = 0
     gen._scope_stack = []
-    gen._local_arrays = set()
     gen._enum_constants = {}
     gen._fn_name = "test_fn"
     gen._ptr_step_bytes = {}
-    gen._local_array_dims = {}
     return gen
 
 

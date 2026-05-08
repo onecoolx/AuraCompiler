@@ -427,12 +427,10 @@ class IRGenerator:
         self.label_counter = 0
         self._break_stack = []
         self._continue_stack = []
-        self._local_array_dims = {}
         # Per-temp/symbol pointer arithmetic step override (bytes).
         # Used for pointer-to-row decay where (p+1) advances by sizeof(row).
         self._ptr_step_bytes: dict[str, int] = {}
         self._enum_constants: dict[str, int] = {}
-        self._local_arrays: set[str] = set()
         # Maps local variable name (plain, without '@') to its AST Type object.
         # Used by Identifier handling to check Type.is_array for array decay.
         self._local_ast_types: dict = {}
@@ -3160,8 +3158,6 @@ class IRGenerator:
         # Record function return type for codegen (used by `ret`).
         if self._fn_ret_type:
             self.instructions.append(IRInstruction(op="func_ret", operand1=self._fn_ret_type))
-        # reset per-function array set
-        self._local_arrays = set()
         self._local_ast_types = {}
         # Track declared types of locals/params for signedness decisions.
         #
@@ -3272,6 +3268,19 @@ class IRGenerator:
                                 if _td_dims:
                                     item.array_size = getattr(_td_ty, "array_size", _td_dims[0])
                                     item.array_dims = list(_td_dims)
+                                    # Also propagate is_array/array_dimensions onto
+                                    # the Type so _local_ast_types carries correct info.
+                                    try:
+                                        item.type.is_array = True
+                                        item.type.array_dimensions = list(_td_dims)
+                                        # Resolve element base type from typedef.
+                                        _elem_base = getattr(_td_ty, "base", _td_base)
+                                        if isinstance(_elem_base, str) and _elem_base:
+                                            from pycc.ast_nodes import Type as ASTType
+                                            item.type.array_element_type = ASTType(
+                                                base=_elem_base, line=0, column=0)
+                                    except Exception:
+                                        pass
 
                     # Track volatile-qualified local variables.
                     try:
@@ -3407,10 +3416,6 @@ class IRGenerator:
                                 except Exception:
                                     pass
                                 op1 = f"array({item.type.base},${int(outer_n) * int(ad[1])})"
-                                try:
-                                    self._local_array_dims[item.name] = list(getattr(item, "array_dims", []) or [])
-                                except Exception:
-                                    pass
 
                     # Multi-dimensional arrays: we only model a 1D backing store
                     # plus optional dims metadata (used for pointer-to-row decay
@@ -3420,21 +3425,12 @@ class IRGenerator:
                     # as an array type even when element type is struct/union.
                     if op1 is not None:
                         self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=op1))
-                        self._local_arrays.add(item.name)
                         # Store AST Type for Type.is_array checks in Identifier handling.
                         if item.type is not None:
                             self._local_ast_types[item.name] = item.type
                         self._var_types[self._resolve_name(item.name)] = str(op1)
                         # Insert array CType into symbol table (dual-populate).
                         self._insert_decl_ctype(self._resolve_name(item.name), item)
-                        # Record multi-dimensional array dims for upcoming
-                        # pointer-to-row decay/scaling support.
-                        try:
-                            ad = getattr(item, "array_dims", None)
-                            if isinstance(ad, list) and len(ad) >= 2 and all(isinstance(d, int) for d in ad if d is not None):
-                                self._local_array_dims[item.name] = ad
-                        except Exception:
-                            pass
                     elif not getattr(item.type, "is_pointer", False) and self._is_struct_or_union_type(item.type.base):
                         decl_op1 = str(item.type.base)
                         self.instructions.append(IRInstruction(op="decl", result=self._resolve_name(item.name), operand1=decl_op1))
@@ -3477,11 +3473,15 @@ class IRGenerator:
                             self._insert_decl_ctype(self._resolve_name(item.name), item)
                     # If this is a pointer variable, record its declared pointee
                     # type so pointer arithmetic can scale correctly.
+                    # Skip if already recorded as array (e.g. inferred-size
+                    # string literal: `const char* s = "abc"` emits array(char,$4)).
                     try:
-                        if getattr(item.type, "is_pointer", False) and item.name not in self._local_arrays:
-                            base = str(getattr(item.type, "base", "")).strip()
-                            if base:
-                                self._var_types[self._resolve_name(item.name)] = f"{base}*"
+                        if getattr(item.type, "is_pointer", False) and not getattr(item.type, "is_array", False):
+                            _existing_vt = self._var_types.get(self._resolve_name(item.name), "")
+                            if not (isinstance(_existing_vt, str) and _existing_vt.strip().startswith("array(")):
+                                base = str(getattr(item.type, "base", "")).strip()
+                                if base:
+                                    self._var_types[self._resolve_name(item.name)] = f"{base}*"
                     except Exception:
                         pass
                     # ── Unified initializer lowering ──────────────────
@@ -3490,13 +3490,13 @@ class IRGenerator:
                     if item.initializer is not None:
                         base_sym = self._resolve_name(item.name)
                         # Determine if this is truly an array declaration.
-                        # The ground truth is _local_arrays membership: if the
-                        # decl was emitted as array(...), the init must use
-                        # array-style stores.  This covers cases like
+                        # Check if the decl was emitted as array(...) by looking
+                        # at the recorded var type.  This covers cases like
                         # `const char* s = "abc"` where the parser sets
                         # is_pointer=True but the inferred-size logic above
                         # declared it as array(char,$4).
-                        is_array = item.name in self._local_arrays
+                        _vt = self._var_types.get(base_sym, "")
+                        is_array = isinstance(_vt, str) and _vt.strip().startswith("array(")
                         if is_array:
                             # Array: construct CType from the element base type
                             # (not the full pointer type).  The decl was emitted
@@ -3911,76 +3911,6 @@ class IRGenerator:
                         _elem_sz = self._sizeof(_elem_ty)
                         return f"${_total * _elem_sz}"
 
-                # Fallback: if identifier is a known local array, return its
-                # byte size (not pointer size).
-                if hasattr(self, "_local_arrays") and op.name in getattr(self, "_local_arrays"):
-                    ty = getattr(self, "_var_types", {}).get(f"@{op.name}")
-                    if isinstance(ty, str) and ty.strip().startswith("array("):
-                        inner = ty.strip()[len("array(") :]
-                        if inner.endswith(")"):
-                            inner = inner[:-1]
-                        base_part, cnt_part = (inner.split(",", 1) + [""])[:2]
-                        base_part = base_part.strip()
-                        cnt_part = cnt_part.strip()
-                        # 1D arrays: array(T,$N)
-                        n = 1
-                        if cnt_part.startswith("$"):
-                            try:
-                                n = int(cnt_part[1:])
-                            except Exception:
-                                pass
-
-                        # Multi-dimensional arrays: parser records dims; compute
-                        # total element count as product of all known dims.
-                        try:
-                            ad = getattr(self, "_local_array_dims", {}).get(op.name)
-                        except Exception:
-                            ad = None
-                        if isinstance(ad, list) and ad:
-                            try:
-                                n2 = 1
-                                for d in ad:
-                                    if d is None:
-                                        # unknown dimension: best-effort treat as outer dim only
-                                        n2 = n
-                                        break
-                                    n2 *= int(d)
-                                n = int(n2)
-                            except Exception:
-                                pass
-
-                        return f"${self._sizeof(base_part) * max(0, n)}"
-                    # fallback for local arrays
-                    return "$4"
-
-                # If parser recorded multi-dimensional dims but we didn't mark
-                # it as a local array object (e.g. `char a[][4] = {...}` where
-                # we infer only at IR time), still compute sizeof from dims.
-                try:
-                    ad = getattr(self, "_local_array_dims", {}).get(op.name)
-                    if isinstance(ad, list) and len(ad) >= 2 and all(isinstance(d, int) for d in ad if d is not None):
-                        # Default element type for now comes from semantic context
-                        # when available; otherwise fall back to int.
-                        base_part = "int"
-                        try:
-                            sym = f"@{op.name}"
-                            bty = getattr(self, "_var_types", {}).get(sym)
-                            if isinstance(bty, str) and bty.strip().startswith("array("):
-                                inner = bty.strip()[len("array(") :]
-                                if inner.endswith(")"):
-                                    inner = inner[:-1]
-                                base_part = inner.split(",", 1)[0].strip() or base_part
-                        except Exception:
-                            pass
-                        n = 1
-                        for d in ad:
-                            if d is None:
-                                n = 0
-                                break
-                            n *= int(d)
-                        return f"${self._sizeof(base_part) * int(n)}"
-                except Exception:
-                    pass
                 # Global arrays: infer total byte size using declared Type.
                 try:
                     if self._sema_ctx is not None:
@@ -4271,16 +4201,12 @@ class IRGenerator:
 
             sym = self._resolve_name(expr.name)
             # Array-to-pointer decay in rvalue context: emit explicit addr-of.
-            # Primary: check the declaration's Type.is_array field (local vars only).
-            # Fallback: check _local_arrays set (legacy, to be removed in task 8.2).
+            # Check the declaration's Type.is_array field (local vars only).
             # NOTE: Global arrays do NOT need mov_addr — their @symbol reference
             # already resolves to the data section address in codegen.
             _is_arr = False
             _ast_ty = getattr(self, "_local_ast_types", {}).get(expr.name)
             if _ast_ty is not None and getattr(_ast_ty, "is_array", False):
-                _is_arr = True
-            # Fallback to legacy _local_arrays set.
-            if not _is_arr and hasattr(self, "_local_arrays") and expr.name in getattr(self, "_local_arrays"):
                 _is_arr = True
             if _is_arr:
                 t = self._new_temp()
@@ -4309,12 +4235,15 @@ class IRGenerator:
 
                 # If this is a multi-dimensional local array with known inner
                 # dimension, record pointer step bytes for (p + 1) scaling.
-                # We rely on a generator-level map populated during decl lowering.
+                # Use Type.array_dimensions from the AST Type.
+                _arr_dims = None
                 try:
-                    ad = getattr(self, "_local_array_dims", {}).get(expr.name)
+                    _arr_ty = getattr(self, "_local_ast_types", {}).get(expr.name)
+                    if _arr_ty is not None and getattr(_arr_ty, "is_array", False):
+                        _arr_dims = getattr(_arr_ty, "array_dimensions", None)
                 except Exception:
-                    ad = None
-                if isinstance(ad, list) and len(ad) >= 2 and isinstance(ad[1], int):
+                    _arr_dims = None
+                if isinstance(_arr_dims, list) and len(_arr_dims) >= 2 and isinstance(_arr_dims[1], int):
                     base_part = None
                     try:
                         ty = self._var_types.get(sym)
@@ -4328,7 +4257,7 @@ class IRGenerator:
                     if isinstance(base_part, str) and base_part:
                         elem_sz = _type_size_bytes(self._sema_ctx, base_part)
                         if isinstance(elem_sz, int) and elem_sz > 0:
-                            step = int(ad[1]) * int(elem_sz)
+                            step = int(_arr_dims[1]) * int(elem_sz)
                             ins.meta["ptr_step_bytes"] = step
                             # Also record it in a generator-level map so it can
                             # be propagated through moves into local symbols.
@@ -4632,7 +4561,8 @@ class IRGenerator:
             # local array), produce an lvalue address of the row.
             try:
                 if isinstance(expr.array, Identifier):
-                    dims = getattr(self, "_local_array_dims", {}).get(expr.array.name)
+                    _arr_ty = getattr(self, "_local_ast_types", {}).get(expr.array.name)
+                    dims = getattr(_arr_ty, "array_dimensions", None) if _arr_ty is not None else None
                     sym = f"@{expr.array.name}"
                     bty = getattr(self, "_var_types", {}).get(sym)
                     if isinstance(dims, list) and len(dims) >= 2:
@@ -4828,8 +4758,10 @@ class IRGenerator:
                         rty = getattr(self, "_var_types", {}).get(rhs)
                         # If RHS is a decayed local array address, it might not
                         # have a pointer type recorded; derive it from the array.
-                        if not (isinstance(rty, str) and "*" in rty) and hasattr(self, "_local_arrays"):
-                            for name in self._local_arrays:
+                        if not (isinstance(rty, str) and "*" in rty):
+                            for name, ast_ty in getattr(self, "_local_ast_types", {}).items():
+                                if not getattr(ast_ty, "is_array", False):
+                                    continue
                                 aty = self._var_types.get(f"@{name}")
                                 if not (isinstance(aty, str) and aty.strip().startswith("array(")):
                                     continue

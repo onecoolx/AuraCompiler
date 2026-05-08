@@ -1,8 +1,7 @@
 """Unit tests for IR generator Identifier handling using Type.is_array (task 6.1).
 
 Validates that the IR generator uses the declaration's Type.is_array field
-to decide whether to emit mov_addr (array-to-pointer decay) for local arrays,
-rather than relying solely on the _local_arrays set.
+to decide whether to emit mov_addr (array-to-pointer decay) for local arrays.
 """
 import pytest
 from pycc.lexer import Lexer

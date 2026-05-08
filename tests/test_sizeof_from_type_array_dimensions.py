@@ -1,8 +1,7 @@
 """Tests for sizeof computation using Type.array_dimensions (task 6.2).
 
 Validates that sizeof(array_variable) computes the total byte size from
-Type.is_array / array_dimensions / array_element_type rather than relying
-solely on _local_array_dims or _var_types string parsing.
+Type.is_array / array_dimensions / array_element_type.
 """
 from __future__ import annotations
 
