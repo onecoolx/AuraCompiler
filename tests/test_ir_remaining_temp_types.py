@@ -41,8 +41,7 @@ def _make_type(base, is_pointer=False):
 
 
 def _make_sema_ctx(typedefs=None, layouts=None, global_types=None,
-                   function_sigs=None, global_decl_types=None,
-                   global_arrays=None):
+                   function_sigs=None, global_decl_types=None):
     """Create a minimal SemanticContext-like object."""
     ctx = MagicMock()
     ctx.typedefs = typedefs or {}
@@ -50,7 +49,6 @@ def _make_sema_ctx(typedefs=None, layouts=None, global_types=None,
     ctx.global_types = global_types or {}
     ctx.function_sigs = function_sigs or {}
     ctx.global_decl_types = global_decl_types or {}
-    ctx.global_arrays = global_arrays or {}
     ctx.global_linkage = {}
     ctx.global_kinds = {}
     ctx.function_param_types = {}

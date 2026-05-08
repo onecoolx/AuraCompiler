@@ -25,8 +25,6 @@ def _make_analyzer(**overrides) -> SemanticAnalyzer:
     sa._global_decl_types = overrides.get("global_decl_types", {})
     sa._decl_types = overrides.get("decl_types", {})
     sa._enum_constants = {}
-    sa._local_array_names = overrides.get("local_array_names", set())
-    sa._global_arrays = overrides.get("global_arrays", {})
     sa.errors = []
     sa.warnings = []
     return sa
@@ -173,17 +171,15 @@ class TestArrayDecayViaIsArray:
         assert result.pointer_level == 1
 
     def test_is_array_takes_priority_over_side_channel(self):
-        """When is_array is set, decay uses Type info, not _local_array_names."""
+        """When is_array is set, decay uses Type info directly."""
         arr_type = Type(
             base="int", is_array=True,
             array_element_type=Type(base="int", line=0, column=0),
             array_dimensions=[5],
             line=0, column=0,
         )
-        # Both is_array and side-channel are set — is_array should take priority
         sa = _make_analyzer(
             decl_types={"arr": arr_type},
-            local_array_names={"arr"},
         )
         expr = Identifier(name="arr", line=1, column=1)
         result = sa._expr_type(expr)

@@ -43,8 +43,6 @@ def _make_analyzer(**overrides) -> SemanticAnalyzer:
     sa._global_decl_types = overrides.get("global_decl_types", {})
     sa._decl_types = overrides.get("decl_types", {})
     sa._enum_constants = {}
-    sa._local_array_names = overrides.get("local_array_names", set())
-    sa._global_arrays = overrides.get("global_arrays", {})
     sa.errors = []
     sa.warnings = []
     return sa
