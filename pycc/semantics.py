@@ -1665,15 +1665,24 @@ class SemanticAnalyzer:
                 left_is_ptr = self._is_pointer_type(left_ty)
                 right_is_ptr = self._is_pointer_type(right_ty)
                 # Array variables decay to pointers in expression context.
+                # Primary: use Type.is_array from the declared type.
                 if not left_is_ptr and isinstance(expr.left, Identifier):
-                    if expr.left.name in getattr(self, "_local_array_names", set()):
+                    decl_ty = self._lookup_decl_type(expr.left.name)
+                    if decl_ty and getattr(decl_ty, 'is_array', False):
                         left_is_ptr = True
-                    if expr.left.name in getattr(self, "_global_arrays", {}):
+                    # Fallback: old side-channel lookups (transition period).
+                    elif expr.left.name in getattr(self, "_local_array_names", set()):
+                        left_is_ptr = True
+                    elif expr.left.name in getattr(self, "_global_arrays", {}):
                         left_is_ptr = True
                 if not right_is_ptr and isinstance(expr.right, Identifier):
-                    if expr.right.name in getattr(self, "_local_array_names", set()):
+                    decl_ty = self._lookup_decl_type(expr.right.name)
+                    if decl_ty and getattr(decl_ty, 'is_array', False):
                         right_is_ptr = True
-                    if expr.right.name in getattr(self, "_global_arrays", {}):
+                    # Fallback: old side-channel lookups (transition period).
+                    elif expr.right.name in getattr(self, "_local_array_names", set()):
+                        right_is_ptr = True
+                    elif expr.right.name in getattr(self, "_global_arrays", {}):
                         right_is_ptr = True
                 if left_is_ptr:
                     if expr.operator == "-" and right_is_ptr:
