@@ -102,11 +102,6 @@ class SemanticContext:
     # Optional per-parameter type strings for functions when declared with a prototype.
     # None means non-prototype (`int f();`) or unknown.
     function_param_types: Dict[str, Optional[List[str]]]
-    # Global arrays: name -> (element_base, element_count)
-    # For globals that are arrays, we track element base type and either:
-    # - an int element count (1D), or
-    # - a list of dimensions (outer->inner) for multi-dimensional arrays.
-    global_arrays: Dict[str, tuple[str, object]]
     target: 'TargetInfo' = None  # type: ignore[assignment]
 
     def __post_init__(self):
@@ -158,7 +153,6 @@ class SemanticAnalyzer:
         self._global_types = {}
         self._global_decl_types = {}
         self._enum_constants = {}
-        self._global_arrays = {}
 
         seen_globals: Dict[str, str] = {}
 
@@ -393,49 +387,22 @@ class SemanticAnalyzer:
                 except Exception:
                     self._global_types[decl.name] = "int"
 
-                # Record global array element type and count when available.
-                try:
-                    n = getattr(decl, "array_size", None)
-                    dims = getattr(decl, "array_dims", None)
-                    if dims:
-                        resolved_dims = [int(x) if x is not None else None for x in dims]
-                        # C89: unsized array with initializer has its size
-                        # determined by the initializer element count.
-                        init = getattr(decl, "initializer", None)
-                        if resolved_dims and resolved_dims[0] is None and init is not None:
-                            if hasattr(init, "elements"):
-                                resolved_dims[0] = len(init.elements)
-                            elif isinstance(init, StringLiteral):
-                                resolved_dims[0] = len(init.value) + 1
-                        self._global_arrays[decl.name] = (
-                            str(getattr(decl.type, "base", "int")),
-                            resolved_dims,
-                        )
-                    if n is not None:
-                        self._global_arrays[decl.name] = (str(getattr(decl.type, "base", "int")), int(n))
-                    elif n is None and dims is None:
-                        # No explicit size — check if initializer provides one.
-                        init = getattr(decl, "initializer", None)
-                        if init is not None and hasattr(init, "elements"):
-                            self._global_arrays[decl.name] = (
-                                str(getattr(decl.type, "base", "int")),
-                                len(init.elements),
-                            )
-                    # Infer `char s[] = "...";` size when unsized and initialized.
-                    if (
-                        n is None
-                        and not getattr(decl.type, "is_pointer", False)
-                        and getattr(decl.type, "base", None) in {"char", "unsigned char"}
-                        and getattr(decl, "initializer", None) is not None
-                    ):
-                        init = getattr(decl, "initializer")
-                        if isinstance(init, StringLiteral):
-                            self._global_arrays[decl.name] = (
-                                str(getattr(decl.type, "base", "char")),
-                                len(init.value) + 1,
-                            )
-                except Exception:
-                    pass
+                # Resolve unsized array dimensions from initializer (e.g. `int a[] = {1,2,3}`)
+                # so that Type.array_dimensions reflects the actual size.
+                if (
+                    getattr(decl.type, 'is_array', False)
+                    and getattr(decl.type, 'array_dimensions', None)
+                    and decl.type.array_dimensions[0] is None
+                    and getattr(decl, "initializer", None) is not None
+                ):
+                    init = decl.initializer
+                    inferred_size = None
+                    if hasattr(init, "elements"):
+                        inferred_size = len(init.elements)
+                    elif isinstance(init, StringLiteral):
+                        inferred_size = len(init.value) + 1
+                    if inferred_size is not None:
+                        decl.type.array_dimensions[0] = inferred_size
 
                 # Analyze initializer (if any)
                 if getattr(decl, "initializer", None) is not None:
@@ -467,7 +434,6 @@ class SemanticAnalyzer:
             global_kinds=dict(self._global_kinds),
             function_sigs=dict(self._function_sigs),
             function_param_types=dict(self._function_param_types),
-            global_arrays=dict(self._global_arrays),
             target=self._target,
         )
 
@@ -1167,7 +1133,6 @@ class SemanticAnalyzer:
             self._decl_types[p.name] = p.type
         # track register locals so we can reject `&register_var` (C89 rule)
         self._register_locals: Set[str] = set()
-        self._local_array_names: Set[str] = set()
         # Analyze the function body *without* introducing an extra nested
         # scope for the outermost compound statement, so locals declared in the
         # body stay visible across all statements.
@@ -1176,8 +1141,21 @@ class SemanticAnalyzer:
                 if isinstance(item, Declaration):
                     self._declare_local(item.name, "variable")
                     self._decl_types[item.name] = item.type
-                    if getattr(item, "array_size", None) is not None or getattr(item, "array_dims", None) is not None:
-                        self._local_array_names.add(item.name)
+                    # Resolve unsized array dimensions from initializer.
+                    if (
+                        getattr(item.type, 'is_array', False)
+                        and getattr(item.type, 'array_dimensions', None)
+                        and item.type.array_dimensions[0] is None
+                        and getattr(item, "initializer", None) is not None
+                    ):
+                        init = item.initializer
+                        inferred_size = None
+                        if hasattr(init, "elements"):
+                            inferred_size = len(init.elements)
+                        elif isinstance(init, StringLiteral):
+                            inferred_size = len(init.value) + 1
+                        if inferred_size is not None:
+                            item.type.array_dimensions[0] = inferred_size
                     # If this is a local `extern` declaration of a function prototype,
                     # record it in global tables so codegen can treat calls as
                     # direct calls and apply variadic ABI rules.
@@ -1353,8 +1331,21 @@ class SemanticAnalyzer:
                         continue
                     self._declare_local(item.name, "variable")
                     self._decl_types[item.name] = item.type
-                    if getattr(item, "array_size", None) is not None or getattr(item, "array_dims", None) is not None:
-                        self._local_array_names.add(item.name)
+                    # Resolve unsized array dimensions from initializer.
+                    if (
+                        getattr(item.type, 'is_array', False)
+                        and getattr(item.type, 'array_dimensions', None)
+                        and item.type.array_dimensions[0] is None
+                        and getattr(item, "initializer", None) is not None
+                    ):
+                        init = item.initializer
+                        inferred_size = None
+                        if hasattr(init, "elements"):
+                            inferred_size = len(init.elements)
+                        elif isinstance(init, StringLiteral):
+                            inferred_size = len(init.value) + 1
+                        if inferred_size is not None:
+                            item.type.array_dimensions[0] = inferred_size
                     if getattr(item, "storage_class", None) == "register":
                         self._register_locals.add(item.name)
                     # local `static` is supported (subset); handled by IR/codegen as a global-like symbol.
@@ -1576,8 +1567,7 @@ class SemanticAnalyzer:
         if isinstance(expr, Identifier):
             ty = self._lookup_decl_type(expr.name)
             # Array decay: if the declared type is an array, decay to pointer
-            # to element type. This uses the new Type.is_array field and takes
-            # priority over the old _local_array_names/_global_arrays fallback.
+            # to element type using the Type.is_array field.
             if ty and getattr(ty, 'is_array', False):
                 elem = ty.array_element_type
                 if elem is not None:
@@ -1593,10 +1583,7 @@ class SemanticAnalyzer:
                         line=getattr(elem, 'line', 0),
                         column=getattr(elem, 'column', 0),
                     )
-            # Fallback: old side-channel array decay (transition period).
-            # If the variable is known to be an array via _local_array_names or
-            # _global_arrays but Type.is_array was not set, still return the
-            # looked-up type as-is (existing behavior — decay handled downstream).
+            # Fallback: return the looked-up type as-is.
             return ty
 
         if isinstance(expr, UnaryOp):
@@ -1650,32 +1637,6 @@ class SemanticAnalyzer:
                     return elem
             # Priority 2: if base type is a pointer, dereference it.
             if base_ty and (getattr(base_ty, "pointer_level", 0) or 0) > 0:
-                # Check if the base is a declared array variable.  For pointer
-                # arrays like `T *arr[N]`, the Type has pointer_level=1 for the
-                # element pointer, but array indexing should return the element
-                # type (still a pointer), not dereference the pointer.
-                is_array_var = False
-                if isinstance(expr.array, Identifier):
-                    # Check if this identifier was declared as an array
-                    if expr.array.name in getattr(self, "_local_array_names", set()):
-                        is_array_var = True
-                    ga = getattr(self, "_global_arrays", {}).get(expr.array.name)
-                    if ga is not None:
-                        is_array_var = True
-                if is_array_var:
-                    # Array subscript returns the element type — which is the
-                    # declared type itself (pointer level preserved).
-                    return Type(
-                        base=base_ty.base,
-                        is_pointer=base_ty.is_pointer,
-                        pointer_level=base_ty.pointer_level,
-                        is_const=bool(getattr(base_ty, "is_const", False)),
-                        is_volatile=bool(getattr(base_ty, "is_volatile", False)),
-                        is_unsigned=bool(getattr(base_ty, "is_unsigned", False)),
-                        is_signed=bool(getattr(base_ty, "is_signed", False)),
-                        line=getattr(base_ty, "line", 0),
-                        column=getattr(base_ty, "column", 0),
-                    )
                 new_level = base_ty.pointer_level - 1
                 return Type(
                     base=base_ty.base,
@@ -1697,24 +1658,13 @@ class SemanticAnalyzer:
                 left_is_ptr = self._is_pointer_type(left_ty)
                 right_is_ptr = self._is_pointer_type(right_ty)
                 # Array variables decay to pointers in expression context.
-                # Primary: use Type.is_array from the declared type.
                 if not left_is_ptr and isinstance(expr.left, Identifier):
                     decl_ty = self._lookup_decl_type(expr.left.name)
                     if decl_ty and getattr(decl_ty, 'is_array', False):
                         left_is_ptr = True
-                    # Fallback: old side-channel lookups (transition period).
-                    elif expr.left.name in getattr(self, "_local_array_names", set()):
-                        left_is_ptr = True
-                    elif expr.left.name in getattr(self, "_global_arrays", {}):
-                        left_is_ptr = True
                 if not right_is_ptr and isinstance(expr.right, Identifier):
                     decl_ty = self._lookup_decl_type(expr.right.name)
                     if decl_ty and getattr(decl_ty, 'is_array', False):
-                        right_is_ptr = True
-                    # Fallback: old side-channel lookups (transition period).
-                    elif expr.right.name in getattr(self, "_local_array_names", set()):
-                        right_is_ptr = True
-                    elif expr.right.name in getattr(self, "_global_arrays", {}):
                         right_is_ptr = True
                 if left_is_ptr:
                     if expr.operator == "-" and right_is_ptr:
@@ -2192,10 +2142,7 @@ class SemanticAnalyzer:
                         #   qualifies the pointed-to char, not the pointer).
                         # - `const int *p`: p is a pointer to const int.
                         #   p[i] dereferences to const int — non-modifiable.
-                        is_array = (
-                            e.array.name in getattr(self, "_local_array_names", set())
-                            or getattr(self, "_global_arrays", {}).get(e.array.name) is not None
-                        )
+                        is_array = getattr(aty, 'is_array', False)
                         if is_array:
                             # Array element: the element is a pointer, assigning
                             # to it changes the pointer value, not the const data.
@@ -2426,9 +2373,7 @@ class SemanticAnalyzer:
                     # '->' expects a pointer or array (which decays to pointer).
                     is_ptr_like = self._is_pointer_type(base_ty)
                     # Arrays decay to pointers: T buf[N] used with -> is valid.
-                    if not is_ptr_like and expr.pointer.name in getattr(self, "_local_array_names", set()):
-                        is_ptr_like = True
-                    if not is_ptr_like and expr.pointer.name in getattr(self, "_global_arrays", {}):
+                    if not is_ptr_like and getattr(base_ty, 'is_array', False):
                         is_ptr_like = True
                     if is_ptr_like:
                         resolved = self._resolve_pointer_base(base_ty)
@@ -2585,15 +2530,11 @@ class SemanticAnalyzer:
                                 self._err("invalid application of sizeof to bit-field", expr)
                                 return
                     # Reject sizeof on incomplete array objects (e.g. `extern int a[]; sizeof(a)`)
-                    # when we can see the declaration. This does not require
-                    # expression typing and preserves array-vs-pointer behavior.
+                    # when we can see the declaration. Uses Type.is_array and array_dimensions.
                     if isinstance(op, Identifier):
-                        g = getattr(self, "_global_arrays", {}).get(op.name)
-                        if g is not None:
-                            _elem, dims = g
-                            # Parser stores single-dim arrays as int, multi-dim as list.
-                            if isinstance(dims, int):
-                                dims = [dims]
+                        decl_ty = self._lookup_decl_type(op.name)
+                        if decl_ty is not None and getattr(decl_ty, 'is_array', False):
+                            dims = getattr(decl_ty, 'array_dimensions', None)
                             if isinstance(dims, list) and any(d is None for d in dims):
                                 self._err("invalid application of sizeof to incomplete array", expr)
                                 return

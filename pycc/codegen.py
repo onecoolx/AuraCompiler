@@ -3487,10 +3487,16 @@ class CodeGenerator:
             # Resolve typedef to underlying type for correct load width.
             if isinstance(ty, str):
                 ty = self._resolve_type(ty)
-            ga = getattr(self._sema_ctx, "global_arrays", {}) if self._sema_ctx is not None else {}
+            # Check if the global is an array via its declared Type.
+            is_global_array = False
+            if self._sema_ctx is not None:
+                gdt = getattr(self._sema_ctx, "global_decl_types", {})
+                g_ty = gdt.get(sym) if isinstance(gdt, dict) else None
+                if g_ty is not None and getattr(g_ty, 'is_array', False):
+                    is_global_array = True
             is_aggregate = (
                 (isinstance(ty, str) and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")))
-                or sym in ga
+                or is_global_array
             )
             if is_aggregate:
                 self._load_global_addr(sym, reg)

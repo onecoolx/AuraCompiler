@@ -3981,27 +3981,24 @@ class IRGenerator:
                         return f"${self._sizeof(base_part) * int(n)}"
                 except Exception:
                     pass
-                # Global arrays: infer total byte size using semantic context
-                # (we record declared array sizes for globals when known).
+                # Global arrays: infer total byte size using declared Type.
                 try:
                     if self._sema_ctx is not None:
-                        ga = getattr(self._sema_ctx, "global_arrays", {})
-                        if isinstance(ga, dict) and op.name in ga:
-                            base_s, shape = ga[op.name]
-                            # shape can be an int (1D element count) or a list of dims.
-                            if isinstance(shape, int):
-                                n = int(shape)
-                            elif isinstance(shape, (list, tuple)):
-                                n = 1
-                                for d in shape:
-                                    if d is None:
-                                        # unknown size -> best-effort: treat as 0
-                                        n = 0
-                                        break
-                                    n *= int(d)
-                            else:
-                                n = 0
-                            return f"${self._sizeof(str(base_s)) * int(n)}"
+                        gdt = getattr(self._sema_ctx, "global_decl_types", {})
+                        if isinstance(gdt, dict) and op.name in gdt:
+                            g_ty = gdt[op.name]
+                            if getattr(g_ty, 'is_array', False):
+                                dims = getattr(g_ty, 'array_dimensions', None)
+                                elem = getattr(g_ty, 'array_element_type', None)
+                                if dims and elem:
+                                    n = 1
+                                    for d in dims:
+                                        if d is None:
+                                            n = 0
+                                            break
+                                        n *= int(d)
+                                    base_s = str(getattr(elem, 'base', 'int'))
+                                    return f"${self._sizeof(base_s) * int(n)}"
                 except Exception:
                     pass
                 # Use declared local/global type when available.
