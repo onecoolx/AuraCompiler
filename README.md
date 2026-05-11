@@ -40,7 +40,7 @@ Compiles real-world C projects using only **binutils `as`/`ld`** — no gcc depe
 Source (.c) → Lexer → Parser → Semantic Analyzer → IR Generator → Optimizer → Code Generator → as → ld → ELF
 ```
 
-- **Type System**: Structured `CType` hierarchy (`IntegerType`, `PointerType`, `StructType`, etc.) with typedef resolution, integer promotion, and usual arithmetic conversions
+- **Type System**: Structured `CType` hierarchy (`IntegerType`, `PointerType`, `StructType`, etc.) with typedef resolution, integer promotion, usual arithmetic conversions, and native array/pointer distinction (`Type.is_array`)
 - **TypedSymbolTable**: Centralized symbol-to-CType mapping shared between IR generation and codegen, with per-function scope archival
 - **Toolchain**: Independent `as`/`ld` integration with automatic CRT and library path probing (no gcc dependency)
 
@@ -175,7 +175,7 @@ python -m pytest tests/test_integration.py -v
 
 - [Architecture](docs/ARCHITECTURE.md) — compiler pipeline and module design
 - [C89 Roadmap](docs/C89_ROADMAP.md) — language feature implementation status
-- [Next Plan](docs/NEXT_PLAN.md) — planned refactoring (IR restructuring, TargetInfo, etc.)
+- [Next Plan](docs/NEXT_PLAN.md) — planned refactoring (IR restructuring, computed goto, etc.)
 - [Feature Tracker](docs/FEATURE_TRACKER.md) — detailed feature status
 
 ## References

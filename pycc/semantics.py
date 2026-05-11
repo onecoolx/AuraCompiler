@@ -1761,24 +1761,16 @@ class SemanticAnalyzer:
             return True
         base = str(getattr(ty, "base", "")).strip()
         if base.startswith("struct ") or base.startswith("union "):
-            # Only reject for simple identifiers where we're confident about
-            # the type.  For complex expressions (member access, array subscript,
-            # function calls), _expr_type may incorrectly resolve pointer array
-            # members as struct values.
+            # For simple identifiers, we're confident about the type.
             if isinstance(expr, Identifier):
                 return False
-            # For other expressions, check if the type could plausibly be a
-            # pointer that was incorrectly dereferenced by _expr_type.
-            # If the struct has no registered layout, it's likely a forward
-            # declaration used through pointers — allow it.
+            # Forward declarations without layout are likely used via pointers.
             layout = self._layouts.get(base)
             if layout is None or int(getattr(layout, "size", 0)) == 0:
                 return True
-            # For non-identifier expressions with a known struct type,
-            # still reject — but only if the expression is a direct member
-            # access (not array subscript which has known type inference bugs).
+            # Array subscript on struct arrays yields struct element — not scalar.
             if isinstance(expr, ArrayAccess):
-                return True  # Array subscript type inference is unreliable
+                return True
             return False
         return True
 

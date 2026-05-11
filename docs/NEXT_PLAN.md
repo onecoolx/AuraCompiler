@@ -1,7 +1,7 @@
 # AuraCompiler — Next Major Refactoring Plan
 
 > This document tracks planned architectural improvements for the next development phase.
-> Updated: 2026-04-28. Baseline: 2059 pycc tests passing, cJSON 1.7.19 + sqlite3 parser 100%.
+> Updated: 2026-05-11. Baseline: 2244 pycc tests passing, array/pointer distinction complete.
 
 ## 1. Complete expression type annotation in semantic analysis
 
@@ -54,33 +54,7 @@
 **Scope**: Medium. ~250 lines.
 
 
-## 6. Type system: distinguish arrays from pointers
-
-**Problem**: `Type` dataclass has no `is_array` field. `Type(base="char", is_pointer=True, pointer_level=1)` is ambiguous — could be `char *p` or `char arr[N]` after decay. This causes:
-- `_expr_type` for `ArrayAccess` can't distinguish "subscript of pointer array member" (result is still a pointer) from "subscript of plain pointer" (result is pointee type). Current workaround: `_is_scalar_expr` skips struct/union rejection for `ArrayAccess` expressions.
-- `_lookup_member_type` for pointer array members returns a pointer type, then `ArrayAccess` dereferences it, incorrectly producing a non-pointer struct type.
-- IR gen and codegen have separate `_local_array_names` / `_global_arrays` sets to track array-ness outside the type system.
-
-**Current mitigations**:
-- `_expr_type` for `Identifier` checks `_local_array_names`/`_global_arrays` and returns a pointer type (array decay). This fixes `BinaryOp` pointer arithmetic.
-- `_is_scalar_expr` is lenient for `ArrayAccess` to avoid false positives from incorrect type inference.
-
-**Proposed design**:
-1. Add `is_array: bool = False` and `array_element_type: Optional[Type] = None` to `Type` dataclass.
-2. Parser sets `is_array=True` for array declarations (already has `array_size`/`array_dims`).
-3. `_expr_type` for `Identifier`: if `is_array`, return element pointer type (decay).
-4. `_expr_type` for `ArrayAccess`: if base type `is_array`, return element type (preserving pointer level of element). If base type is plain pointer, dereference.
-5. Remove `_local_array_names` / `_global_arrays` tracking — the type itself carries the information.
-6. `_lookup_member_type` returns `Type(is_array=True, ...)` for array members, enabling correct subscript handling.
-
-**Benefits**: Eliminates the array/pointer ambiguity at the type level. All downstream consumers (semantics, IR gen, codegen) can make correct decisions without side-channel tracking.
-
-**Dependencies**: Plan 1 (expression type annotation) would benefit from this but is not strictly required.
-
-**Scope**: Medium. ~200 lines Type changes + ~150 lines consumer updates. Should be a standalone spec.
-
-
-## 7. GCC extension: computed goto (labels as values)
+## 6. GCC extension: computed goto (labels as values)
 
 **Problem**: Lua 5.5's VM core (`lvm.c`) uses GCC's computed goto extension (`&&label` to get label address, `goto *ptr` for indirect jump) for efficient opcode dispatch. Since pycc uses `gcc -E` for preprocessing and gcc defines `__GNUC__`, source code enables GCC extensions that pycc's parser doesn't support.
 
@@ -100,7 +74,7 @@
 **Priority**: High for real-world project compilation (Lua, CPython, Ruby all use computed goto).
 
 
-## 8. Constant initializer architecture: type-driven recursive processing
+## 7. Constant initializer architecture: type-driven recursive processing
 
 **Problem**: The current constant initializer handling (`_emit_constant_initializer`, `_const_initializer_blob`, `_try_struct_member_init`) is a fallback chain of if-elif branches, each with its own type detection whitelist. Every new type combination (typedef pointer arrays, enum arrays, struct arrays with symbol refs, function pointer typedef arrays) requires patching a different branch's whitelist. This violates the "solve root cause, not symptoms" principle (经验 4).
 
@@ -140,6 +114,6 @@ def _emit_static_init(self, gname, ty, init, sc):
 - New types (e.g. array of pointers to structs) work automatically
 - Much simpler code (~200 lines vs current ~500 lines across multiple methods)
 
-**Dependencies**: Plan 6 (Type system array/pointer distinction) would make this cleaner but is not strictly required — can use `array_dims` + `_resolve_elem_type` as today.
+**Dependencies**: Type system array/pointer distinction is now implemented — `Type.is_array` + `array_element_type` + `array_dimensions` are available for use.
 
 **Scope**: Medium-large. ~300 lines rewrite of initializer handling. Standalone spec recommended.
