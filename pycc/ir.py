@@ -45,6 +45,8 @@ from pycc.ast_nodes import (
     ContinueStmt,
     GotoStmt,
     LabelStmt,
+    LabelAddress,
+    ComputedGoto,
     Identifier,
     IntLiteral,
     FloatLiteral,
@@ -405,6 +407,12 @@ class IRGenerator:
                         entries.append(("string", e.value))
                     elif isinstance(e, Identifier):
                         entries.append(("symbol", e.name))
+                    elif isinstance(e, LabelAddress):
+                        # GCC extension: &&label in static initializer.
+                        # Emit as symbol reference using the IR label name.
+                        fn = self._current_function_name()
+                        lbl = f".Luser_{fn}_{e.label_name}"
+                        entries.append(("symbol", lbl))
                     elif self._is_null_pointer_constant(e):
                         entries.append(("null", 0))
                     else:
@@ -3734,6 +3742,11 @@ class IRGenerator:
             self.instructions.append(IRInstruction(op="jmp", label=f".Luser_{fn}_{stmt.label}"))
             return
 
+        if isinstance(stmt, ComputedGoto):
+            addr_temp = self._gen_expr(stmt.target)
+            self.instructions.append(IRInstruction(op="indirect_jump", operand1=addr_temp))
+            return
+
         if isinstance(stmt, BreakStmt):
             if self._break_stack:
                 self.instructions.append(IRInstruction(op="jmp", label=self._break_stack[-1]))
@@ -5736,6 +5749,16 @@ class IRGenerator:
             # Evaluate left for side-effects, discard value, then evaluate right.
             self._gen_expr(expr.left)
             return self._gen_expr(expr.right)
+
+        if isinstance(expr, LabelAddress):
+            # GCC extension: &&label — load label address into temp (void *).
+            fn = getattr(self, "_fn_name", "") or ""
+            lbl = f".Luser_{fn}_{expr.label_name}"
+            _void_ptr_ctype = PointerType(kind=TypeKind.POINTER, pointee=None)
+            t = self._new_temp_typed(_void_ptr_ctype)
+            self.instructions.append(IRInstruction(op="label_addr", result=t, label=lbl))
+            self._var_types[t] = "void *"
+            return t
 
         # fallback
         t = self._new_temp()

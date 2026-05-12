@@ -60,6 +60,8 @@ from pycc.ast_nodes import (
         SizeOf,
     Initializer,
     Designator,
+    LabelAddress,
+    ComputedGoto,
 )
 
 
@@ -1498,6 +1500,16 @@ class SemanticAnalyzer:
             self._labels_gotoed.add(stmt.label)
             return
 
+        if isinstance(stmt, ComputedGoto):
+            self._analyze_expr(stmt.target)
+            # Warn if target is not a pointer type (GCC allows any pointer, not just void*)
+            target_ty = self._expr_type(stmt.target)
+            if target_ty is not None and not self._is_pointer_type(target_ty):
+                self.warnings.append(
+                    f"argument to computed goto is not a pointer"
+                )
+            return
+
         # Unknown statement types are ignored for now
 
     # NOTE: helpers for scalar/integer checks live below; keep a single
@@ -1554,6 +1566,11 @@ class SemanticAnalyzer:
         """
         if isinstance(expr, Cast):
             return getattr(expr, "type", None)
+
+        if isinstance(expr, LabelAddress):
+            return Type(base="void", is_pointer=True, pointer_level=1,
+                        line=getattr(expr, "line", 0),
+                        column=getattr(expr, "column", 0))
 
         # For other nodes, check if a type was attached during analysis.
         ty: Optional[Type] = getattr(expr, "type", None)
@@ -1779,6 +1796,11 @@ class SemanticAnalyzer:
 
     def _analyze_expr(self, expr: Expression) -> None:
         # (implementation continues below)
+
+        if isinstance(expr, LabelAddress):
+            # Track label reference for validation at function end
+            self._labels_gotoed.add(expr.label_name)
+            return
 
         if isinstance(expr, Identifier):
             # enum constants are always in-scope as integer constants

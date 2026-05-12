@@ -1058,6 +1058,16 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             return
 
+        if op == "label_addr":
+            self._emit(f"  leaq {ins.label}(%rip), %rax")
+            self._store_result(ins.result, "%rax")
+            return
+
+        if op == "indirect_jump":
+            self._load_operand(ins.operand1, "%rax")
+            self._emit("  jmp *%rax")
+            return
+
         if op == "addr_of":
             # result = &operand1
             src = ins.operand1 or ""

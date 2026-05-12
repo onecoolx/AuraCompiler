@@ -23,6 +23,7 @@ from pycc.ast_nodes import (
     PointerMemberAccess,
     FunctionCall,
     ArrayAccess,
+    LabelAddress,
 )
 from pycc.semantics import SemanticAnalyzer, StructLayout
 
@@ -439,3 +440,33 @@ class TestPointerMemberAccessComparison:
         asm = compiler.compile_code(src.read_text())
         # If we got here without exception, the comparison was accepted.
         assert asm is not None
+
+
+# ---------------------------------------------------------------------------
+# LabelAddress: &&label returns void *
+# ---------------------------------------------------------------------------
+
+class TestLabelAddress:
+    """Test _expr_type() on LabelAddress (&&label) expressions."""
+
+    def test_label_address_returns_void_pointer(self):
+        """&&label should return void * type."""
+        sa = _make_analyzer()
+        expr = LabelAddress(label_name="target", line=1, column=1)
+        result = sa._expr_type(expr)
+        assert result is not None
+        assert result.base == "void"
+        assert result.pointer_level == 1
+        assert result.is_pointer is True
+
+    def test_label_address_different_labels_same_type(self):
+        """&&foo and &&bar should both return void * type."""
+        sa = _make_analyzer()
+        expr1 = LabelAddress(label_name="foo", line=1, column=1)
+        expr2 = LabelAddress(label_name="bar", line=2, column=1)
+        r1 = sa._expr_type(expr1)
+        r2 = sa._expr_type(expr2)
+        assert r1 is not None and r2 is not None
+        assert r1.base == r2.base == "void"
+        assert r1.pointer_level == r2.pointer_level == 1
+        assert r1.is_pointer is True and r2.is_pointer is True

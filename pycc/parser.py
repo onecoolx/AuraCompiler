@@ -64,6 +64,8 @@ from pycc.ast_nodes import (
     EnumDecl,
     Initializer,
     Designator,
+    LabelAddress,
+    ComputedGoto,
 )
 
 
@@ -2092,6 +2094,11 @@ class Parser:
                 return BreakStmt(line=tok.line, column=tok.column)
             if kw == "goto":
                 self.advance()
+                if self._match(TokenType.STAR):
+                    # GCC extension: goto *expr — computed goto (indirect jump)
+                    expr = self._parse_expression()
+                    self._expect(TokenType.SEMICOLON, "Expected ';' after goto *expr")
+                    return ComputedGoto(target=expr, line=tok.line, column=tok.column)
                 lab = self._expect(TokenType.IDENTIFIER, "Expected label name after goto")
                 self._expect(TokenType.SEMICOLON, "Expected ';' after goto")
                 return GotoStmt(label=lab.value, line=tok.line, column=tok.column)
@@ -2279,6 +2286,14 @@ class Parser:
                 return SizeOf(operand=expr, type=None, line=tok.line, column=tok.column)
             operand = self._parse_unary()
             return SizeOf(operand=operand, type=None, line=tok.line, column=tok.column)
+        # GCC extension: &&label — address of a label (computed goto)
+        if tok and tok.type == TokenType.LAND:
+            next_tok = self.peek(1)
+            if next_tok and next_tok.type == TokenType.IDENTIFIER:
+                self.advance()  # consume LAND (&&)
+                label_tok = self.current_token
+                self.advance()  # consume identifier
+                return LabelAddress(label_name=label_tok.value, line=tok.line, column=tok.column)
         if tok and tok.type in {TokenType.PLUS, TokenType.MINUS, TokenType.BANG, TokenType.TILDE, TokenType.AMPERSAND, TokenType.STAR}:
             self.advance()
             operand = self._parse_unary()

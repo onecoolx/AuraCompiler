@@ -356,6 +356,12 @@ class DeclStmt(Statement):
     declaration: Declaration
 
 
+@dataclass
+class ComputedGoto(Statement):
+    """GCC extension: goto *expr — indirect jump to computed address."""
+    target: Expression
+
+
 # ============== Expression Nodes ==============
 
 @dataclass
@@ -505,6 +511,12 @@ class CompoundLiteral(Expression):
     """Compound literal"""
     type: Type
     initializer: Initializer
+
+
+@dataclass
+class LabelAddress(Expression):
+    """GCC extension: &&label — address of a label (void *)."""
+    label_name: str
 
 
 # ============== Program Node ==============
