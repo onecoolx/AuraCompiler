@@ -879,20 +879,45 @@ class IRGenerator:
         if elem_type is None:
             return None
         array_len = rtype.array_length
-        if array_len is None or array_len <= 0:
-            return None
         elem_size = elem_type.size
 
         # Handle char array initialized with string literal
         if elem_type.is_scalar and elem_type.name in ("char", "unsigned char", "signed char"):
             if isinstance(init_ast, StringLiteral):
+                # For unsized char arrays, infer length from string
+                if array_len is None:
+                    array_len = len(init_ast.value) + 1  # +1 for NUL
+                    rtype = ResolvedType(
+                        kind="array", name=rtype.name, size=array_len * elem_size,
+                        element_type=elem_type, array_length=array_len,
+                    )
                 return self._collect_char_array_from_string(rtype, init_ast, base_offset)
             # String literal inside an Initializer: {  "hello" }
             if isinstance(init_ast, Initializer) and init_ast.elements:
                 if len(init_ast.elements) == 1:
                     _d, expr = init_ast.elements[0]
                     if _d is None and isinstance(expr, StringLiteral):
+                        if array_len is None:
+                            array_len = len(expr.value) + 1
+                            rtype = ResolvedType(
+                                kind="array", name=rtype.name, size=array_len * elem_size,
+                                element_type=elem_type, array_length=array_len,
+                            )
                         return self._collect_char_array_from_string(rtype, expr, base_offset)
+
+        # For unsized arrays, infer length from initializer element count
+        if array_len is None:
+            if isinstance(init_ast, Initializer) and init_ast.elements:
+                array_len = len(init_ast.elements)
+                rtype = ResolvedType(
+                    kind="array", name=rtype.name, size=array_len * elem_size,
+                    element_type=elem_type, array_length=array_len,
+                )
+            else:
+                return None
+
+        if array_len <= 0:
+            return None
 
         # Get the list of element initializers
         if isinstance(init_ast, Initializer):
@@ -909,6 +934,17 @@ class IRGenerator:
         # Positional initialization with possible brace elision
         fragments = []
         flat_iter = _FlatInitIterator(elements)
+
+        # Check for excess elements (more initializers than array size)
+        # Only check when elements are not using brace elision (each element
+        # is either brace-enclosed or the element type is scalar)
+        if (not has_designators and len(elements) > array_len
+                and (elem_type.is_scalar or elem_type.is_pointer
+                     or all(isinstance(e, Initializer) for _, e in elements))):
+            raise IRGenError(
+                f"excess elements in array initializer: "
+                f"array size is {array_len} but got {len(elements)} elements"
+            )
 
         for i in range(array_len):
             offset = base_offset + i * elem_size
@@ -936,10 +972,14 @@ class IRGenerator:
         s = str_lit.value
         # Build byte values including NUL terminator
         byte_vals = [ord(c) & 0xFF for c in s] + [0]
-        # Truncate or pad to array size
+        # C89: string literal (including NUL) must fit in the array
         if len(byte_vals) > array_len:
-            byte_vals = byte_vals[:array_len]
-        elif len(byte_vals) < array_len:
+            raise IRGenError(
+                f"initializer-string for char array is too long: "
+                f"string needs {len(byte_vals)} bytes but array size is {array_len}"
+            )
+        # Pad to array size
+        if len(byte_vals) < array_len:
             byte_vals.extend([0] * (array_len - len(byte_vals)))
 
         # Pack all bytes into a single blob fragment
@@ -1022,6 +1062,18 @@ class IRGenerator:
         flat_iter = _FlatInitIterator(elements)
         prev_end = 0  # Track end of previous member for padding
 
+        # Check for excess elements (only when no member can consume multiple
+        # elements via brace elision — i.e., all members are scalar/pointer)
+        all_simple = all(
+            m_rtype is not None and (m_rtype.is_scalar or m_rtype.is_pointer)
+            for _, _, _, m_rtype in rtype.members
+        )
+        if all_simple and len(elements) > len(rtype.members):
+            raise IRGenError(
+                f"excess elements in struct initializer: "
+                f"struct has {len(rtype.members)} members but got {len(elements)} elements"
+            )
+
         for mem_name, mem_offset, mem_size, mem_rtype in rtype.members:
             # Insert padding between members
             if mem_offset > prev_end:
@@ -1058,6 +1110,13 @@ class IRGenerator:
         """收集联合体初始化器片段（只初始化第一个成员）。"""
         if not rtype.members:
             return None
+
+        # Union: only one initializer element allowed
+        if len(elements) > 1:
+            raise IRGenError(
+                f"excess elements in union initializer: "
+                f"union initializer must have at most 1 element but got {len(elements)}"
+            )
 
         # Union: initialize first member only
         mem_name, mem_offset, mem_size, mem_rtype = rtype.members[0]
@@ -1205,6 +1264,171 @@ class IRGenerator:
             packed = _struct.pack(fmt, val & mask)
             return [InitFragment(kind="int", offset=base_offset, size=rtype.size, value=packed)]
 
+    def _emit_static_init(self, gname: str, rtype: ResolvedType, init_ast, sc: str) -> bool:
+        """递归发射常量初始化器 IR 指令。
+
+        根据 rtype.kind 和 fragments 内容选择合适的 IR 指令。
+        Returns True if successfully emitted, False if cannot handle.
+        """
+        # 1. Collect all leaf fragments
+        fragments = self._collect_init_fragments(rtype, init_ast, 0)
+        if fragments is None:
+            return False
+
+        # 2. Single scalar special path
+        if rtype.is_scalar and not rtype.is_float:
+            # Single integer scalar → gdef
+            if len(fragments) == 1 and fragments[0].kind == "int":
+                val = int.from_bytes(fragments[0].value, byteorder='little', signed=False)
+                self.instructions.append(
+                    IRInstruction(op="gdef", result=f"@{gname}",
+                                  operand1=rtype.name,
+                                  operand2=f"${val}", label=sc)
+                )
+                return True
+
+        if rtype.is_scalar and rtype.is_float:
+            # Single float scalar → gdef_float
+            if len(fragments) == 1 and fragments[0].kind == "float":
+                import struct as _s
+                fmt = rtype.pack_format
+                val = _s.unpack(fmt, fragments[0].value)[0]
+                fp_type = "float" if rtype.size == 4 else "double"
+                self.instructions.append(
+                    IRInstruction(op="gdef_float", result=f"@{gname}",
+                                  operand1=str(val), label=sc,
+                                  meta={"fp_type": fp_type})
+                )
+                return True
+
+        if rtype.is_pointer:
+            # Single pointer → gdef with appropriate value
+            if len(fragments) == 1:
+                frag = fragments[0]
+                if frag.kind == "string":
+                    self.instructions.append(
+                        IRInstruction(op="gdef", result=f"@{gname}",
+                                      operand1=rtype.name,
+                                      operand2=f"=str:{frag.value}", label=sc)
+                    )
+                    return True
+                elif frag.kind == "symbol":
+                    self.instructions.append(
+                        IRInstruction(op="gdef", result=f"@{gname}",
+                                      operand1=rtype.name,
+                                      operand2=frag.value, label=sc)
+                    )
+                    return True
+                elif frag.kind == "null":
+                    self.instructions.append(
+                        IRInstruction(op="gdef", result=f"@{gname}",
+                                      operand1=rtype.name,
+                                      operand2="$0", label=sc)
+                    )
+                    return True
+
+        # 3. Check if any fragment needs relocation (symbol/string)
+        has_reloc = any(f.kind in ("symbol", "string") for f in fragments)
+
+        if has_reloc:
+            # Needs relocation — choose between gdef_ptr_array and gdef_struct
+            if rtype.is_array and rtype.element_type is not None and rtype.element_type.is_pointer:
+                # Pointer array → gdef_ptr_array
+                entries = []
+                for frag in fragments:
+                    if frag.kind == "string":
+                        entries.append(("string", frag.value))
+                    elif frag.kind == "symbol":
+                        entries.append(("symbol", frag.value))
+                    elif frag.kind in ("null", "zero"):
+                        entries.append(("null", 0))
+                    elif frag.kind == "int":
+                        # Integer 0 in pointer context = null
+                        val = int.from_bytes(frag.value, byteorder='little', signed=False)
+                        if val == 0:
+                            entries.append(("null", 0))
+                        else:
+                            entries.append(("int", val))
+                    else:
+                        return False
+                self.instructions.append(
+                    IRInstruction(op="gdef_ptr_array", result=f"@{gname}",
+                                  operand1=rtype.name, label=sc,
+                                  meta={"entries": entries})
+                )
+                return True
+            else:
+                # Struct (or array of structs) with symbols → gdef_struct
+                member_descs = self._fragments_to_member_descs(fragments)
+                if member_descs is None:
+                    return False
+                self.instructions.append(
+                    IRInstruction(op="gdef_struct", result=f"@{gname}",
+                                  operand1=rtype.name, label=sc,
+                                  meta={"members": member_descs, "size": rtype.size})
+                )
+                return True
+
+        # 4. Pure scalar blob (no relocations needed)
+        # Compute actual total size from fragments (handles unsized arrays)
+        total_size = rtype.size
+        if total_size == 0 and fragments:
+            total_size = max(f.offset + f.size for f in fragments)
+        blob = self._fragments_to_blob(fragments, total_size)
+        if blob is None:
+            return False
+        self.instructions.append(
+            IRInstruction(op="gdef_blob", result=f"@{gname}",
+                          operand1=rtype.name, operand2=f"blob:{blob}", label=sc)
+        )
+        return True
+
+    def _fragments_to_blob(self, fragments: List['InitFragment'], total_size: int) -> Optional[str]:
+        """Pack fragments into a contiguous byte buffer and return hex-encoded string."""
+        buf = bytearray(total_size)
+        for frag in fragments:
+            if frag.kind in ("int", "float"):
+                data = frag.value
+                if isinstance(data, bytes):
+                    end = frag.offset + len(data)
+                    if end > total_size:
+                        return None
+                    buf[frag.offset:end] = data
+            elif frag.kind == "zero":
+                # Already zero in buffer
+                pass
+            elif frag.kind == "null":
+                # Already zero (null pointer = 0)
+                pass
+            else:
+                # symbol/string cannot be in blob
+                return None
+        return buf.hex()
+
+    def _fragments_to_member_descs(self, fragments: List['InitFragment']) -> Optional[list]:
+        """Convert fragments to gdef_struct member description format.
+
+        Returns list of (kind, size, value) tuples compatible with codegen.
+        """
+        descs = []
+        for frag in fragments:
+            if frag.kind == "int":
+                val = int.from_bytes(frag.value, byteorder='little', signed=False)
+                descs.append(("int", frag.size, val))
+            elif frag.kind == "float":
+                descs.append(("float", frag.size, frag.value))
+            elif frag.kind == "symbol":
+                descs.append(("symbol", frag.size, frag.value))
+            elif frag.kind == "string":
+                descs.append(("string", frag.size, frag.value))
+            elif frag.kind == "null":
+                descs.append(("int", frag.size, 0))
+            elif frag.kind == "zero":
+                descs.append(("zero", frag.size, 0))
+            else:
+                return None
+        return descs
+
     def _emit_constant_initializer(self, gname: str, item, sc: str) -> bool:
         """Emit IR instructions for a constant initializer (global or local static).
 
@@ -1222,14 +1446,12 @@ class IRGenerator:
         if init is None:
             return False
 
-        # 1. Try aggregate blob (arrays, structs with scalar members).
-        blob = self._const_initializer_blob(item)
-        if blob is not None:
-            self.instructions.append(
-                IRInstruction(op="gdef_blob", result=f"@{gname}",
-                              operand1=item.type.base, operand2=blob, label=sc)
-            )
-            return True
+        # --- Try recursive type-driven path first ---
+        rtype = self._resolve_full_type(item)
+        if rtype is not None:
+            if self._emit_static_init(gname, rtype, init, sc):
+                return True
+        # --- Fallback to old scalar/pointer paths ---
 
         # 2. Try scalar immediate or string pointer.
         imm = self._const_initializer_imm(init)
@@ -1365,129 +1587,9 @@ class IRGenerator:
                         )
                     )
                 else:
-                    init = getattr(decl, "initializer")
-                    # Subset: allow global aggregate initializers for fixed-size arrays
-                    # and structs/unions, provided the initializer is constant.
-                    blob = self._const_initializer_blob(decl)
-                    if blob is not None:
-                        self.instructions.append(
-                            IRInstruction(
-                                op="gdef_blob",
-                                result=f"@{decl.name}",
-                                operand1=decl.type.base,
-                                operand2=blob,
-                                label=sc,
-                            )
-                        )
-                    else:
-                        imm = self._const_initializer_imm(init)
-                        ptr = self._const_initializer_ptr(init)
-                        # Float global initializer
-                        if isinstance(init, FloatLiteral):
-                            suffix = getattr(init, 'suffix', '')
-                            if suffix in ('l', 'L'):
-                                fp_type = "long double"
-                            elif suffix in ('f', 'F'):
-                                fp_type = "float"
-                            else:
-                                fp_type = "double"
-                            self.instructions.append(
-                                IRInstruction(
-                                    op="gdef_float",
-                                    result=f"@{decl.name}",
-                                    operand1=str(init.value),
-                                    label=sc,
-                                    meta={"fp_type": fp_type},
-                                )
-                            )
-                            continue
-                        elif imm is None and ptr is None:
-                            # Try struct/union member-by-member initialization.
-                            # This handles structs with function pointer members,
-                            # symbol references, and mixed types that blob can't encode.
-                            struct_init = self._try_struct_member_init(decl, sc)
-                            if struct_init:
-                                continue
-                            # Try: array of pointer constants (string literals,
-                            # NULL, symbol references, or any mix thereof).
-                            # e.g. char *arr[] = {"str1", "str2", NULL};
-                            if isinstance(init, Initializer) and getattr(decl.type, "is_pointer", False):
-                                inits_list = self._const_initializer_list(init)
-                                if inits_list:
-                                    # Classify each element: string, symbol, or null.
-                                    str_values = []  # (index, value) for strings
-                                    sym_labels = []  # (index, name) for symbols
-                                    null_indices = []  # indices that are null
-                                    all_ok = True
-                                    for idx, e in enumerate(inits_list):
-                                        if isinstance(e, StringLiteral):
-                                            str_values.append((idx, e.value))
-                                        elif isinstance(e, Identifier):
-                                            sym_labels.append((idx, e.name))
-                                        elif self._is_null_pointer_constant(e):
-                                            null_indices.append(idx)
-                                        else:
-                                            all_ok = False
-                                            break
-                                    if all_ok:
-                                        # Build a unified pointer array descriptor.
-                                        # Each entry is ("string", val) / ("symbol", name) / ("null", 0).
-                                        entries = [None] * len(inits_list)
-                                        for i, v in str_values:
-                                            entries[i] = ("string", v)
-                                        for i, n in sym_labels:
-                                            entries[i] = ("symbol", n)
-                                        for i in null_indices:
-                                            entries[i] = ("null", 0)
-                                        self.instructions.append(
-                                            IRInstruction(
-                                                op="gdef_ptr_array",
-                                                result=f"@{decl.name}",
-                                                operand1=decl.type.base,
-                                                label=sc,
-                                                meta={"entries": entries},
-                                            )
-                                        )
-                                        continue
-                            raise IRGenError(
-                                f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
-                            )
-
-                        # Special-case: `char s[] = "...";` at file scope is an
-                        # aggregate initializer for a character array, not a
-                        # pointer initializer.
-                        # The parser encodes unsized arrays as `array_size=None`.
-                        if (
-                            imm is None
-                            and isinstance(ptr, str)
-                            and ptr.startswith("=str:")
-                            and getattr(decl, "array_size", None) is None
-                            and getattr(getattr(decl, "type", None), "base", None) in {"char", "unsigned char"}
-                            and not getattr(getattr(decl, "type", None), "is_pointer", False)
-                        ):
-                            s = ptr[len("=str:") :]
-                            # include trailing NUL
-                            bs = [ord(c) & 0xFF for c in s] + [0]
-                            blob2 = "blob:" + "".join(f"{b:02x}" for b in bs)
-                            self.instructions.append(
-                                IRInstruction(
-                                    op="gdef_blob",
-                                    result=f"@{decl.name}",
-                                    operand1=decl.type.base,
-                                    operand2=blob2,
-                                    label=sc,
-                                )
-                            )
-                            continue
-
-                        self.instructions.append(
-                            IRInstruction(
-                                op="gdef",
-                                result=f"@{decl.name}",
-                                operand1=decl.type.base,
-                                operand2=imm if imm is not None else ptr,
-                                label=sc,
-                            )
+                    if not self._emit_constant_initializer(decl.name, decl, sc):
+                        raise IRGenError(
+                            f"unsupported global initializer for {decl.name}: only integer/char constants and string-literal pointers supported"
                         )
         return self.instructions
 
@@ -1536,586 +1638,6 @@ class IRGenerator:
             return "unsigned char"
 
         return s
-
-    def _const_initializer_blob(self, decl: Declaration) -> Optional[str]:
-        """Return a blob initializer string for a global aggregate, or None.
-
-        Encoding is: "blob:<hex bytes>".
-        Subset:
-        - fixed-size int/char arrays with brace init (int/char consts only)
-        - fixed-size char arrays with string literal init
-        - struct/union with brace init (member-order), scalar consts only
-        - array of structs with brace init (nested brace lists), scalar consts only
-        """
-
-        init = getattr(decl, "initializer", None)
-        if init is None:
-            return None
-
-        # decl.type is usually a Type (scalars) or an ArrayType (arrays)
-        base = getattr(decl.type, "base", None)
-        if base is None and isinstance(getattr(decl, "type", None), str):
-            # Some internal helpers / tests may pass a raw type string.
-            base = decl.type
-        if isinstance(decl.type, ArrayType):
-            base = str(getattr(decl.type.element_type, "base", base))
-
-        # Resolve typedef to underlying type once at the entry point.
-        # This ensures all downstream checks (_is_struct_or_union_type,
-        # layouts.get, _scalar_pack_info) work with the real type name
-        # regardless of how many typedef layers wrap it.
-        if isinstance(base, str) and self._sema_ctx is not None:
-            resolved = self._resolve_elem_type(base.strip())
-            if resolved != base.strip():
-                base = resolved
-        # Arrays: represented by decl.array_size (parser doesn't always wrap type).
-        # Also handle unsized arrays (`T a[] = {...}`) by inferring element count
-        # from the initializer list.
-        is_array_decl = (
-            isinstance(decl.type, ArrayType)
-            or getattr(decl, "array_size", None) is not None
-            or (
-                # Parser encodes `T a[]` as base type T with array_size=None
-                # and array_dims=[None]. Only treat it as an array when
-                # array_dims is present (avoid misclassifying structs).
-                getattr(decl, "array_size", None) is None
-                and getattr(decl, "array_dims", None) is not None
-                and isinstance(init, Initializer)
-                and (
-                    # Only treat a struct/union as an unsized array if the
-                    # initializer is nested (i.e., looks like {{...},{...}}).
-                    (self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])))
-                    or self._scalar_pack_info(self._resolve_elem_type(str(base).strip())) is not None
-                )
-            )
-        )
-        if is_array_decl:
-            # Handle `T a[N] = {...}` and also `T a[] = {...}` (size inferred
-            # from initializer list length) for supported element types.
-            n0 = getattr(decl, "array_size", None)
-            if n0 is None:
-                inits0 = self._const_initializer_list(init)
-                if inits0 is None:
-                    return None
-                n = len(inits0)
-            else:
-                n = int(n0)
-
-            # Check for designated array initializers at global scope.
-            if isinstance(init, Initializer) and any(d is not None for d, _v in (init.elements or [])):
-                return self._const_designated_array_blob(decl, init, n)
-            if isinstance(decl.type, ArrayType):
-                elem_ty = getattr(decl.type, "element_type", None)
-                elem_base = str(getattr(elem_ty, "base", base)).strip()
-            else:
-                elem_base = str(base).strip() if base is not None else ""
-            # Unsized array-of-struct declared like `struct S a[] = {...}` is
-            # parsed as a plain Type("struct S") with array_size=None.
-            # In that case, the element type is the struct itself.
-            if self._is_struct_or_union_type(base) and any(isinstance(x, Initializer) for x in (self._const_initializer_list(init) or [])):
-                elem_base = str(base).strip()
-            # Resolve typedef to underlying type for matching.
-            elem_base = self._resolve_elem_type(elem_base)
-
-            # --- Unified: flatten nested initializers and compute total element count ---
-            inits_raw = self._const_initializer_list(init)
-            if inits_raw is None:
-                return None
-
-            def _flatten_inits(items: list) -> list:
-                """Recursively flatten nested Initializer lists."""
-                out = []
-                for e in items:
-                    if isinstance(e, Initializer):
-                        sub = self._const_initializer_list(e)
-                        if sub is not None:
-                            out.extend(_flatten_inits(sub))
-                        else:
-                            out.append(e)
-                    else:
-                        out.append(e)
-                return out
-
-            total = n
-            ad = getattr(decl, "array_dims", None)
-            if isinstance(ad, list) and len(ad) >= 2:
-                known_product = 1
-                has_none = False
-                for dim in ad:
-                    if isinstance(dim, int) and dim > 0:
-                        known_product *= dim
-                    else:
-                        has_none = True
-                if has_none:
-                    flat_preview = _flatten_inits(inits_raw)
-                    total = max(len(flat_preview), known_product)
-                else:
-                    total = known_product
-
-            # --- Special case: char array from string literal (not flattened) ---
-            if elem_base in {"char", "unsigned char", "signed char"}:
-                if len(inits_raw) == 1 and isinstance(inits_raw[0], StringLiteral):
-                    s = inits_raw[0].value
-                    bytes_vals = [ord(c) for c in s]
-                    if len(bytes_vals) + 1 > n:
-                        raise IRGenError(
-                            f"string literal initializer too long for array '{decl.name}'"
-                        )
-                    bytes_vals.append(0)
-                    if len(bytes_vals) < n:
-                        bytes_vals = bytes_vals + [0] * (n - len(bytes_vals))
-                    return "blob:" + "".join(f"{b & 0xFF:02x}" for b in bytes_vals)
-
-            # --- Unified scalar array blob: table-driven packing ---
-            pack_info = self._scalar_pack_info(elem_base)
-            if pack_info is not None:
-                elem_sz, pack_fn = pack_info
-                flat = _flatten_inits(inits_raw)
-                if len(flat) > total:
-                    raise IRGenError(f"excess elements in initializer for array '{decl.name}'")
-                blob = bytearray()
-                for e in flat[:total]:
-                    packed = pack_fn(e)
-                    if packed is None:
-                        return None
-                    blob.extend(packed)
-                blob += b'\x00' * (elem_sz * (total - len(flat)))
-                return "blob:" + blob.hex()
-
-            # Array of struct/union (subset): nested brace lists where each element
-            # is a constant aggregate initializer.
-            if self._is_struct_or_union_type(elem_base):
-                inits = self._const_initializer_list(init)
-                if inits is None:
-                    return None
-                if self._sema_ctx is None:
-                    return None
-                layout = getattr(self._sema_ctx, "layouts", {}).get(str(elem_base))
-                if layout is None:
-                    return None
-                # Element size must be the struct size.
-                elem_sz = int(getattr(layout, "size", 0))
-                if elem_sz <= 0:
-                    return None
-
-                blob = bytearray([0] * (n * elem_sz))
-
-                members = list(getattr(layout, "member_offsets", {}).keys())
-                offsets = getattr(layout, "member_offsets", {})
-                sizes = getattr(layout, "member_sizes", {})
-
-                # Each array element initializer should be a brace list (InitializerList)
-                # or a scalar (treated as first member initializer).
-                for idx, elem_init in enumerate(inits[:n]):
-                    sub_inits = self._const_initializer_list(elem_init)
-                    if sub_inits is None:
-                        # allow scalar shorthand for first member
-                        sub_inits = [elem_init]
-                    base_off = idx * elem_sz
-                    for midx, m in enumerate(members):
-                        if midx >= len(sub_inits):
-                            break
-                        imm = self._const_expr_to_int(sub_inits[midx])
-                        if imm is None:
-                            return None
-                        off = int(offsets.get(m, 0))
-                        sz = int(sizes.get(m, 4))
-                        v = int(imm)
-                        for i in range(min(sz, 8)):
-                            blob[base_off + off + i] = (v >> (8 * i)) & 0xFF
-
-                return "blob:" + blob.hex()
-
-            # Unsized array-of-struct declared like `struct S a[] = {...}` is
-            # recorded with decl.array_size=None and decl.type.base="struct S".
-            # We handle it here by inferring element count from initializer.
-            if self._is_struct_or_union_type(elem_base) and getattr(decl, "array_size", None) is None:
-                # (Already covered above if we inferred `n`.) Keep for clarity.
-                pass
-
-            return None
-
-        # Struct/union
-        if self._is_struct_or_union_type(base):
-            # Support nested initializer lists for structs/unions using
-            # member-order mapping with brace elision and zero-fill.
-            # Check for designated initializers first.
-            if isinstance(init, Initializer) and any(d is not None for d, _v in (init.elements or [])):
-                return self._const_designated_struct_blob(str(base), init, decl)
-            inits0 = self._const_initializer_list(init)
-            if inits0 is None:
-                return None
-            if self._sema_ctx is None:
-                return None
-            layout = getattr(self._sema_ctx, "layouts", {}).get(str(base))
-            if layout is None:
-                return None
-
-            # (We no longer flatten scalars for structs; nested aggregate member
-            # boundaries matter. We'll write directly from the initializer AST.)
-
-            size = int(getattr(layout, "size", 0))
-            blob = bytearray([0] * size)
-
-            members = list(getattr(layout, "member_offsets", {}).keys())
-            offsets = getattr(layout, "member_offsets", {})
-            sizes = getattr(layout, "member_sizes", {})
-
-            # If semantics doesn't encode padding (e.g. offsets are 0,4 for two ints
-            # but struct size is 16), fall back to ABI-like packing using member_types.
-            # NOTE: this fallback only supports scalar members.
-            need_fallback = False
-            try:
-                if members and size > 0:
-                    # For 2x int, expected size is 8; if larger, offsets likely wrong.
-                    max_end = 0
-                    for m in members:
-                        off = int(offsets.get(m, 0))
-                        sz = int(sizes.get(m, 4))
-                        max_end = max(max_end, off + sz)
-                    if max_end > 0 and size > max_end:
-                        # If the gap is bigger than trailing padding (>=4), suspect missing padding.
-                        if (size - max_end) >= 4 and any(int(offsets.get(m, 0)) == 4 for m in members):
-                            need_fallback = True
-            except Exception:
-                need_fallback = False
-
-            if need_fallback:
-                mtypes = getattr(layout, "member_types", None)
-                if not isinstance(mtypes, dict):
-                    return None
-                out = bytearray()
-                cur = 0
-                for midx, m in enumerate(members):
-                    if midx >= len(inits0):
-                        break
-                    mty = mtypes.get(m)
-                    if not isinstance(mty, str):
-                        return None
-                    # This fallback cannot handle aggregate members.
-                    if self._is_struct_or_union_type(mty) or mty.startswith("array("):
-                        return None
-                    align = _type_align(mty)
-                    sz = self._sizeof(mty)
-                    if align > 1:
-                        pad = (-cur) % align
-                        if pad:
-                            out.extend(b"\x00" * pad)
-                            cur += pad
-                    imm = self._const_expr_to_int(inits0[midx])
-                    if imm is None:
-                        return None
-                    v = int(imm)
-                    for i in range(min(sz, 8)):
-                        out.append((v >> (8 * i)) & 0xFF)
-                    cur += sz
-                if len(out) < size:
-                    out.extend(b"\x00" * (size - len(out)))
-                return "blob:" + out.hex()
-
-            # Normal case: use semantics-provided member offsets/sizes.
-            # For structs/unions, initializer elements map to members in order.
-            # If a member is itself an aggregate, its initializer element must
-            # be handled as a sub-initializer (brace list or scalar with brace
-            # elision), rather than flattening scalars across member boundaries.
-
-            def _write_struct_from_init(ty_name: str, init_any: Any, base_off: int, blob_ref: bytearray) -> bool:
-                layout3 = getattr(self._sema_ctx, "layouts", {}).get(str(ty_name))
-                if layout3 is None:
-                    return False
-                members3 = list(getattr(layout3, "member_offsets", {}).keys())
-                offsets3 = getattr(layout3, "member_offsets", {})
-                sizes3 = getattr(layout3, "member_sizes", {})
-                mtypes3 = getattr(layout3, "member_types", {})
-
-                elems3 = self._const_initializer_list(init_any)
-                if elems3 is None:
-                    # scalar shorthand initializes first member only
-                    elems3 = [init_any]
-
-                # Important: elems3 elements can include nested Initializer
-                # nodes. We must not treat a nested brace list as "available"
-                # to later scalar members.
-
-                def _member_consumption_count(mty: str) -> int:
-                    # How many *top-level* initializer elements should be
-                    # consumed for this member when braces are elided.
-                    # For a nested struct/union member initialized by scalars
-                    # (e.g. `{1,2,3}`), scalars continue into the submembers.
-                    if self._is_struct_or_union_type(mty):
-                        layout_n = getattr(self._sema_ctx, "layouts", {}).get(str(mty))
-                        if layout_n is None:
-                            return 1
-                        return max(1, len(getattr(layout_n, "member_offsets", {}) or {}))
-                    # Arrays are not used in the current tests; keep minimal.
-                    return 1
-
-                eidx = 0
-                for m in members3:
-                    mty = mtypes3.get(m)
-                    member_off = base_off + int(offsets3.get(m, 0))
-                    msz = int(sizes3.get(m, 0))
-
-                    # If we ran out of initializer elements, remaining members
-                    # stay zero-filled.
-                    if eidx >= len(elems3):
-                        break
-
-                    # Aggregate members (struct/union/array): take exactly one
-                    # initializer element for the member, and pack it recursively.
-                    if isinstance(mty, str) and (self._is_struct_or_union_type(mty) or mty.startswith("array(")):
-                        elem0 = elems3[eidx]
-                        # If the element is a brace list for this member (e.g.
-                        # `{1,{2}}`), consume exactly one element.
-                        if isinstance(elem0, Initializer):
-                            sub_blob = self._const_initializer_blob_for_type(str(mty), elem0)
-                            if sub_blob is None:
-                                return False
-                            sub_bytes = bytes.fromhex(sub_blob.split(":", 1)[1])
-                            end = min(len(blob_ref), member_off + len(sub_bytes))
-                            blob_ref[member_off:end] = sub_bytes[: max(0, end - member_off)]
-                            eidx += 1
-                            continue
-                        # If braces are elided and the member is a nested struct,
-                        # consume following scalar elements into that member.
-                        if self._is_struct_or_union_type(mty):
-                            take = _member_consumption_count(str(mty))
-                            sub_init = Initializer(
-                                elements=[],
-                                line=getattr(decl, "line", 0),
-                                column=getattr(decl, "column", 0),
-                            )
-                            for j in range(take):
-                                if eidx + j >= len(elems3):
-                                    break
-                                if isinstance(elems3[eidx + j], Initializer):
-                                    break
-                                sub_init.elements.append((None, elems3[eidx + j]))
-                            elem_any = sub_init
-                            consumed = len(sub_init.elements)
-                        else:
-                            elem_any = elem0
-                            consumed = 1
-
-                        # Pack aggregate member from constructed sub-initializer.
-                        sub_blob = self._const_initializer_blob_for_type(str(mty), elem_any)
-                        if sub_blob is None:
-                            return False
-                        sub_bytes = bytes.fromhex(sub_blob.split(":", 1)[1])
-                        end = min(len(blob_ref), member_off + len(sub_bytes))
-                        blob_ref[member_off:end] = sub_bytes[: max(0, end - member_off)]
-                        eidx += max(1, consumed)
-                        continue
-
-                    # Scalar member: element must be a scalar expression.
-                    # C89 §6.5.7: a scalar initializer may be optionally
-                    # enclosed in braces, e.g. `{0}` for an int member.
-                    # Unwrap single-element brace initializers.
-                    elem = elems3[eidx]
-                    if isinstance(elem, Initializer):
-                        sub = self._const_initializer_list(elem)
-                        if sub is not None and len(sub) == 1 and not isinstance(sub[0], Initializer):
-                            elem = sub[0]
-                        else:
-                            return False
-                    imm = self._const_expr_to_int(elem)
-                    if imm is None:
-                        return False
-                    v = int(imm)
-                    sz = msz if msz > 0 else 4
-                    for i in range(min(sz, 8)):
-                        if 0 <= member_off + i < len(blob_ref):
-                            blob_ref[member_off + i] = (v >> (8 * i)) & 0xFF
-                    eidx += 1
-
-                # Reject excess elements.
-                if eidx < len(elems3):
-                    raise IRGenError(
-                        f"excess elements in initializer for '{ty_name}'"
-                    )
-
-                return True
-
-            if not _write_struct_from_init(str(base), init, 0, blob):
-                return None
-
-            # C89 union initialization: only one initializer element is allowed
-            # (it initializes the first member). Reject any excess elements.
-            try:
-                if str(base).strip().startswith("union "):
-                    inits_top2 = self._const_initializer_list(init) or []
-                    if len(inits_top2) > 1:
-                        raise IRGenError(
-                            f"excess elements in initializer for '{str(base).strip()}'"
-                        )
-            except IRGenError:
-                raise
-            except Exception:
-                pass
-
-            # Defensive: if nested aggregate packing failed to write but a nested
-            # brace-list element exists, try a simple direct copy path for the
-            # common case `{..., {scalar...}, ...}`. This keeps us correct for
-            # global/static init of nested structs while the full packer is being
-            # stabilized.
-            try:
-                inits_top = self._const_initializer_list(init) or []
-                mtypes_top = getattr(layout, "member_types", {}) or {}
-                if isinstance(mtypes_top, dict) and isinstance(inits_top, list):
-                    for midx, m in enumerate(members):
-                        if midx >= len(inits_top):
-                            break
-                        mty = mtypes_top.get(m)
-                        if isinstance(mty, str) and self._is_struct_or_union_type(mty) and isinstance(inits_top[midx], Initializer):
-                            off = int(offsets.get(m, 0))
-                            sub_blob = self._const_initializer_blob_for_type(mty, inits_top[midx])
-                            if sub_blob is None:
-                                continue
-                            sub_bytes = bytes.fromhex(sub_blob.split(":", 1)[1])
-                            end = min(len(blob), off + len(sub_bytes))
-                            blob[off:end] = sub_bytes[: max(0, end - off)]
-            except Exception:
-                pass
-
-            return "blob:" + blob.hex()
-
-        return None
-
-    def _const_initializer_blob_for_type(self, ty_name: str, init_any: Any) -> Optional[str]:
-        """Build a constant initializer blob for an arbitrary type.
-
-        This is a helper for recursive aggregate members (e.g. struct members
-        that are arrays). It is intentionally a small wrapper around the
-        existing declaration-based blob packer.
-        """
-
-        class _FakeDecl:
-            def __init__(self, name: str, type_name: str, initializer: Any):
-                self.name = name
-                self.type = type_name
-                self.initializer = initializer
-                self.line = getattr(initializer, "line", 0)
-                self.column = getattr(initializer, "column", 0)
-
-        fake = _FakeDecl("__pycc_const_init__", str(ty_name), init_any)
-        return self._const_initializer_blob(fake)  # type: ignore[arg-type]
-
-    def _const_designated_struct_blob(self, base: str, init: Initializer, decl: Declaration) -> Optional[str]:
-        """Build a constant blob for a struct/union with designated initializers."""
-        if self._sema_ctx is None:
-            return None
-        layout = getattr(self._sema_ctx, "layouts", {}).get(str(base))
-        if layout is None:
-            return None
-
-        size = int(getattr(layout, "size", 0))
-        blob = bytearray([0] * size)
-
-        members = list(layout.member_offsets.keys())
-        offsets = layout.member_offsets
-        sizes = layout.member_sizes
-        mtypes = getattr(layout, "member_types", {}) or {}
-
-        # Build member -> value mapping from designated initializer.
-        member_values: dict[str, Any] = {}
-        cur_idx = 0
-
-        for desig, val in (init.elements or []):
-            if desig is not None and isinstance(desig, Designator):
-                if desig.member is not None and desig.member in offsets:
-                    member_values[desig.member] = val
-                    try:
-                        cur_idx = members.index(desig.member) + 1
-                    except ValueError:
-                        cur_idx = len(members)
-            else:
-                if cur_idx < len(members):
-                    member_values[members[cur_idx]] = val
-                    cur_idx += 1
-
-        # Write values into blob at correct offsets.
-        for m in members:
-            val = member_values.get(m)
-            if val is None:
-                continue  # already zero-filled
-            off = int(offsets.get(m, 0))
-            sz = int(sizes.get(m, 4))
-            mty = mtypes.get(m, "")
-
-            if isinstance(val, Initializer) and isinstance(mty, str) and self._is_struct_or_union_type(mty):
-                sub_blob = self._const_initializer_blob_for_type(str(mty), val)
-                if sub_blob is None:
-                    return None
-                sub_bytes = bytes.fromhex(sub_blob.split(":", 1)[1])
-                end = min(len(blob), off + len(sub_bytes))
-                blob[off:end] = sub_bytes[:max(0, end - off)]
-            else:
-                imm = self._const_expr_to_int(val)
-                if imm is None:
-                    return None
-                v = int(imm)
-                for i in range(min(sz, 8)):
-                    if 0 <= off + i < len(blob):
-                        blob[off + i] = (v >> (8 * i)) & 0xFF
-
-        return "blob:" + blob.hex()
-
-    def _const_designated_array_blob(self, decl: Declaration, init: Initializer, n: int) -> Optional[str]:
-        """Build a constant blob for an array with designated initializers."""
-        base = getattr(decl.type, "base", None)
-        if isinstance(decl.type, ArrayType):
-            elem_ty = getattr(decl.type, "element_type", None)
-            elem_base = str(getattr(elem_ty, "base", base)).strip()
-        else:
-            elem_base = str(base).strip() if base is not None else ""
-
-        # Determine element size.
-        if elem_base in {"char", "unsigned char"}:
-            elem_sz = 1
-        elif elem_base in {"int", "unsigned int"}:
-            elem_sz = 4
-        elif elem_base in {"long", "unsigned long", "long int", "unsigned long int"}:
-            elem_sz = 8
-        else:
-            return None  # unsupported element type for designated array blob
-
-        blob = bytearray([0] * (n * elem_sz))
-
-        # Build index -> value mapping.
-        index_values: dict[int, Any] = {}
-        cur_idx = 0
-
-        for desig, val in (init.elements or []):
-            if desig is not None and isinstance(desig, Designator):
-                if desig.index is not None:
-                    try:
-                        idx = _eval_const_int_expr(desig.index)
-                    except Exception:
-                        return None
-                    index_values[idx] = val
-                    cur_idx = idx + 1
-            else:
-                index_values[cur_idx] = val
-                cur_idx += 1
-
-        # Write values into blob.
-        for idx in range(n):
-            val = index_values.get(idx)
-            if val is None:
-                continue  # already zero-filled
-            imm = self._const_expr_to_int(val)
-            if imm is None:
-                return None
-            off = idx * elem_sz
-            v = int(imm)
-            if elem_sz == 1:
-                blob[off] = v & 0xFF
-            else:
-                for i in range(min(elem_sz, 8)):
-                    if 0 <= off + i < len(blob):
-                        blob[off + i] = (v >> (8 * i)) & 0xFF
-
-        return "blob:" + blob.hex()
 
     def _const_expr_to_int(self, expr: Any) -> Optional[int]:
         """Best-effort const int evaluator for global initializers."""
