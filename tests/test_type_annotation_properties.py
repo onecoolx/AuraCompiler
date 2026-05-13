@@ -510,3 +510,60 @@ class TestPointerArithmeticTypeProperty:
         result = sa._binary_result_type('-', ptr, ptr)
         assert isinstance(result, IntegerType)
         assert result.kind == TypeKind.LONG
+
+
+# =============================================================================
+# Property 5: 比较和逻辑运算符产生 int
+# Feature: expr-type-annotation, Property 5: 比较和逻辑运算符产生 int
+# =============================================================================
+
+# Strategy for scalar types (integers, floats, pointers)
+_scalar_types = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    FloatType(kind=TypeKind.FLOAT),
+    FloatType(kind=TypeKind.DOUBLE),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT)),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR)),
+])
+
+_relational_ops = st.sampled_from(['<', '<=', '>', '>=', '==', '!='])
+_logical_ops = st.sampled_from(['&&', '||'])
+
+
+class TestComparisonLogicalProduceIntProperty:
+    """Property 5: 比较和逻辑运算符产生 int
+
+    For any two scalar types and any relational operator (<, <=, >, >=, ==, !=)
+    or logical operator (&&, ||), the result's .resolved_type should be
+    IntegerType(INT).
+
+    **Validates: Requirements 2.4, 2.5**
+    """
+
+    @settings(max_examples=100)
+    @given(left=_scalar_types, right=_scalar_types, op=_relational_ops)
+    def test_relational_always_produces_int(self, left, right, op):
+        """Relational operators always produce IntegerType(INT).
+
+        **Validates: Requirements 2.4**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type(op, left, right)
+        assert isinstance(result, IntegerType)
+        assert result.kind == TypeKind.INT
+
+    @settings(max_examples=100)
+    @given(left=_scalar_types, right=_scalar_types, op=_logical_ops)
+    def test_logical_always_produces_int(self, left, right, op):
+        """Logical operators always produce IntegerType(INT).
+
+        **Validates: Requirements 2.5**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type(op, left, right)
+        assert isinstance(result, IntegerType)
+        assert result.kind == TypeKind.INT
