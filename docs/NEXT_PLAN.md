@@ -1,7 +1,7 @@
 # AuraCompiler — Next Major Refactoring Plan
 
 > This document tracks planned architectural improvements for the next development phase.
-> Updated: 2026-05-11. Baseline: 2244 pycc tests passing, array/pointer distinction complete.
+> Updated: 2026-05-13. Baseline: 2274 pycc tests passing, computed goto extension complete.
 
 ## 1. Complete expression type annotation in semantic analysis
 
@@ -54,27 +54,7 @@
 **Scope**: Medium. ~250 lines.
 
 
-## 6. GCC extension: computed goto (labels as values)
-
-**Problem**: Lua 5.5's VM core (`lvm.c`) uses GCC's computed goto extension (`&&label` to get label address, `goto *ptr` for indirect jump) for efficient opcode dispatch. Since pycc uses `gcc -E` for preprocessing and gcc defines `__GNUC__`, source code enables GCC extensions that pycc's parser doesn't support.
-
-**Workaround**: Users can pass `-DLUA_USE_JUMPTABLE=0` to disable computed goto in Lua. Other projects may have similar fallback macros.
-
-**Proposed implementation**:
-1. **Parser**: Recognize `&&identifier` as a unary expression (GCC "address of label") returning `void *`.
-2. **Parser**: Recognize `goto *expr;` as a computed goto statement.
-3. **AST**: Add `LabelAddress` expression node and `ComputedGoto` statement node.
-4. **IR**: Add `indirect_jump` instruction taking a register operand.
-5. **Codegen**: Emit `jmp *%reg` for indirect jumps; emit `.quad .Llabel` for label address constants in dispatch tables.
-
-**Alternative**: Define `__PYCC__` macro and undefine `__GNUC__` during preprocessing. But this breaks glibc headers which require `__GNUC__` for inline assembly, builtins, and type attributes.
-
-**Scope**: Medium. ~150 lines parser + ~50 lines IR/codegen. Standalone feature.
-
-**Priority**: High for real-world project compilation (Lua, CPython, Ruby all use computed goto).
-
-
-## 7. Constant initializer architecture: type-driven recursive processing
+## 6. Constant initializer architecture: type-driven recursive processing
 
 **Problem**: The current constant initializer handling (`_emit_constant_initializer`, `_const_initializer_blob`, `_try_struct_member_init`) is a fallback chain of if-elif branches, each with its own type detection whitelist. Every new type combination (typedef pointer arrays, enum arrays, struct arrays with symbol refs, function pointer typedef arrays) requires patching a different branch's whitelist. This violates the "solve root cause, not symptoms" principle (经验 4).
 

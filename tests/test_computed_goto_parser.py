@@ -2,7 +2,7 @@
 
 from pycc.ast_nodes import (
     LabelAddress, BinaryOp, Assignment, Identifier,
-    ComputedGoto, UnaryOp, ArrayAccess, GotoStmt,
+    ComputedGoto, ArrayAccess, GotoStmt,
 )
 from pycc.lexer import Lexer
 from pycc.parser import Parser

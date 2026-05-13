@@ -1,13 +1,8 @@
-"""Tests for computed goto IR generation (tasks 5.1, 5.2, 6.3).
+"""Tests for computed goto IR generation.
 
-Verifies:
-- LabelAddress generates label_addr instruction with correct label name
-- LabelAddress temp is typed as void *
-- Label naming follows .Luser_<func>_<name> convention
-- LabelAddress in static dispatch table initializers emits gdef_ptr_array with symbol entries
+Verifies label_addr, indirect_jump instructions, and static dispatch table support.
 """
 
-import pytest
 from unittest.mock import MagicMock
 from pycc.ir import IRGenerator, IRInstruction
 from pycc.ast_nodes import (
