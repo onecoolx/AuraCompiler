@@ -14,6 +14,7 @@ from pycc.target import TargetInfo
 from pycc.types import (
     ast_type_to_ctype,
     ast_type_to_ctype_resolved,
+    ctype_to_ast_type,
     is_integer as ctype_is_integer,
     is_scalar as ctype_is_scalar,
     ArrayType,
@@ -1636,6 +1637,11 @@ class SemanticAnalyzer:
         PointerMemberAccess, FunctionCall, ArrayAccess, and pointer
         arithmetic in BinaryOp.
         """
+        # Priority: use resolved_type if available (set by _annotate_type)
+        rt = getattr(expr, 'resolved_type', None)
+        if rt is not None:
+            return ctype_to_ast_type(rt)
+
         if isinstance(expr, Cast):
             return getattr(expr, "type", None)
 
