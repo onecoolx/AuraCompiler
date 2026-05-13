@@ -301,6 +301,42 @@ class IRInstruction:
             self.meta = {}
 
 
+@dataclass
+class ResolvedType:
+    """完整解析后的类型信息，用于驱动初始化器递归。"""
+    kind: str  # "scalar", "pointer", "array", "struct", "union"
+    name: str  # 底层类型名（如 "int", "struct Foo"）
+    size: int  # 类型总大小（字节）
+
+    # 数组特有
+    element_type: Optional['ResolvedType'] = None
+    array_length: Optional[int] = None
+
+    # 结构体/联合体特有
+    members: Optional[List[tuple]] = None  # [(name, offset, size, ResolvedType), ...]
+
+    # 标量特有
+    pack_format: Optional[str] = None  # struct.pack 格式字符串
+    pack_mask: Optional[int] = None    # 整数截断掩码
+    is_float: bool = False
+
+    @property
+    def is_array(self) -> bool:
+        return self.kind == "array"
+
+    @property
+    def is_struct(self) -> bool:
+        return self.kind in ("struct", "union")
+
+    @property
+    def is_pointer(self) -> bool:
+        return self.kind == "pointer"
+
+    @property
+    def is_scalar(self) -> bool:
+        return self.kind == "scalar"
+
+
 class IRGenerator:
     """Generates intermediate representation (3-Address Code)"""
     
@@ -326,6 +362,372 @@ class IRGenerator:
         sema_ctx.
         """
         return _type_size(ty, self._sema_ctx)
+
+    # ------------------------------------------------------------------
+    # Type resolution for the recursive initializer architecture
+    # ------------------------------------------------------------------
+
+    def _resolve_full_type(self, decl) -> Optional[ResolvedType]:
+        """从 AST Declaration 中解析完整类型信息。
+
+        统一处理：
+        - typedef 递归解析
+        - 数组维度提取（包括多维、unsized）
+        - 指针类型识别（包括 typedef 指针、函数指针）
+        - 结构体/联合体布局查找
+        - 标量类型 pack 信息
+
+        Returns ResolvedType or None if the type cannot be resolved.
+        """
+        ty = getattr(decl, "type", None)
+        if ty is None:
+            return None
+
+        base = getattr(ty, "base", "")
+        if not isinstance(base, str):
+            base = str(base) if base is not None else ""
+
+        # --- Array detection ---
+        # Check Declaration-level array info first (array_dims, array_size),
+        # then Type-level is_array.
+        array_dims = getattr(decl, "array_dims", None)
+        array_size = getattr(decl, "array_size", None)
+        is_array = getattr(ty, "is_array", False)
+
+        if array_dims and len(array_dims) > 0:
+            return self._resolve_array_type(base, ty, array_dims)
+        if array_size is not None:
+            return self._resolve_array_type(base, ty, [array_size])
+        if is_array:
+            dims = getattr(ty, "array_dimensions", None)
+            if dims:
+                return self._resolve_array_type(base, ty, dims)
+            # Unsized array — cannot determine length
+            return self._resolve_array_type(base, ty, [None])
+
+        # --- Pointer detection (direct) ---
+        if getattr(ty, "is_pointer", False) or (getattr(ty, "pointer_level", 0) or 0) > 0:
+            return ResolvedType(kind="pointer", name=f"{base}*", size=8)
+
+        # --- Resolve typedef chain ---
+        resolved_base = self._resolve_typedef_chain(base)
+
+        # After typedef resolution, check if it's a pointer type
+        if resolved_base is not None and "*" in resolved_base:
+            return ResolvedType(kind="pointer", name=resolved_base, size=8)
+
+        # Check if typedef resolves to a pointer Type object
+        if self._sema_ctx is not None:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(base)
+            if td is not None:
+                if getattr(td, "is_pointer", False) or (getattr(td, "pointer_level", 0) or 0) > 0:
+                    return ResolvedType(kind="pointer", name=f"{base}*", size=8)
+                # Function pointer typedef: base contains "(*)"
+                td_base = getattr(td, "base", "")
+                if isinstance(td_base, str) and "(*)" in td_base:
+                    return ResolvedType(kind="pointer", name=base, size=8)
+
+        if resolved_base is None:
+            resolved_base = base
+
+        # --- Struct/union detection ---
+        if resolved_base.startswith("struct ") or resolved_base.startswith("union "):
+            return self._resolve_struct_type(resolved_base)
+
+        # Check layouts directly (some typedef names are registered as layout keys)
+        if self._sema_ctx is not None:
+            layouts = getattr(self._sema_ctx, "layouts", None) or {}
+            if resolved_base in layouts:
+                return self._resolve_struct_type(resolved_base)
+
+        # --- Enum types → int ---
+        if resolved_base.startswith("enum "):
+            return ResolvedType(
+                kind="scalar", name="int", size=4,
+                pack_format="<I", pack_mask=0xFFFFFFFF, is_float=False
+            )
+
+        # --- Scalar detection ---
+        return self._resolve_scalar_type(resolved_base)
+
+    def _resolve_typedef_chain(self, name: str) -> Optional[str]:
+        """Recursively resolve a typedef name to its underlying base type string.
+
+        Returns the resolved base type string, or the original name if no
+        typedef is found. Returns None only if the name is empty.
+        """
+        if not name:
+            return None
+
+        if self._sema_ctx is None:
+            return name
+
+        seen = set()
+        current = name.strip()
+        typedefs = getattr(self._sema_ctx, "typedefs", {})
+
+        while current and current not in seen:
+            # Already a known base type — stop
+            if current.startswith("struct ") or current.startswith("union "):
+                return current
+            if current.startswith("enum "):
+                return current
+            if "*" in current:
+                return current
+
+            seen.add(current)
+            td = typedefs.get(current)
+            if td is None:
+                break
+
+            # td is a Type object — extract its base
+            td_base = getattr(td, "base", "")
+            if not isinstance(td_base, str) or not td_base.strip():
+                break
+
+            # If the typedef itself is a pointer, return pointer indicator
+            if getattr(td, "is_pointer", False) or (getattr(td, "pointer_level", 0) or 0) > 0:
+                return f"{td_base.strip()}*"
+
+            current = td_base.strip()
+
+        return current
+
+    def _resolve_array_type(self, base: str, ty, dims: list) -> Optional[ResolvedType]:
+        """Build a nested ResolvedType for an array, handling multi-dimensional arrays.
+
+        For `int a[3][4]`, builds:
+          array(length=3, element=array(length=4, element=scalar(int)))
+        """
+        # Determine the element base type
+        elem_base = base
+        # If the Type has array_element_type, use it for the innermost element
+        array_elem_ty = getattr(ty, "array_element_type", None)
+        if array_elem_ty is not None:
+            elem_base = getattr(array_elem_ty, "base", base)
+            if not isinstance(elem_base, str):
+                elem_base = str(elem_base) if elem_base else base
+
+        # Resolve the innermost element type
+        inner_type = self._resolve_element_base_type(elem_base, ty)
+        if inner_type is None:
+            return None
+
+        # Build nested array types from innermost to outermost
+        result = inner_type
+        for dim in reversed(dims):
+            dim_int = int(dim) if dim is not None else None
+            elem_size = result.size
+            total_size = elem_size * dim_int if dim_int is not None else 0
+            result = ResolvedType(
+                kind="array",
+                name=f"{inner_type.name}[{dim_int}]" if dim_int else f"{inner_type.name}[]",
+                size=total_size,
+                element_type=result,
+                array_length=dim_int,
+            )
+
+        return result
+
+    def _resolve_element_base_type(self, elem_base: str, ty) -> Optional[ResolvedType]:
+        """Resolve the base element type for an array (not the array itself).
+
+        Handles pointer elements, struct elements, and scalar elements.
+        """
+        # Check if element is a pointer
+        if getattr(ty, "is_pointer", False) or (getattr(ty, "pointer_level", 0) or 0) > 0:
+            return ResolvedType(kind="pointer", name=f"{elem_base}*", size=8)
+
+        # Resolve through typedef
+        resolved = self._resolve_typedef_chain(elem_base)
+        if resolved is not None and "*" in resolved:
+            return ResolvedType(kind="pointer", name=resolved, size=8)
+
+        # Check typedef for pointer
+        if self._sema_ctx is not None:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(elem_base)
+            if td is not None:
+                if getattr(td, "is_pointer", False) or (getattr(td, "pointer_level", 0) or 0) > 0:
+                    return ResolvedType(kind="pointer", name=f"{elem_base}*", size=8)
+                td_base = getattr(td, "base", "")
+                if isinstance(td_base, str) and "(*)" in td_base:
+                    return ResolvedType(kind="pointer", name=elem_base, size=8)
+
+        if resolved is None:
+            resolved = elem_base
+
+        # Struct/union element
+        if resolved.startswith("struct ") or resolved.startswith("union "):
+            return self._resolve_struct_type(resolved)
+
+        # Check layouts
+        if self._sema_ctx is not None:
+            layouts = getattr(self._sema_ctx, "layouts", None) or {}
+            if resolved in layouts:
+                return self._resolve_struct_type(resolved)
+
+        # Enum → int
+        if resolved.startswith("enum "):
+            return ResolvedType(
+                kind="scalar", name="int", size=4,
+                pack_format="<I", pack_mask=0xFFFFFFFF, is_float=False
+            )
+
+        # Scalar element
+        return self._resolve_scalar_type(resolved)
+
+    def _resolve_struct_type(self, name: str) -> Optional[ResolvedType]:
+        """Resolve a struct/union type by looking up its layout.
+
+        Returns a ResolvedType with kind="struct" or "union" and populated
+        members list: [(member_name, offset, size, ResolvedType), ...]
+        """
+        if self._sema_ctx is None:
+            return None
+
+        layouts = getattr(self._sema_ctx, "layouts", None) or {}
+        layout = layouts.get(name)
+        if layout is None:
+            # Try without prefix for typedef-registered layouts
+            return None
+
+        kind = getattr(layout, "kind", "struct")
+        size = int(getattr(layout, "size", 0) or 0)
+        if size == 0:
+            return None
+
+        # Build member list with resolved types
+        members = []
+        member_offsets = getattr(layout, "member_offsets", {})
+        member_sizes = getattr(layout, "member_sizes", {})
+        member_types = getattr(layout, "member_types", {}) or {}
+
+        for mem_name, offset in sorted(member_offsets.items(), key=lambda x: x[1]):
+            mem_size = member_sizes.get(mem_name, 0)
+            mem_type_str = member_types.get(mem_name, "")
+
+            # Resolve member type
+            mem_rtype = self._resolve_member_type(mem_type_str, mem_size)
+            members.append((mem_name, offset, mem_size, mem_rtype))
+
+        return ResolvedType(
+            kind=kind,
+            name=name,
+            size=size,
+            members=members,
+        )
+
+    def _resolve_member_type(self, type_str: str, size: int) -> Optional[ResolvedType]:
+        """Resolve a struct member's type from its type string and size."""
+        if not type_str:
+            # Fallback: treat as opaque bytes
+            return ResolvedType(kind="scalar", name="char", size=size,
+                                pack_format=None, pack_mask=None, is_float=False)
+
+        type_str = type_str.strip()
+
+        # Pointer member
+        if "*" in type_str:
+            return ResolvedType(kind="pointer", name=type_str, size=8)
+
+        # Resolve typedef
+        resolved = self._resolve_typedef_chain(type_str)
+        if resolved is not None and "*" in resolved:
+            return ResolvedType(kind="pointer", name=resolved, size=8)
+
+        # Check typedef for pointer
+        if self._sema_ctx is not None:
+            td = getattr(self._sema_ctx, "typedefs", {}).get(type_str)
+            if td is not None:
+                if getattr(td, "is_pointer", False) or (getattr(td, "pointer_level", 0) or 0) > 0:
+                    return ResolvedType(kind="pointer", name=f"{type_str}*", size=8)
+                td_base = getattr(td, "base", "")
+                if isinstance(td_base, str) and "(*)" in td_base:
+                    return ResolvedType(kind="pointer", name=type_str, size=8)
+
+        if resolved is None:
+            resolved = type_str
+
+        # Struct/union member
+        if resolved.startswith("struct ") or resolved.startswith("union "):
+            return self._resolve_struct_type(resolved)
+
+        # Check layouts
+        if self._sema_ctx is not None:
+            layouts = getattr(self._sema_ctx, "layouts", None) or {}
+            if resolved in layouts:
+                return self._resolve_struct_type(resolved)
+
+        # Enum
+        if resolved.startswith("enum "):
+            return ResolvedType(
+                kind="scalar", name="int", size=4,
+                pack_format="<I", pack_mask=0xFFFFFFFF, is_float=False
+            )
+
+        # Scalar
+        return self._resolve_scalar_type(resolved)
+
+    def _resolve_scalar_type(self, name: str) -> Optional[ResolvedType]:
+        """Resolve a scalar type name to a ResolvedType with pack info."""
+        # Normalize: strip qualifiers like const/volatile
+        normalized = name.strip()
+        for qual in ("const ", "volatile ", "restrict "):
+            normalized = normalized.replace(qual, "").strip()
+
+        # Map of scalar types to (size, pack_format, mask, is_float)
+        _SCALAR_MAP = {
+            "char":              (1, "<B", 0xFF, False),
+            "signed char":       (1, "<B", 0xFF, False),
+            "unsigned char":     (1, "<B", 0xFF, False),
+            "short":             (2, "<H", 0xFFFF, False),
+            "short int":         (2, "<H", 0xFFFF, False),
+            "signed short":      (2, "<H", 0xFFFF, False),
+            "signed short int":  (2, "<H", 0xFFFF, False),
+            "unsigned short":    (2, "<H", 0xFFFF, False),
+            "unsigned short int":(2, "<H", 0xFFFF, False),
+            "int":               (4, "<I", 0xFFFFFFFF, False),
+            "signed int":        (4, "<I", 0xFFFFFFFF, False),
+            "unsigned int":      (4, "<I", 0xFFFFFFFF, False),
+            "unsigned":          (4, "<I", 0xFFFFFFFF, False),
+            "long":              (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "long int":          (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "signed long":       (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "signed long int":   (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "unsigned long":     (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "unsigned long int": (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "long long":         (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "long long int":     (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "signed long long":  (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "unsigned long long":(8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "unsigned long long int": (8, "<Q", 0xFFFFFFFFFFFFFFFF, False),
+            "float":             (4, "<f", None, True),
+            "double":            (8, "<d", None, True),
+            "long double":       (16, "<d", None, True),  # stored as 16 bytes on x86-64
+            "_Bool":             (1, "<B", 0x1, False),
+        }
+
+        info = _SCALAR_MAP.get(normalized)
+        if info is not None:
+            size, fmt, mask, is_float = info
+            return ResolvedType(
+                kind="scalar", name=normalized, size=size,
+                pack_format=fmt, pack_mask=mask, is_float=is_float
+            )
+
+        # Try resolving through typedef one more time (for aliases not caught earlier)
+        resolved = self._resolve_typedef_chain(normalized)
+        if resolved and resolved != normalized:
+            info = _SCALAR_MAP.get(resolved)
+            if info is not None:
+                size, fmt, mask, is_float = info
+                return ResolvedType(
+                    kind="scalar", name=resolved, size=size,
+                    pack_format=fmt, pack_mask=mask, is_float=is_float
+                )
+
+        # Unknown type — return None to signal failure
+        return None
 
     def _emit_constant_initializer(self, gname: str, item, sc: str) -> bool:
         """Emit IR instructions for a constant initializer (global or local static).
