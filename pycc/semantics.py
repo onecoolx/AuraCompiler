@@ -1676,6 +1676,38 @@ class SemanticAnalyzer:
 
         return None
 
+    def _unary_result_type(self, op: str, operand_ct):
+        """Compute the result CType of a unary operation.
+
+        Args:
+            op: The operator string ('&', '*', '!', '~', '+', '-', '++', '--')
+            operand_ct: CType of the operand
+
+        Returns:
+            The result CType, or None if the type cannot be determined.
+        """
+        if operand_ct is None:
+            return None
+
+        if op == '&':
+            return PointerType(kind=TypeKind.POINTER, pointee=operand_ct)
+
+        if op == '*':
+            if isinstance(operand_ct, PointerType):
+                return operand_ct.pointee
+            return None  # Dereferencing non-pointer
+
+        if op == '!':
+            return IntegerType(kind=TypeKind.INT)
+
+        if op in ('~', '+', '-'):
+            return integer_promote(operand_ct)
+
+        if op in ('++', '--'):
+            return operand_ct
+
+        return None
+
     def _make_sema_ctx_for_types(self):
         """Build a lightweight object with .typedefs for type resolution.
 

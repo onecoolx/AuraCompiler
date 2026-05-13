@@ -470,3 +470,152 @@ class TestBinaryResultType:
         r = analyzer._binary_result_type('???', IntegerType(kind=TypeKind.INT),
                                          IntegerType(kind=TypeKind.INT))
         assert r is None
+
+
+class TestUnaryResultType:
+    """Tests for _unary_result_type method (task 5.1)."""
+
+    def test_none_operand_returns_none(self, analyzer):
+        r = analyzer._unary_result_type('&', None)
+        assert r is None
+
+    # -- Address-of (&) --
+
+    def test_address_of_int(self, analyzer):
+        operand = IntegerType(kind=TypeKind.INT)
+        r = analyzer._unary_result_type('&', operand)
+        assert isinstance(r, PointerType)
+        assert r.kind == TypeKind.POINTER
+        assert r.pointee is operand
+
+    def test_address_of_pointer(self, analyzer):
+        inner = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR))
+        r = analyzer._unary_result_type('&', inner)
+        assert isinstance(r, PointerType)
+        assert r.pointee is inner
+
+    def test_address_of_float(self, analyzer):
+        operand = FloatType(kind=TypeKind.DOUBLE)
+        r = analyzer._unary_result_type('&', operand)
+        assert isinstance(r, PointerType)
+        assert r.pointee is operand
+
+    # -- Dereference (*) --
+
+    def test_deref_pointer_to_int(self, analyzer):
+        pointee = IntegerType(kind=TypeKind.INT)
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=pointee)
+        r = analyzer._unary_result_type('*', ptr)
+        assert r is pointee
+
+    def test_deref_pointer_to_pointer(self, analyzer):
+        inner = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR))
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=inner)
+        r = analyzer._unary_result_type('*', ptr)
+        assert r is inner
+
+    def test_deref_non_pointer_returns_none(self, analyzer):
+        r = analyzer._unary_result_type('*', IntegerType(kind=TypeKind.INT))
+        assert r is None
+
+    def test_deref_float_returns_none(self, analyzer):
+        r = analyzer._unary_result_type('*', FloatType(kind=TypeKind.DOUBLE))
+        assert r is None
+
+    # -- Logical not (!) --
+
+    def test_logical_not_int(self, analyzer):
+        r = analyzer._unary_result_type('!', IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_logical_not_pointer(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))
+        r = analyzer._unary_result_type('!', ptr)
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_logical_not_float(self, analyzer):
+        r = analyzer._unary_result_type('!', FloatType(kind=TypeKind.DOUBLE))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    # -- Bitwise not (~) --
+
+    def test_bitwise_not_int(self, analyzer):
+        r = analyzer._unary_result_type('~', IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_bitwise_not_char_promotes_to_int(self, analyzer):
+        r = analyzer._unary_result_type('~', IntegerType(kind=TypeKind.CHAR))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_bitwise_not_short_promotes_to_int(self, analyzer):
+        r = analyzer._unary_result_type('~', IntegerType(kind=TypeKind.SHORT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_bitwise_not_long_stays_long(self, analyzer):
+        r = analyzer._unary_result_type('~', IntegerType(kind=TypeKind.LONG))
+        assert r == IntegerType(kind=TypeKind.LONG)
+
+    # -- Unary plus (+) --
+
+    def test_unary_plus_int(self, analyzer):
+        r = analyzer._unary_result_type('+', IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_unary_plus_char_promotes_to_int(self, analyzer):
+        r = analyzer._unary_result_type('+', IntegerType(kind=TypeKind.CHAR))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_unary_plus_long_stays_long(self, analyzer):
+        r = analyzer._unary_result_type('+', IntegerType(kind=TypeKind.LONG))
+        assert r == IntegerType(kind=TypeKind.LONG)
+
+    # -- Unary minus (-) --
+
+    def test_unary_minus_int(self, analyzer):
+        r = analyzer._unary_result_type('-', IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_unary_minus_char_promotes_to_int(self, analyzer):
+        r = analyzer._unary_result_type('-', IntegerType(kind=TypeKind.CHAR))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_unary_minus_short_promotes_to_int(self, analyzer):
+        r = analyzer._unary_result_type('-', IntegerType(kind=TypeKind.SHORT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_unary_minus_long_stays_long(self, analyzer):
+        r = analyzer._unary_result_type('-', IntegerType(kind=TypeKind.LONG))
+        assert r == IntegerType(kind=TypeKind.LONG)
+
+    # -- Increment/Decrement (++/--) --
+
+    def test_prefix_increment_int(self, analyzer):
+        operand = IntegerType(kind=TypeKind.INT)
+        r = analyzer._unary_result_type('++', operand)
+        assert r is operand
+
+    def test_prefix_decrement_int(self, analyzer):
+        operand = IntegerType(kind=TypeKind.INT)
+        r = analyzer._unary_result_type('--', operand)
+        assert r is operand
+
+    def test_increment_pointer(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))
+        r = analyzer._unary_result_type('++', ptr)
+        assert r is ptr
+
+    def test_decrement_pointer(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR))
+        r = analyzer._unary_result_type('--', ptr)
+        assert r is ptr
+
+    def test_increment_long(self, analyzer):
+        operand = IntegerType(kind=TypeKind.LONG)
+        r = analyzer._unary_result_type('++', operand)
+        assert r is operand
+
+    # -- Unknown operator --
+
+    def test_unknown_op_returns_none(self, analyzer):
+        r = analyzer._unary_result_type('???', IntegerType(kind=TypeKind.INT))
+        assert r is None
