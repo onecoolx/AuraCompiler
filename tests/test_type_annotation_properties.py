@@ -567,3 +567,46 @@ class TestComparisonLogicalProduceIntProperty:
         result = sa._binary_result_type(op, left, right)
         assert isinstance(result, IntegerType)
         assert result.kind == TypeKind.INT
+
+
+# =============================================================================
+# Property 6: 位运算符整数提升
+# Feature: expr-type-annotation, Property 6: 位运算符整数提升
+# =============================================================================
+
+_integer_types_for_bitwise = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=True),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.SHORT, is_unsigned=True),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+])
+
+_bitwise_ops = st.sampled_from(['&', '|', '^', '<<', '>>'])
+
+
+class TestBitwiseIntegerPromotionProperty:
+    """Property 6: 位运算符整数提升
+
+    For any two integer types L and R, and any bitwise operator (&, |, ^, <<, >>),
+    the result's .resolved_type should equal the result of performing UAC on the
+    promoted operand types.
+
+    **Validates: Requirements 2.6**
+    """
+
+    @settings(max_examples=100)
+    @given(left=_integer_types_for_bitwise, right=_integer_types_for_bitwise, op=_bitwise_ops)
+    def test_bitwise_result_equals_uac_of_promoted(self, left, right, op):
+        """Bitwise operator result type equals UAC(promote(left), promote(right)).
+
+        **Validates: Requirements 2.6**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type(op, left, right)
+        expected = usual_arithmetic_conversions(
+            integer_promote(left), integer_promote(right))
+        assert result == expected
