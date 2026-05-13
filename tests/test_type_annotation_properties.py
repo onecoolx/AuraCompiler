@@ -429,3 +429,84 @@ class TestArithmeticBinaryUACProperty:
         expected = usual_arithmetic_conversions(
             integer_promote(left), integer_promote(right))
         assert result == expected
+
+
+# =============================================================================
+# Property 4: 指针算术类型
+# Feature: expr-type-annotation, Property 4: 指针算术类型
+# =============================================================================
+
+# Strategy for pointer types
+_pointee_types = st.sampled_from([
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.LONG),
+    FloatType(kind=TypeKind.DOUBLE),
+])
+
+_pointer_types = _pointee_types.map(lambda p: PointerType(kind=TypeKind.POINTER, pointee=p))
+
+_integer_types = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+])
+
+
+class TestPointerArithmeticTypeProperty:
+    """Property 4: 指针算术类型
+
+    For any pointer type P and integer type I, `P + I` and `P - I`'s
+    .resolved_type should be P; `P - P`'s .resolved_type should be
+    IntegerType(LONG).
+
+    **Validates: Requirements 2.2, 2.3**
+    """
+
+    @settings(max_examples=100)
+    @given(ptr=_pointer_types, int_t=_integer_types)
+    def test_ptr_plus_int_returns_ptr_type(self, ptr, int_t):
+        """Pointer + integer yields the pointer type.
+
+        **Validates: Requirements 2.2**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type('+', ptr, int_t)
+        assert result == ptr
+
+    @settings(max_examples=100)
+    @given(ptr=_pointer_types, int_t=_integer_types)
+    def test_int_plus_ptr_returns_ptr_type(self, ptr, int_t):
+        """Integer + pointer yields the pointer type.
+
+        **Validates: Requirements 2.2**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type('+', int_t, ptr)
+        assert result == ptr
+
+    @settings(max_examples=100)
+    @given(ptr=_pointer_types, int_t=_integer_types)
+    def test_ptr_minus_int_returns_ptr_type(self, ptr, int_t):
+        """Pointer - integer yields the pointer type.
+
+        **Validates: Requirements 2.2**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type('-', ptr, int_t)
+        assert result == ptr
+
+    @settings(max_examples=100)
+    @given(ptr=_pointer_types)
+    def test_ptr_minus_ptr_returns_long(self, ptr):
+        """Pointer - pointer yields IntegerType(LONG) (ptrdiff_t).
+
+        **Validates: Requirements 2.3**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type('-', ptr, ptr)
+        assert isinstance(result, IntegerType)
+        assert result.kind == TypeKind.LONG
