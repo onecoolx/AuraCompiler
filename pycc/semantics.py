@@ -13,8 +13,13 @@ from pycc.ir import _type_size
 from pycc.target import TargetInfo
 from pycc.types import (
     ast_type_to_ctype,
+    ast_type_to_ctype_resolved,
     is_integer as ctype_is_integer,
     is_scalar as ctype_is_scalar,
+    ArrayType,
+    CType,
+    FunctionTypeCType,
+    PointerType,
     TypeKind,
 )
 
@@ -1555,6 +1560,73 @@ class SemanticAnalyzer:
             "long", "long int", "unsigned long", "unsigned long int",
             "_Bool",
         }
+
+    # -- Type annotation helpers (expr-type-annotation) -----------------------
+
+    def _annotate_type(self, expr, ctype):
+        """Set expr.resolved_type = ctype and return ctype for convenience.
+
+        This is the single entry point for attaching a CType to an expression
+        node during semantic analysis. Returns the ctype so callers can use
+        it in further computations.
+        """
+        expr.resolved_type = ctype
+        return ctype
+
+    def _resolve_identifier_ctype(self, name: str):
+        """Look up an identifier's declared type and convert to CType.
+
+        Searches local declarations (_decl_types) then global declarations
+        (_global_decl_types). Converts the found ast_nodes.Type to a fully
+        resolved CType via ast_type_to_ctype_resolved (handles typedef
+        resolution).
+
+        Returns None if the identifier is not found in any scope.
+        """
+        ty = getattr(self, "_decl_types", {}).get(name)
+        if ty is None:
+            ty = getattr(self, "_global_decl_types", {}).get(name)
+        if ty is None:
+            return None
+        # Build a lightweight sema_ctx-like object for typedef resolution.
+        # ast_type_to_ctype_resolved needs .typedefs attribute.
+        sema_ctx = self._make_sema_ctx_for_types()
+        return ast_type_to_ctype_resolved(ty, sema_ctx)
+
+    def _decay_type(self, ct):
+        """Perform array-to-pointer and function-to-pointer decay.
+
+        C89 rules:
+        - ArrayType(element=T) decays to PointerType(pointee=T)
+        - FunctionTypeCType decays to PointerType(pointee=function_type)
+        - All other types pass through unchanged.
+        """
+        if ct is None:
+            return None
+        if isinstance(ct, ArrayType):
+            return PointerType(kind=TypeKind.POINTER, pointee=ct.element)
+        if isinstance(ct, FunctionTypeCType):
+            return PointerType(kind=TypeKind.POINTER, pointee=ct)
+        return ct
+
+    def _make_sema_ctx_for_types(self):
+        """Build a lightweight object with .typedefs for type resolution.
+
+        Merges all typedef scopes (global first, then inner scopes override)
+        into a single dict, wrapped in a simple namespace object that
+        ast_type_to_ctype_resolved can use.
+        """
+        merged = {}
+        for scope in self._typedefs:
+            merged.update(scope)
+
+        class _TypeCtx:
+            pass
+
+        ctx = _TypeCtx()
+        ctx.typedefs = merged
+        ctx.layouts = self._layouts
+        return ctx
 
     def _expr_type(self, expr: Expression) -> Optional[Type]:
         """Infer the result type of an expression.
