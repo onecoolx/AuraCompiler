@@ -690,3 +690,58 @@ class TestCastTypeAnnotation:
         assert isinstance(expr.resolved_type, IntegerType)
         assert expr.resolved_type.kind == TypeKind.LONG
         assert expr.resolved_type.is_unsigned is True
+
+
+class TestSizeOfTypeAnnotation:
+    """Tests for SizeOf expression type annotation (task 5.4)."""
+
+    def test_sizeof_type_returns_unsigned_long(self, analyzer):
+        """sizeof(int) should have resolved_type = IntegerType(LONG, unsigned)."""
+        from pycc.ast_nodes import SizeOf
+
+        target_type = ASTType(line=1, column=1, base="int")
+        expr = SizeOf(line=1, column=1, operand=None, type=target_type)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+        assert expr.resolved_type.is_unsigned is True
+
+    def test_sizeof_expr_returns_unsigned_long(self, analyzer):
+        """sizeof(x) where x is an expression should have resolved_type = unsigned long."""
+        from pycc.ast_nodes import SizeOf, IntLiteral
+
+        operand = IntLiteral(value=42, line=1, column=1)
+        expr = SizeOf(line=1, column=1, operand=operand, type=None)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+        assert expr.resolved_type.is_unsigned is True
+
+    def test_sizeof_struct_type_returns_unsigned_long(self, analyzer):
+        """sizeof(struct foo) should have resolved_type = unsigned long."""
+        from pycc.ast_nodes import SizeOf
+
+        target_type = ASTType(line=1, column=1, base="struct foo")
+        # Add a layout so _type_size doesn't fail
+        class FakeLayout:
+            size = 16
+            alignment = 8
+        analyzer._layouts = {"struct foo": FakeLayout()}
+        expr = SizeOf(line=1, column=1, operand=None, type=target_type)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+        assert expr.resolved_type.is_unsigned is True
+
+    def test_sizeof_identifier_returns_unsigned_long(self, analyzer):
+        """sizeof(variable) should have resolved_type = unsigned long."""
+        from pycc.ast_nodes import SizeOf, Identifier
+
+        # Declare a variable so sizeof doesn't reject it
+        analyzer._decl_types = {"x": ASTType(line=1, column=1, base="int")}
+        operand = Identifier(name="x", line=1, column=1)
+        expr = SizeOf(line=1, column=1, operand=operand, type=None)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+        assert expr.resolved_type.is_unsigned is True

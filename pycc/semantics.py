@@ -2702,6 +2702,8 @@ class SemanticAnalyzer:
             return
 
         if isinstance(expr, SizeOf):
+            # Type annotation: sizeof always returns size_t (unsigned long on LP64)
+            self._annotate_type(expr, IntegerType(kind=TypeKind.LONG, is_unsigned=True))
             # Best-effort semantic constraints for sizeof.
             # IMPORTANT: do not break existing array-vs-pointer behavior.
             # Our current type model does not reliably distinguish arrays from
