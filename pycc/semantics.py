@@ -1595,7 +1595,16 @@ class SemanticAnalyzer:
         # Build a lightweight sema_ctx-like object for typedef resolution.
         # ast_type_to_ctype_resolved needs .typedefs attribute.
         sema_ctx = self._make_sema_ctx_for_types()
-        return ast_type_to_ctype_resolved(ty, sema_ctx)
+        ct = ast_type_to_ctype_resolved(ty, sema_ctx)
+        # Handle array types: ast_type_to_ctype_resolved doesn't process
+        # the is_array flag on AST Type nodes, so we wrap in ArrayType here.
+        if getattr(ty, 'is_array', False) and not isinstance(ct, ArrayType):
+            dims = getattr(ty, 'array_dimensions', None) or [None]
+            # Build ArrayType from outermost to innermost dimension
+            for dim in reversed(dims):
+                ct = ArrayType(kind=TypeKind.ARRAY, element=ct,
+                               size=int(dim) if dim is not None else None)
+        return ct
 
     def _decay_type(self, ct):
         """Perform array-to-pointer and function-to-pointer decay.
@@ -1886,6 +1895,7 @@ class SemanticAnalyzer:
         if isinstance(expr, Identifier):
             # enum constants are always in-scope as integer constants
             if expr.name in getattr(self, "_enum_constants", {}):
+                self._annotate_type(expr, IntegerType(kind=TypeKind.INT))
                 return
             # Best-effort: treat names with known declared types as declared.
             if self._lookup_decl_type(expr.name) is None and not self._is_declared(expr.name):
@@ -1898,6 +1908,11 @@ class SemanticAnalyzer:
                     expr.type = ty
             except Exception:
                 pass
+            # Type annotation: resolve identifier's CType and apply decay
+            ct = self._resolve_identifier_ctype(expr.name)
+            if ct is not None:
+                ct = self._decay_type(ct)
+            self._annotate_type(expr, ct)
             return
 
         if isinstance(expr, BinaryOp):

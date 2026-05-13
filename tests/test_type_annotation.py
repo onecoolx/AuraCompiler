@@ -234,3 +234,89 @@ class TestLiteralTypeAnnotation:
         analyzer._analyze_expr(expr)
         assert isinstance(expr.resolved_type, PointerType)
         assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+
+class TestIdentifierTypeAnnotation:
+    """Tests for Identifier type annotation in _analyze_expr (task 2.2)."""
+
+    def test_identifier_int_variable(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._decl_types = {"x": ASTType(line=0, column=0, base="int")}
+        expr = Identifier(name="x", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_identifier_pointer_variable(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._decl_types = {
+            "p": ASTType(line=0, column=0, base="int", is_pointer=True, pointer_level=1)
+        }
+        expr = Identifier(name="p", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.INT
+
+    def test_identifier_array_decays_to_pointer(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._decl_types = {
+            "arr": ASTType(line=0, column=0, base="int", is_array=True, array_dimensions=[10])
+        }
+        expr = Identifier(name="arr", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        # Array should decay to pointer in expression context
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.INT
+
+    def test_identifier_enum_constant(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._enum_constants = {"RED": 0, "GREEN": 1, "BLUE": 2}
+        expr = Identifier(name="RED", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_identifier_undeclared_gets_none(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        # Undeclared identifier - resolved_type should be None
+        expr = Identifier(name="unknown", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert expr.resolved_type is None
+
+    def test_identifier_global_variable(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._decl_types = {}
+        analyzer._global_decl_types = {"g": ASTType(line=0, column=0, base="long")}
+        expr = Identifier(name="g", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+
+    def test_identifier_typedef_resolved(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._typedefs = [{"size_t": ASTType(line=0, column=0, base="long", is_unsigned=True)}]
+        analyzer._decl_types = {"n": ASTType(line=0, column=0, base="size_t")}
+        expr = Identifier(name="n", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+        assert expr.resolved_type.is_unsigned is True
+
+    def test_identifier_char_array_decays(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._decl_types = {
+            "buf": ASTType(line=0, column=0, base="char", is_array=True, array_dimensions=[256])
+        }
+        expr = Identifier(name="buf", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        # char[] decays to char*
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+    def test_identifier_double_variable(self, analyzer):
+        from pycc.ast_nodes import Identifier
+        analyzer._decl_types = {"d": ASTType(line=0, column=0, base="double")}
+        expr = Identifier(name="d", line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
