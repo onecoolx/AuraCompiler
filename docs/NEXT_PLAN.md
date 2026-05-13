@@ -1,7 +1,7 @@
 # AuraCompiler — Next Major Refactoring Plan
 
 > This document tracks planned architectural improvements for the next development phase.
-> Updated: 2026-05-13. Baseline: 2274 pycc tests passing, computed goto extension complete.
+> Updated: 2026-05-13. Baseline: 2381 pycc tests passing, initializer architecture rewrite complete.
 
 ## 1. Complete expression type annotation in semantic analysis
 
@@ -52,48 +52,3 @@
 **Dependencies**: Plan 3 (IR refactoring).
 
 **Scope**: Medium. ~250 lines.
-
-
-## 6. Constant initializer architecture: type-driven recursive processing
-
-**Problem**: The current constant initializer handling (`_emit_constant_initializer`, `_const_initializer_blob`, `_try_struct_member_init`) is a fallback chain of if-elif branches, each with its own type detection whitelist. Every new type combination (typedef pointer arrays, enum arrays, struct arrays with symbol refs, function pointer typedef arrays) requires patching a different branch's whitelist. This violates the "solve root cause, not symptoms" principle (经验 4).
-
-**Symptoms encountered**:
-- `opnames` (string pointer array + NULL): global path missing pointer array support
-- `luaT_eventname` (local static string array): local path missing pointer array support → unified `_emit_constant_initializer`
-- `boxmt` (struct array with symbol refs): `_try_struct_member_init` didn't handle arrays
-- `searchers` (function pointer typedef array): pointer array detection didn't resolve typedefs
-- Each fix was correct but incremental — the architecture keeps producing new gaps.
-
-**Current mitigations**: Each branch now uses `_is_pointer_type`, `_resolve_elem_type`, `_is_struct_or_union_type` for type detection. `_emit_constant_initializer` unifies global and local static paths. `_struct_member_descs` is reusable for both single structs and struct arrays.
-
-**Proposed design**: Replace the fallback chain with a single recursive, type-driven initializer processor:
-
-```python
-def _emit_static_init(self, gname, ty, init, sc):
-    """Recursively emit constant initializer based on resolved type."""
-    resolved = self._resolve_full_type(ty)  # resolves typedef, gets array info
-    
-    if resolved.is_array:
-        for i, elem_init in enumerate(init.elements):
-            self._emit_static_init(f"{gname}[{i}]", resolved.element_type, elem_init, sc)
-    elif resolved.is_struct_or_union:
-        for member, member_init in zip(resolved.members, init.elements):
-            self._emit_static_init(f"{gname}.{member.name}", member.type, member_init, sc)
-    elif resolved.is_pointer:
-        # string literal, symbol ref, or null
-        self._emit_pointer_constant(gname, init, sc)
-    elif resolved.is_scalar:
-        # integer, float, enum
-        self._emit_scalar_constant(gname, resolved, init, sc)
-```
-
-**Benefits**: 
-- No more whitelist gaps — any type combination is handled by recursion
-- Single type resolution path (`_resolve_full_type`) instead of per-branch checks
-- New types (e.g. array of pointers to structs) work automatically
-- Much simpler code (~200 lines vs current ~500 lines across multiple methods)
-
-**Dependencies**: Type system array/pointer distinction is now implemented — `Type.is_array` + `array_element_type` + `array_dimensions` are available for use.
-
-**Scope**: Medium-large. ~300 lines rewrite of initializer handling. Standalone spec recommended.
