@@ -381,3 +381,51 @@ class TestIdentifierTypeResolutionProperty:
         assert expr.resolved_type.kind == expected_kind
         assert isinstance(expr.resolved_type, IntegerType)
         assert expr.resolved_type.is_unsigned == is_unsigned
+
+
+# =============================================================================
+# Property 3: 算术二元运算符 UAC
+# Feature: expr-type-annotation, Property 3: 算术二元运算符 UAC
+# =============================================================================
+
+from pycc.types import integer_promote, usual_arithmetic_conversions
+
+# Strategy for generating arithmetic CTypes
+_arithmetic_types = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=True),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.SHORT, is_unsigned=True),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+    FloatType(kind=TypeKind.FLOAT),
+    FloatType(kind=TypeKind.DOUBLE),
+])
+
+_arithmetic_ops = st.sampled_from(['+', '-', '*', '/', '%'])
+
+
+class TestArithmeticBinaryUACProperty:
+    """Property 3: 算术二元运算符 UAC
+
+    For any two arithmetic types L and R, and any arithmetic operator
+    (+, -, *, /, %), the binary expression's .resolved_type should equal
+    usual_arithmetic_conversions(integer_promote(L), integer_promote(R)).
+
+    **Validates: Requirements 2.1**
+    """
+
+    @settings(max_examples=100)
+    @given(left=_arithmetic_types, right=_arithmetic_types, op=_arithmetic_ops)
+    def test_arithmetic_binary_result_equals_uac(self, left, right, op):
+        """Binary arithmetic result type equals UAC(promote(left), promote(right)).
+
+        **Validates: Requirements 2.1**
+        """
+        sa = _make_analyzer()
+        result = sa._binary_result_type(op, left, right)
+        expected = usual_arithmetic_conversions(
+            integer_promote(left), integer_promote(right))
+        assert result == expected
