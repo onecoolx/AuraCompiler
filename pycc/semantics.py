@@ -2233,6 +2233,10 @@ class SemanticAnalyzer:
                     if not isinstance(expr.operand, (_MA, _PMA)) and not is_deref:
                         self._err("increment/decrement requires a modifiable lvalue", expr)
                 self._analyze_expr(expr.operand)
+                # Type annotation for UnaryOp (++/--)
+                operand_ct = getattr(expr.operand, 'resolved_type', None)
+                result_ct = self._unary_result_type(expr.operator, operand_ct)
+                self._annotate_type(expr, result_ct)
                 return
 
             # C89: unary '&' requires an lvalue (subset).
@@ -2277,6 +2281,10 @@ class SemanticAnalyzer:
             if expr.operator == "+":
                 pass  # Unary '+' has one operand; pointer+pointer is a BinaryOp check.
             self._analyze_expr(expr.operand)
+            # Type annotation for UnaryOp (&, *, !, ~, +, -)
+            operand_ct = getattr(expr.operand, 'resolved_type', None)
+            result_ct = self._unary_result_type(expr.operator, operand_ct)
+            self._annotate_type(expr, result_ct)
             return
 
         if isinstance(expr, Assignment):
