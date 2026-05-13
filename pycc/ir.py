@@ -337,6 +337,120 @@ class ResolvedType:
         return self.kind == "scalar"
 
 
+@dataclass
+class InitFragment:
+    """一个初始化器叶子节点的数据描述。"""
+    kind: str       # "int", "float", "symbol", "string", "null", "zero"
+    offset: int     # 相对于顶层对象起始的字节偏移
+    size: int       # 占用字节数
+    value: Any      # 具体值（int/float/str/0）
+
+
+class _FlatInitIterator:
+    """Iterator for consuming initializer elements with brace elision support.
+
+    When processing a struct/array and the next element in the initializer
+    is NOT an Initializer node (not wrapped in braces), this iterator
+    supports consuming scalar elements sequentially from a flat list.
+    """
+
+    def __init__(self, elements: list):
+        """elements: list of (designator_or_None, expression) tuples."""
+        self._elements = elements
+        self._pos = 0
+
+    def exhausted(self) -> bool:
+        return self._pos >= len(self._elements)
+
+    def peek(self):
+        """Peek at the next expression without consuming it."""
+        if self._pos >= len(self._elements):
+            return None
+        _d, expr = self._elements[self._pos]
+        return expr
+
+    def consume(self):
+        """Consume and return the next expression."""
+        if self._pos >= len(self._elements):
+            return None
+        _d, expr = self._elements[self._pos]
+        self._pos += 1
+        return expr
+
+    def next_for_type(self, rtype: 'ResolvedType'):
+        """Get the next initializer expression appropriate for the given type.
+
+        Implements C89 brace elision:
+        - If the next element is an Initializer (braced list), consume it whole
+        - If the type is aggregate (array/struct) and next element is NOT braced,
+          return a synthetic Initializer that consumes enough scalar elements
+        - If the type is scalar/pointer, consume one element
+        """
+        if self.exhausted():
+            return None
+
+        expr = self.peek()
+
+        # If next element is already a braced initializer list, use it directly
+        if isinstance(expr, Initializer):
+            return self.consume()
+
+        # For aggregate types without braces: brace elision
+        # Consume enough elements to fill the aggregate
+        if rtype.is_array or rtype.is_struct:
+            return self._consume_for_aggregate(rtype)
+
+        # Scalar or pointer: consume one element
+        return self.consume()
+
+    def _consume_for_aggregate(self, rtype: 'ResolvedType'):
+        """Consume elements for an aggregate type using brace elision.
+
+        Creates a synthetic Initializer node from the flat elements.
+        """
+        if rtype.is_array:
+            elem_type = rtype.element_type
+            if elem_type is None:
+                return self.consume()
+            needed = self._count_scalars_needed(rtype)
+        elif rtype.is_struct:
+            needed = self._count_scalars_needed(rtype)
+        else:
+            return self.consume()
+
+        # Consume 'needed' elements and wrap in a synthetic Initializer
+        consumed = []
+        for _ in range(needed):
+            if self.exhausted():
+                break
+            expr = self.peek()
+            # Stop if we hit a braced initializer (it belongs to the next aggregate)
+            if isinstance(expr, Initializer):
+                break
+            consumed.append((None, self.consume()))
+
+        return Initializer(line=0, column=0, elements=consumed)
+
+    def _count_scalars_needed(self, rtype: 'ResolvedType') -> int:
+        """Count how many scalar elements are needed to fill an aggregate type."""
+        if rtype.is_scalar or rtype.is_pointer:
+            return 1
+        if rtype.is_array:
+            elem_type = rtype.element_type
+            if elem_type is None:
+                return 1
+            return (rtype.array_length or 0) * self._count_scalars_needed(elem_type)
+        if rtype.is_struct:
+            total = 0
+            for _name, _off, _sz, mem_rtype in (rtype.members or []):
+                if mem_rtype is None:
+                    total += 1
+                else:
+                    total += self._count_scalars_needed(mem_rtype)
+            return total
+        return 1
+
+
 class IRGenerator:
     """Generates intermediate representation (3-Address Code)"""
     
@@ -728,6 +842,368 @@ class IRGenerator:
 
         # Unknown type — return None to signal failure
         return None
+
+    # ------------------------------------------------------------------
+    # Recursive initializer fragment collection
+    # ------------------------------------------------------------------
+
+    def _collect_init_fragments(self, rtype: ResolvedType, init_ast, base_offset: int) -> Optional[List['InitFragment']]:
+        """递归收集初始化器的所有叶子数据片段。
+
+        Args:
+            rtype: 已解析的类型信息
+            init_ast: AST 初始化器节点（Initializer, IntLiteral, StringLiteral, etc.）
+            base_offset: 当前类型在顶层对象中的字节偏移
+
+        Returns:
+            List of InitFragment, or None if the initializer cannot be evaluated
+            at compile time.
+        """
+        if rtype is None:
+            return None
+
+        if rtype.is_array:
+            return self._collect_array_fragments(rtype, init_ast, base_offset)
+        elif rtype.is_struct:
+            return self._collect_struct_fragments(rtype, init_ast, base_offset)
+        elif rtype.is_pointer:
+            return self._collect_pointer_fragment(rtype, init_ast, base_offset)
+        elif rtype.is_scalar:
+            return self._collect_scalar_fragment(rtype, init_ast, base_offset)
+        else:
+            return None
+
+    def _collect_array_fragments(self, rtype: ResolvedType, init_ast, base_offset: int) -> Optional[List['InitFragment']]:
+        """收集数组初始化器的所有片段。"""
+        elem_type = rtype.element_type
+        if elem_type is None:
+            return None
+        array_len = rtype.array_length
+        if array_len is None or array_len <= 0:
+            return None
+        elem_size = elem_type.size
+
+        # Handle char array initialized with string literal
+        if elem_type.is_scalar and elem_type.name in ("char", "unsigned char", "signed char"):
+            if isinstance(init_ast, StringLiteral):
+                return self._collect_char_array_from_string(rtype, init_ast, base_offset)
+            # String literal inside an Initializer: {  "hello" }
+            if isinstance(init_ast, Initializer) and init_ast.elements:
+                if len(init_ast.elements) == 1:
+                    _d, expr = init_ast.elements[0]
+                    if _d is None and isinstance(expr, StringLiteral):
+                        return self._collect_char_array_from_string(rtype, expr, base_offset)
+
+        # Get the list of element initializers
+        if isinstance(init_ast, Initializer):
+            elements = init_ast.elements or []
+        else:
+            # Not an initializer list — cannot process as array
+            return None
+
+        # Check for designated initializers
+        has_designators = any(d is not None for d, _v in elements)
+        if has_designators:
+            return self._collect_designated_array_fragments(rtype, elements, base_offset)
+
+        # Positional initialization with possible brace elision
+        fragments = []
+        flat_iter = _FlatInitIterator(elements)
+
+        for i in range(array_len):
+            offset = base_offset + i * elem_size
+            if flat_iter.exhausted():
+                # Zero-fill remaining elements
+                fragments.append(InitFragment(kind="zero", offset=offset, size=elem_size, value=0))
+                continue
+
+            elem_init = flat_iter.next_for_type(elem_type)
+            if elem_init is None:
+                # Zero-fill this element
+                fragments.append(InitFragment(kind="zero", offset=offset, size=elem_size, value=0))
+                continue
+
+            sub_frags = self._collect_init_fragments(elem_type, elem_init, offset)
+            if sub_frags is None:
+                return None
+            fragments.extend(sub_frags)
+
+        return fragments
+
+    def _collect_char_array_from_string(self, rtype: ResolvedType, str_lit: 'StringLiteral', base_offset: int) -> Optional[List['InitFragment']]:
+        """收集字符数组从字符串字面量初始化的片段。"""
+        array_len = rtype.array_length
+        s = str_lit.value
+        # Build byte values including NUL terminator
+        byte_vals = [ord(c) & 0xFF for c in s] + [0]
+        # Truncate or pad to array size
+        if len(byte_vals) > array_len:
+            byte_vals = byte_vals[:array_len]
+        elif len(byte_vals) < array_len:
+            byte_vals.extend([0] * (array_len - len(byte_vals)))
+
+        # Pack all bytes into a single blob fragment
+        import struct as _s
+        packed = _s.pack(f"<{array_len}B", *byte_vals)
+        return [InitFragment(kind="int", offset=base_offset, size=array_len,
+                             value=packed)]
+
+    def _collect_designated_array_fragments(self, rtype: ResolvedType, elements: list, base_offset: int) -> Optional[List['InitFragment']]:
+        """收集带指定初始化器的数组片段。"""
+        elem_type = rtype.element_type
+        array_len = rtype.array_length
+        elem_size = elem_type.size
+
+        # Build a sparse map: index -> init_expr
+        init_map = [None] * array_len
+        current_idx = 0
+        for desig, expr in elements:
+            if desig is not None and desig.index is not None:
+                idx_val = self._const_expr_to_int(desig.index)
+                if idx_val is None:
+                    return None
+                current_idx = idx_val
+            if current_idx >= array_len:
+                return None
+            init_map[current_idx] = expr
+            current_idx += 1
+
+        # Collect fragments for each index
+        fragments = []
+        for i in range(array_len):
+            offset = base_offset + i * elem_size
+            expr = init_map[i]
+            if expr is None:
+                fragments.append(InitFragment(kind="zero", offset=offset, size=elem_size, value=0))
+            else:
+                sub_frags = self._collect_init_fragments(elem_type, expr, offset)
+                if sub_frags is None:
+                    return None
+                fragments.extend(sub_frags)
+
+        return fragments
+
+    def _collect_struct_fragments(self, rtype: ResolvedType, init_ast, base_offset: int) -> Optional[List['InitFragment']]:
+        """收集结构体/联合体初始化器的所有片段。"""
+        if rtype.members is None:
+            return None
+
+        is_union = (rtype.kind == "union")
+
+        # Handle non-Initializer node (e.g. a single expression for a single-member struct)
+        if not isinstance(init_ast, Initializer):
+            # For union or single-member struct, try treating init_ast as the first member's value
+            if rtype.members:
+                mem_name, mem_offset, mem_size, mem_rtype = rtype.members[0]
+                if mem_rtype is not None:
+                    sub_frags = self._collect_init_fragments(mem_rtype, init_ast, base_offset + mem_offset)
+                    if sub_frags is not None:
+                        # Add padding/zero-fill for remaining space
+                        used_end = mem_offset + mem_size
+                        if used_end < rtype.size:
+                            sub_frags.append(InitFragment(kind="zero", offset=base_offset + used_end,
+                                                         size=rtype.size - used_end, value=0))
+                        return sub_frags
+            return None
+
+        elements = init_ast.elements or []
+
+        # Check for designated initializers
+        has_designators = any(d is not None for d, _v in elements)
+        if has_designators:
+            return self._collect_designated_struct_fragments(rtype, elements, base_offset)
+
+        # Positional initialization
+        if is_union:
+            return self._collect_union_fragments(rtype, elements, base_offset)
+
+        # Struct positional initialization with brace elision support
+        fragments = []
+        flat_iter = _FlatInitIterator(elements)
+        prev_end = 0  # Track end of previous member for padding
+
+        for mem_name, mem_offset, mem_size, mem_rtype in rtype.members:
+            # Insert padding between members
+            if mem_offset > prev_end:
+                pad_size = mem_offset - prev_end
+                fragments.append(InitFragment(kind="zero", offset=base_offset + prev_end,
+                                             size=pad_size, value=0))
+
+            offset = base_offset + mem_offset
+            if flat_iter.exhausted():
+                # Zero-fill remaining members
+                fragments.append(InitFragment(kind="zero", offset=offset, size=mem_size, value=0))
+            else:
+                if mem_rtype is None:
+                    return None
+                elem_init = flat_iter.next_for_type(mem_rtype)
+                if elem_init is None:
+                    fragments.append(InitFragment(kind="zero", offset=offset, size=mem_size, value=0))
+                else:
+                    sub_frags = self._collect_init_fragments(mem_rtype, elem_init, offset)
+                    if sub_frags is None:
+                        return None
+                    fragments.extend(sub_frags)
+
+            prev_end = mem_offset + mem_size
+
+        # Tail padding
+        if prev_end < rtype.size:
+            fragments.append(InitFragment(kind="zero", offset=base_offset + prev_end,
+                                         size=rtype.size - prev_end, value=0))
+
+        return fragments
+
+    def _collect_union_fragments(self, rtype: ResolvedType, elements: list, base_offset: int) -> Optional[List['InitFragment']]:
+        """收集联合体初始化器片段（只初始化第一个成员）。"""
+        if not rtype.members:
+            return None
+
+        # Union: initialize first member only
+        mem_name, mem_offset, mem_size, mem_rtype = rtype.members[0]
+        if mem_rtype is None:
+            return None
+
+        fragments = []
+        if elements:
+            _d, expr = elements[0]
+            sub_frags = self._collect_init_fragments(mem_rtype, expr, base_offset + mem_offset)
+            if sub_frags is None:
+                return None
+            fragments.extend(sub_frags)
+        else:
+            fragments.append(InitFragment(kind="zero", offset=base_offset + mem_offset,
+                                         size=mem_size, value=0))
+
+        # Zero-fill remaining space after first member
+        used_end = mem_offset + mem_size
+        if used_end < rtype.size:
+            fragments.append(InitFragment(kind="zero", offset=base_offset + used_end,
+                                         size=rtype.size - used_end, value=0))
+
+        return fragments
+
+    def _collect_designated_struct_fragments(self, rtype: ResolvedType, elements: list, base_offset: int) -> Optional[List['InitFragment']]:
+        """收集带指定初始化器的结构体片段。"""
+        # Build member name -> index map
+        member_map = {}
+        for idx, (mem_name, mem_offset, mem_size, mem_rtype) in enumerate(rtype.members):
+            member_map[mem_name] = idx
+
+        # Build init_values: index -> expr
+        init_values = [None] * len(rtype.members)
+        current_idx = 0
+        for desig, expr in elements:
+            if desig is not None and desig.member is not None:
+                idx = member_map.get(desig.member)
+                if idx is None:
+                    return None
+                current_idx = idx
+            if current_idx >= len(rtype.members):
+                return None
+            init_values[current_idx] = expr
+            current_idx += 1
+
+        # Collect fragments for each member
+        fragments = []
+        prev_end = 0
+
+        for idx, (mem_name, mem_offset, mem_size, mem_rtype) in enumerate(rtype.members):
+            # Padding before this member
+            if mem_offset > prev_end:
+                pad_size = mem_offset - prev_end
+                fragments.append(InitFragment(kind="zero", offset=base_offset + prev_end,
+                                             size=pad_size, value=0))
+
+            offset = base_offset + mem_offset
+            expr = init_values[idx]
+            if expr is None:
+                fragments.append(InitFragment(kind="zero", offset=offset, size=mem_size, value=0))
+            else:
+                if mem_rtype is None:
+                    return None
+                sub_frags = self._collect_init_fragments(mem_rtype, expr, offset)
+                if sub_frags is None:
+                    return None
+                fragments.extend(sub_frags)
+
+            prev_end = mem_offset + mem_size
+
+        # Tail padding
+        if prev_end < rtype.size:
+            fragments.append(InitFragment(kind="zero", offset=base_offset + prev_end,
+                                         size=rtype.size - prev_end, value=0))
+
+        return fragments
+
+    def _collect_pointer_fragment(self, rtype: ResolvedType, init_ast, base_offset: int) -> Optional[List['InitFragment']]:
+        """收集指针类型初始化器片段。"""
+        # Unwrap from single-element Initializer: { expr }
+        expr = init_ast
+        if isinstance(expr, Initializer) and expr.elements and len(expr.elements) == 1:
+            _d, expr = expr.elements[0]
+
+        # String literal → string fragment
+        if isinstance(expr, StringLiteral):
+            return [InitFragment(kind="string", offset=base_offset, size=8, value=expr.value)]
+
+        # Identifier (function/global name) → symbol fragment
+        if isinstance(expr, Identifier):
+            return [InitFragment(kind="symbol", offset=base_offset, size=8, value=expr.name)]
+
+        # LabelAddress (&&label) → symbol fragment
+        if isinstance(expr, LabelAddress):
+            fn = self._current_function_name()
+            lbl = f".Luser_{fn}_{expr.label_name}" if fn else expr.label_name
+            return [InitFragment(kind="symbol", offset=base_offset, size=8, value=lbl)]
+
+        # NULL pointer constant
+        if self._is_null_pointer_constant(expr):
+            return [InitFragment(kind="null", offset=base_offset, size=8, value=0)]
+
+        # Address-of operator: &var → symbol
+        if isinstance(expr, UnaryOp) and expr.operator == "&":
+            if isinstance(expr.operand, Identifier):
+                return [InitFragment(kind="symbol", offset=base_offset, size=8, value=expr.operand.name)]
+
+        # Cast to pointer type with underlying constant
+        if isinstance(expr, Cast):
+            return self._collect_pointer_fragment(rtype, expr.expression, base_offset)
+
+        # Cannot evaluate at compile time
+        return None
+
+    def _collect_scalar_fragment(self, rtype: ResolvedType, init_ast, base_offset: int) -> Optional[List['InitFragment']]:
+        """收集标量类型初始化器片段。"""
+        # Unwrap from single-element Initializer: { expr }
+        expr = init_ast
+        if isinstance(expr, Initializer) and expr.elements and len(expr.elements) == 1:
+            _d, expr = expr.elements[0]
+
+        if rtype.is_float:
+            val = self._const_expr_to_float(expr)
+            if val is None:
+                # Try int-to-float promotion
+                ival = self._const_expr_to_int(expr)
+                if ival is not None:
+                    val = float(ival)
+            if val is None:
+                return None
+            fmt = rtype.pack_format
+            if fmt is None:
+                return None
+            packed = _struct.pack(fmt, val)
+            return [InitFragment(kind="float", offset=base_offset, size=rtype.size, value=packed)]
+        else:
+            val = self._const_expr_to_int(expr)
+            if val is None:
+                return None
+            fmt = rtype.pack_format
+            mask = rtype.pack_mask
+            if fmt is None or mask is None:
+                return None
+            packed = _struct.pack(fmt, val & mask)
+            return [InitFragment(kind="int", offset=base_offset, size=rtype.size, value=packed)]
 
     def _emit_constant_initializer(self, gname: str, item, sc: str) -> bool:
         """Emit IR instructions for a constant initializer (global or local static).
