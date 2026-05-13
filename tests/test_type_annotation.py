@@ -320,3 +320,153 @@ class TestIdentifierTypeAnnotation:
         analyzer._analyze_expr(expr)
         assert isinstance(expr.resolved_type, FloatType)
         assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+
+class TestBinaryResultType:
+    """Tests for _binary_result_type method (task 3.1)."""
+
+    def test_none_left_returns_none(self, analyzer):
+        r = analyzer._binary_result_type('+', None, IntegerType(kind=TypeKind.INT))
+        assert r is None
+
+    def test_none_right_returns_none(self, analyzer):
+        r = analyzer._binary_result_type('+', IntegerType(kind=TypeKind.INT), None)
+        assert r is None
+
+    def test_both_none_returns_none(self, analyzer):
+        r = analyzer._binary_result_type('+', None, None)
+        assert r is None
+
+    # -- Arithmetic operators with UAC --
+
+    def test_int_plus_int(self, analyzer):
+        r = analyzer._binary_result_type('+', IntegerType(kind=TypeKind.INT),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_int_plus_long_promotes_to_long(self, analyzer):
+        r = analyzer._binary_result_type('+', IntegerType(kind=TypeKind.INT),
+                                         IntegerType(kind=TypeKind.LONG))
+        assert r == IntegerType(kind=TypeKind.LONG)
+
+    def test_short_minus_short_promotes_to_int(self, analyzer):
+        r = analyzer._binary_result_type('-', IntegerType(kind=TypeKind.SHORT),
+                                         IntegerType(kind=TypeKind.SHORT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_char_mult_char_promotes_to_int(self, analyzer):
+        r = analyzer._binary_result_type('*', IntegerType(kind=TypeKind.CHAR),
+                                         IntegerType(kind=TypeKind.CHAR))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_int_div_double_promotes_to_double(self, analyzer):
+        r = analyzer._binary_result_type('/', IntegerType(kind=TypeKind.INT),
+                                         FloatType(kind=TypeKind.DOUBLE))
+        assert r == FloatType(kind=TypeKind.DOUBLE)
+
+    def test_float_mod_int(self, analyzer):
+        # float % int -> UAC -> float (after promotion)
+        r = analyzer._binary_result_type('%', FloatType(kind=TypeKind.FLOAT),
+                                         IntegerType(kind=TypeKind.INT))
+        # UAC: float vs int -> float (float has higher rank than int)
+        assert isinstance(r, FloatType)
+
+    # -- Pointer arithmetic --
+
+    def test_ptr_plus_int(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))
+        r = analyzer._binary_result_type('+', ptr, IntegerType(kind=TypeKind.INT))
+        assert r is ptr
+
+    def test_int_plus_ptr(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR))
+        r = analyzer._binary_result_type('+', IntegerType(kind=TypeKind.LONG), ptr)
+        assert r is ptr
+
+    def test_ptr_minus_int(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=FloatType(kind=TypeKind.DOUBLE))
+        r = analyzer._binary_result_type('-', ptr, IntegerType(kind=TypeKind.INT))
+        assert r is ptr
+
+    def test_ptr_minus_ptr_is_long(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))
+        r = analyzer._binary_result_type('-', ptr, ptr)
+        assert r == IntegerType(kind=TypeKind.LONG)
+
+    def test_ptr_plus_ptr_is_invalid(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))
+        r = analyzer._binary_result_type('+', ptr, ptr)
+        assert r is None
+
+    def test_int_minus_ptr_is_invalid(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))
+        r = analyzer._binary_result_type('-', IntegerType(kind=TypeKind.INT), ptr)
+        assert r is None
+
+    # -- Relational operators --
+
+    def test_less_than_returns_int(self, analyzer):
+        r = analyzer._binary_result_type('<', IntegerType(kind=TypeKind.LONG),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_greater_equal_returns_int(self, analyzer):
+        r = analyzer._binary_result_type('>=', FloatType(kind=TypeKind.DOUBLE),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_equal_returns_int(self, analyzer):
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))
+        r = analyzer._binary_result_type('==', ptr, ptr)
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_not_equal_returns_int(self, analyzer):
+        r = analyzer._binary_result_type('!=', IntegerType(kind=TypeKind.CHAR),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    # -- Logical operators --
+
+    def test_logical_and_returns_int(self, analyzer):
+        r = analyzer._binary_result_type('&&', IntegerType(kind=TypeKind.INT),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_logical_or_returns_int(self, analyzer):
+        r = analyzer._binary_result_type('||', FloatType(kind=TypeKind.DOUBLE),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    # -- Bitwise operators --
+
+    def test_bitwise_and_short_short_promotes_to_int(self, analyzer):
+        r = analyzer._binary_result_type('&', IntegerType(kind=TypeKind.SHORT),
+                                         IntegerType(kind=TypeKind.SHORT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_bitwise_or_int_long_promotes_to_long(self, analyzer):
+        r = analyzer._binary_result_type('|', IntegerType(kind=TypeKind.INT),
+                                         IntegerType(kind=TypeKind.LONG))
+        assert r == IntegerType(kind=TypeKind.LONG)
+
+    def test_bitwise_xor_char_int(self, analyzer):
+        r = analyzer._binary_result_type('^', IntegerType(kind=TypeKind.CHAR),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_left_shift_int_int(self, analyzer):
+        r = analyzer._binary_result_type('<<', IntegerType(kind=TypeKind.INT),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.INT)
+
+    def test_right_shift_long_int(self, analyzer):
+        r = analyzer._binary_result_type('>>', IntegerType(kind=TypeKind.LONG),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r == IntegerType(kind=TypeKind.LONG)
+
+    # -- Unknown operator --
+
+    def test_unknown_op_returns_none(self, analyzer):
+        r = analyzer._binary_result_type('???', IntegerType(kind=TypeKind.INT),
+                                         IntegerType(kind=TypeKind.INT))
+        assert r is None

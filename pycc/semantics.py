@@ -15,8 +15,10 @@ from pycc.types import (
     ast_type_to_ctype,
     ast_type_to_ctype_resolved,
     ctype_to_ast_type,
+    integer_promote,
     is_integer as ctype_is_integer,
     is_scalar as ctype_is_scalar,
+    usual_arithmetic_conversions,
     ArrayType,
     CType,
     FloatType,
@@ -1621,6 +1623,58 @@ class SemanticAnalyzer:
         if isinstance(ct, FunctionTypeCType):
             return PointerType(kind=TypeKind.POINTER, pointee=ct)
         return ct
+
+    def _binary_result_type(self, op: str, left_ct, right_ct):
+        """Compute the result CType of a binary operation.
+
+        Args:
+            op: The operator string ('+', '-', '*', '/', '%', '<', '<=',
+                '>', '>=', '==', '!=', '&&', '||', '&', '|', '^', '<<', '>>')
+            left_ct: CType of the left operand
+            right_ct: CType of the right operand
+
+        Returns:
+            The result CType, or None if types are incompatible.
+        """
+        if left_ct is None or right_ct is None:
+            return None
+
+        # Relational operators always produce int
+        if op in ('<', '<=', '>', '>=', '==', '!='):
+            return IntegerType(kind=TypeKind.INT)
+
+        # Logical operators always produce int
+        if op in ('&&', '||'):
+            return IntegerType(kind=TypeKind.INT)
+
+        # Pointer arithmetic
+        left_is_ptr = isinstance(left_ct, PointerType)
+        right_is_ptr = isinstance(right_ct, PointerType)
+
+        if op in ('+', '-'):
+            if left_is_ptr and right_is_ptr:
+                # ptr - ptr = ptrdiff_t (long)
+                if op == '-':
+                    return IntegerType(kind=TypeKind.LONG)
+                return None  # ptr + ptr is invalid
+            if left_is_ptr and ctype_is_integer(right_ct):
+                return left_ct  # ptr + int = ptr
+            if right_is_ptr and ctype_is_integer(left_ct):
+                if op == '+':
+                    return right_ct  # int + ptr = ptr
+                return None  # int - ptr is invalid
+
+        # Arithmetic operators: UAC(promote(left), promote(right))
+        if op in ('+', '-', '*', '/', '%'):
+            return usual_arithmetic_conversions(
+                integer_promote(left_ct), integer_promote(right_ct))
+
+        # Bitwise operators: UAC(promote(left), promote(right))
+        if op in ('&', '|', '^', '<<', '>>'):
+            return usual_arithmetic_conversions(
+                integer_promote(left_ct), integer_promote(right_ct))
+
+        return None
 
     def _make_sema_ctx_for_types(self):
         """Build a lightweight object with .typedefs for type resolution.
