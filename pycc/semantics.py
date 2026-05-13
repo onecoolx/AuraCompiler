@@ -2148,6 +2148,12 @@ class SemanticAnalyzer:
 
             # Ensure we still analyze nested expressions for other checks.
 
+            # Type annotation for BinaryOp
+            left_ct = getattr(expr.left, 'resolved_type', None)
+            right_ct = getattr(expr.right, 'resolved_type', None)
+            result_ct = self._binary_result_type(expr.operator, left_ct, right_ct)
+            self._annotate_type(expr, result_ct)
+
             return
 
         if isinstance(expr, Cast):
