@@ -262,6 +262,123 @@ def _str_to_ctype(s: str) -> CType:
     return ct
 
 
+def ctype_to_ast_type(ct: CType):
+    """Convert a CType back to an ast_nodes.Type for the _expr_type() compatibility layer.
+
+    Handles IntegerType, FloatType, PointerType, ArrayType, StructType, EnumType.
+    Returns an ast_nodes.Type instance with appropriate fields set.
+    """
+    from pycc.ast_nodes import Type as ASTType
+
+    if ct is None:
+        return None
+
+    # --- PointerType: unwrap pointer chain to find base and pointer_level ---
+    if isinstance(ct, PointerType):
+        # Walk the pointer chain to determine depth and base type
+        ptr_level = 0
+        pointer_quals_list = []
+        inner = ct
+        while isinstance(inner, PointerType):
+            ptr_level += 1
+            # Collect qualifiers for this pointer level
+            pq = set()
+            if inner.quals.const:
+                pq.add('const')
+            if inner.quals.volatile:
+                pq.add('volatile')
+            pointer_quals_list.append(pq)
+            inner = inner.pointee if inner.pointee is not None else CType(kind=TypeKind.VOID)
+
+        # Convert the base (non-pointer) type
+        base_ast = ctype_to_ast_type(inner)
+        if base_ast is None:
+            base_ast = ASTType(line=0, column=0, base='void')
+
+        # Build the result with pointer wrapping
+        base_ast.is_pointer = True
+        base_ast.pointer_level = ptr_level
+        base_ast.pointer_quals = pointer_quals_list
+        return base_ast
+
+    # --- ArrayType ---
+    if isinstance(ct, ArrayType):
+        elem_ast = ctype_to_ast_type(ct.element) if ct.element else ASTType(line=0, column=0, base='int')
+        dims = [ct.size] if ct.size is not None else [None]
+        return ASTType(
+            line=0, column=0,
+            base=elem_ast.base if elem_ast else 'int',
+            is_array=True,
+            array_element_type=elem_ast,
+            array_dimensions=dims,
+            is_unsigned=getattr(elem_ast, 'is_unsigned', False),
+            is_const=ct.quals.const,
+            is_volatile=ct.quals.volatile,
+        )
+
+    # --- IntegerType ---
+    if isinstance(ct, IntegerType):
+        names = {
+            TypeKind.CHAR: 'char',
+            TypeKind.SHORT: 'short',
+            TypeKind.INT: 'int',
+            TypeKind.LONG: 'long',
+        }
+        base = names.get(ct.kind, 'int')
+        return ASTType(
+            line=0, column=0,
+            base=base,
+            is_unsigned=ct.is_unsigned,
+            is_const=ct.quals.const,
+            is_volatile=ct.quals.volatile,
+        )
+
+    # --- FloatType ---
+    if isinstance(ct, FloatType):
+        base = 'float' if ct.kind == TypeKind.FLOAT else 'double'
+        return ASTType(
+            line=0, column=0,
+            base=base,
+            is_const=ct.quals.const,
+            is_volatile=ct.quals.volatile,
+        )
+
+    # --- StructType (covers both struct and union) ---
+    if isinstance(ct, StructType):
+        prefix = 'union' if ct.kind == TypeKind.UNION else 'struct'
+        tag = ct.tag or ''
+        base = f'{prefix} {tag}' if tag else prefix
+        return ASTType(
+            line=0, column=0,
+            base=base,
+            is_const=ct.quals.const,
+            is_volatile=ct.quals.volatile,
+        )
+
+    # --- EnumType ---
+    if isinstance(ct, EnumType):
+        tag = ct.tag or ''
+        base = f'enum {tag}' if tag else 'int'
+        return ASTType(
+            line=0, column=0,
+            base=base,
+            is_const=ct.quals.const,
+            is_volatile=ct.quals.volatile,
+        )
+
+    # --- VoidType ---
+    if ct.kind == TypeKind.VOID:
+        return ASTType(
+            line=0, column=0,
+            base='void',
+            is_const=ct.quals.const,
+            is_volatile=ct.quals.volatile,
+        )
+
+    # Fallback: treat as int
+    return ASTType(line=0, column=0, base='int')
+
+
 def ctype_to_ir_type(ct: CType) -> str:
     """Convert CType to a type string for IR/codegen compatibility."""
     if ct.kind == TypeKind.VOID:
