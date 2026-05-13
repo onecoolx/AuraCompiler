@@ -163,3 +163,74 @@ class TestResolveIdentifierCtype:
         assert isinstance(result, PointerType)
         assert isinstance(result.pointee, PointerType)
         assert result.pointee.pointee.kind == TypeKind.CHAR
+
+
+class TestLiteralTypeAnnotation:
+    """Tests for literal type annotation in _analyze_expr (task 2.1)."""
+
+    def test_int_literal_type(self, analyzer):
+        from pycc.ast_nodes import IntLiteral
+        expr = IntLiteral(value=42, line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_int_literal_zero(self, analyzer):
+        from pycc.ast_nodes import IntLiteral
+        expr = IntLiteral(value=0, line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_char_literal_type(self, analyzer):
+        from pycc.ast_nodes import CharLiteral
+        expr = CharLiteral(value='a', line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_float_literal_double(self, analyzer):
+        from pycc.ast_nodes import FloatLiteral
+        expr = FloatLiteral(value=3.14, line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_float_literal_float_suffix_lower(self, analyzer):
+        from pycc.ast_nodes import FloatLiteral
+        expr = FloatLiteral(value=3.14, suffix='f', line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.FLOAT
+
+    def test_float_literal_float_suffix_upper(self, analyzer):
+        from pycc.ast_nodes import FloatLiteral
+        expr = FloatLiteral(value=3.14, suffix='F', line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.FLOAT
+
+    def test_float_literal_long_double_suffix(self, analyzer):
+        from pycc.ast_nodes import FloatLiteral
+        # 'L' suffix means long double, but for now we treat it as DOUBLE
+        # since the design says only f/F -> FLOAT, otherwise DOUBLE
+        expr = FloatLiteral(value=3.14, suffix='L', line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_string_literal_type(self, analyzer):
+        from pycc.ast_nodes import StringLiteral
+        expr = StringLiteral(value='hello', line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.kind == TypeKind.POINTER
+        assert isinstance(expr.resolved_type.pointee, IntegerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+    def test_empty_string_literal_type(self, analyzer):
+        from pycc.ast_nodes import StringLiteral
+        expr = StringLiteral(value='', line=1, column=1)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR

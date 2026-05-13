@@ -19,7 +19,9 @@ from pycc.types import (
     is_scalar as ctype_is_scalar,
     ArrayType,
     CType,
+    FloatType,
     FunctionTypeCType,
+    IntegerType,
     PointerType,
     TypeKind,
 )
@@ -46,6 +48,7 @@ from pycc.ast_nodes import (
         LabelStmt,
         Identifier,
         IntLiteral,
+        FloatLiteral,
         StringLiteral,
         CharLiteral,
         BinaryOp,
@@ -2714,6 +2717,27 @@ class SemanticAnalyzer:
             # declaration analysis.  Here we just recurse into values.
             for _desig, val in (expr.elements or []):
                 self._analyze_expr(val)
+            return
+
+        # -- Literal type annotations --
+        if isinstance(expr, IntLiteral):
+            self._annotate_type(expr, IntegerType(kind=TypeKind.INT))
+            return
+
+        if isinstance(expr, CharLiteral):
+            self._annotate_type(expr, IntegerType(kind=TypeKind.INT))
+            return
+
+        if isinstance(expr, FloatLiteral):
+            suffix = getattr(expr, 'suffix', '')
+            if suffix.lower() == 'f':
+                self._annotate_type(expr, FloatType(kind=TypeKind.FLOAT))
+            else:
+                self._annotate_type(expr, FloatType(kind=TypeKind.DOUBLE))
+            return
+
+        if isinstance(expr, StringLiteral):
+            self._annotate_type(expr, PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR)))
             return
 
         # Unknown expressions ignored
