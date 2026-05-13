@@ -2217,6 +2217,12 @@ class SemanticAnalyzer:
                     fb = str(getattr(from_ty, "base", "")).strip()
                     if fb.startswith("struct ") or fb.startswith("union "):
                         self._err("invalid cast from aggregate type", expr)
+
+            # Type annotation for Cast
+            if to_ty is not None:
+                sema_ctx = self._make_sema_ctx_for_types()
+                target_ct = ast_type_to_ctype_resolved(to_ty, sema_ctx)
+                self._annotate_type(expr, target_ct)
             return
 
         if isinstance(expr, UnaryOp):

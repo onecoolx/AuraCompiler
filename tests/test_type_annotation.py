@@ -619,3 +619,74 @@ class TestUnaryResultType:
     def test_unknown_op_returns_none(self, analyzer):
         r = analyzer._unary_result_type('???', IntegerType(kind=TypeKind.INT))
         assert r is None
+
+
+class TestCastTypeAnnotation:
+    """Tests for Cast expression type annotation (task 5.3)."""
+
+    def test_cast_to_int(self, analyzer):
+        from pycc.ast_nodes import Cast, FloatLiteral
+        target_type = ASTType(line=1, column=1, base="int")
+        inner = FloatLiteral(value=3.14, line=1, column=1)
+        expr = Cast(line=1, column=1, type=target_type, expression=inner)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_cast_to_long(self, analyzer):
+        from pycc.ast_nodes import Cast, IntLiteral
+        target_type = ASTType(line=1, column=1, base="long")
+        inner = IntLiteral(value=42, line=1, column=1)
+        expr = Cast(line=1, column=1, type=target_type, expression=inner)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+
+    def test_cast_to_pointer(self, analyzer):
+        from pycc.ast_nodes import Cast, IntLiteral
+        target_type = ASTType(line=1, column=1, base="void", is_pointer=True, pointer_level=1)
+        inner = IntLiteral(value=0, line=1, column=1)
+        expr = Cast(line=1, column=1, type=target_type, expression=inner)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.kind == TypeKind.POINTER
+
+    def test_cast_to_unsigned_int(self, analyzer):
+        from pycc.ast_nodes import Cast, IntLiteral
+        target_type = ASTType(line=1, column=1, base="int", is_unsigned=True)
+        inner = IntLiteral(value=-1, line=1, column=1)
+        expr = Cast(line=1, column=1, type=target_type, expression=inner)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+        assert expr.resolved_type.is_unsigned is True
+
+    def test_cast_to_char(self, analyzer):
+        from pycc.ast_nodes import Cast, IntLiteral
+        target_type = ASTType(line=1, column=1, base="char")
+        inner = IntLiteral(value=65, line=1, column=1)
+        expr = Cast(line=1, column=1, type=target_type, expression=inner)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.CHAR
+
+    def test_cast_to_double(self, analyzer):
+        from pycc.ast_nodes import Cast, IntLiteral
+        target_type = ASTType(line=1, column=1, base="double")
+        inner = IntLiteral(value=42, line=1, column=1)
+        expr = Cast(line=1, column=1, type=target_type, expression=inner)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_cast_with_typedef(self, analyzer):
+        from pycc.ast_nodes import Cast, IntLiteral
+        # Set up typedef: size_t -> unsigned long
+        analyzer._typedefs = [{"size_t": ASTType(line=0, column=0, base="long", is_unsigned=True)}]
+        target_type = ASTType(line=1, column=1, base="size_t")
+        inner = IntLiteral(value=10, line=1, column=1)
+        expr = Cast(line=1, column=1, type=target_type, expression=inner)
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+        assert expr.resolved_type.is_unsigned is True
