@@ -1432,13 +1432,9 @@ class IRGenerator:
     def _emit_constant_initializer(self, gname: str, item, sc: str) -> bool:
         """Emit IR instructions for a constant initializer (global or local static).
 
-        Handles all constant initializer forms in a single unified method:
-        - Aggregate blobs (arrays, structs with scalar members)
-        - Float scalars
-        - Integer/char constant scalars
-        - String literal pointers
-        - Pointer arrays (strings, symbols, NULL, mixed)
-        - Struct member-by-member initialization (function pointers, symbols)
+        Uses the recursive type-driven path to handle all constant initializer
+        forms: scalars, floats, strings, pointer arrays, structs, and arbitrary
+        nested combinations.
 
         Returns True if the initializer was successfully emitted, False otherwise.
         """
@@ -1446,85 +1442,22 @@ class IRGenerator:
         if init is None:
             return False
 
-        # --- Try recursive type-driven path first ---
         rtype = self._resolve_full_type(item)
+
+        # Handle unsized pointer arrays: type is pointer + initializer is a
+        # multi-element list → treat as pointer array with inferred length.
+        if (rtype is not None and rtype.is_pointer
+                and isinstance(init, Initializer)
+                and init.elements and len(init.elements) > 1):
+            n = len(init.elements)
+            rtype = ResolvedType(
+                kind="array", name=rtype.name, size=8 * n,
+                element_type=rtype, array_length=n,
+            )
+
         if rtype is not None:
             if self._emit_static_init(gname, rtype, init, sc):
                 return True
-        # --- Fallback to old scalar/pointer paths ---
-
-        # 2. Try scalar immediate or string pointer.
-        imm = self._const_initializer_imm(init)
-        ptr = self._const_initializer_ptr(init)
-
-        # 3. Float scalar.
-        if isinstance(init, FloatLiteral):
-            suffix = getattr(init, 'suffix', '')
-            fp_type = "long double" if suffix in ('l', 'L') else "float" if suffix in ('f', 'F') else "double"
-            self.instructions.append(
-                IRInstruction(op="gdef_float", result=f"@{gname}",
-                              operand1=str(init.value), label=sc,
-                              meta={"fp_type": fp_type})
-            )
-            return True
-
-        # 4. Integer/char constant or string pointer.
-        if imm is not None or ptr is not None:
-            self.instructions.append(
-                IRInstruction(op="gdef", result=f"@{gname}",
-                              operand1=item.type.base,
-                              operand2=imm if imm is not None else ptr, label=sc)
-            )
-            return True
-
-        # 5. Struct member-by-member initialization.
-        _saved_name = getattr(item, 'name', None)
-        item.name = gname
-        if self._try_struct_member_init(item, sc):
-            item.name = _saved_name
-            return True
-        item.name = _saved_name
-
-        # 6. Pointer array (strings, symbols, NULL, mixed).
-        # Use _is_pointer_type to resolve typedef pointers (e.g. lua_CFunction).
-        is_ptr_type = getattr(item.type, "is_pointer", False)
-        if not is_ptr_type and self._sema_ctx is not None:
-            base = getattr(item.type, "base", "")
-            if isinstance(base, str):
-                td = getattr(self._sema_ctx, "typedefs", {}).get(base)
-                if td is not None and getattr(td, "is_pointer", False):
-                    is_ptr_type = True
-                # Function pointer typedefs: base contains "(*)("
-                elif isinstance(base, str) and "(*)" in base:
-                    is_ptr_type = True
-        if isinstance(init, Initializer) and is_ptr_type:
-            inits_list = self._const_initializer_list(init)
-            if inits_list:
-                entries = []
-                all_ok = True
-                for e in inits_list:
-                    if isinstance(e, StringLiteral):
-                        entries.append(("string", e.value))
-                    elif isinstance(e, Identifier):
-                        entries.append(("symbol", e.name))
-                    elif isinstance(e, LabelAddress):
-                        # GCC extension: &&label in static initializer.
-                        # Emit as symbol reference using the IR label name.
-                        fn = self._current_function_name()
-                        lbl = f".Luser_{fn}_{e.label_name}"
-                        entries.append(("symbol", lbl))
-                    elif self._is_null_pointer_constant(e):
-                        entries.append(("null", 0))
-                    else:
-                        all_ok = False
-                        break
-                if all_ok and entries:
-                    self.instructions.append(
-                        IRInstruction(op="gdef_ptr_array", result=f"@{gname}",
-                                      operand1=item.type.base, label=sc,
-                                      meta={"entries": entries})
-                    )
-                    return True
 
         return False
 
@@ -1702,61 +1635,6 @@ class IRGenerator:
             if l is not None and r is not None:
                 return l * r
         return None
-
-    def _scalar_pack_info(self, elem_base: str):
-        """Return (elem_size, pack_fn) for a scalar type, or None.
-
-        pack_fn(expr) -> Optional[bytes]: converts a constant expression to
-        its little-endian binary representation, or None if not constant.
-        This is the single source of truth for scalar element packing in
-        constant initializer blobs — no per-type if/elif branches needed.
-        """
-        def _pack_int(expr, mask, fmt):
-            v = self._const_expr_to_int(expr)
-            if v is None:
-                return None
-            return _struct.pack(fmt, v & mask)
-
-        def _pack_float(expr, fmt):
-            v = self._const_expr_to_float(expr)
-            if v is None:
-                # Allow integer literals in float context (e.g. {1, 0, 0})
-                iv = self._const_expr_to_int(expr)
-                if iv is not None:
-                    v = float(iv)
-            if v is None:
-                return None
-            return _struct.pack(fmt, v)
-
-        def _pack_long_double(expr):
-            v = self._const_expr_to_float(expr)
-            if v is None:
-                iv = self._const_expr_to_int(expr)
-                if iv is not None:
-                    v = float(iv)
-            if v is None:
-                return None
-            # x86-64: 80-bit extended stored in 16-byte slot
-            return _struct.pack("<d", v) + b'\x00' * 8
-
-        _TABLE = {
-            "char":           (1, lambda e: _pack_int(e, 0xFF, "<B")),
-            "signed char":    (1, lambda e: _pack_int(e, 0xFF, "<B")),
-            "unsigned char":  (1, lambda e: _pack_int(e, 0xFF, "<B")),
-            "short":          (2, lambda e: _pack_int(e, 0xFFFF, "<H")),
-            "signed short":   (2, lambda e: _pack_int(e, 0xFFFF, "<H")),
-            "unsigned short": (2, lambda e: _pack_int(e, 0xFFFF, "<H")),
-            "int":            (4, lambda e: _pack_int(e, 0xFFFFFFFF, "<I")),
-            "signed int":     (4, lambda e: _pack_int(e, 0xFFFFFFFF, "<I")),
-            "unsigned int":   (4, lambda e: _pack_int(e, 0xFFFFFFFF, "<I")),
-            "long":           (8, lambda e: _pack_int(e, 0xFFFFFFFFFFFFFFFF, "<Q")),
-            "signed long":    (8, lambda e: _pack_int(e, 0xFFFFFFFFFFFFFFFF, "<Q")),
-            "unsigned long":  (8, lambda e: _pack_int(e, 0xFFFFFFFFFFFFFFFF, "<Q")),
-            "float":          (4, lambda e: _pack_float(e, "<f")),
-            "double":         (8, lambda e: _pack_float(e, "<d")),
-            "long double":    (16, _pack_long_double),
-        }
-        return _TABLE.get(elem_base)
 
     def _resolve_elem_type(self, name: str) -> str:
         """Resolve a type name through typedefs to its underlying primitive."""
@@ -2003,185 +1881,6 @@ class IRGenerator:
         self._var_types[t] = "unsigned long"
         self.instructions.append(IRInstruction(op="mov", result=t, operand1=op))
         return t
-
-    def _try_struct_member_init(self, decl: Declaration, sc: str) -> bool:
-        """Try to emit a gdef_struct IR instruction for a struct/union initializer.
-
-        Handles structs with mixed member types including function pointers
-        and symbol references that the blob path cannot encode.
-        Also handles arrays of such structs (e.g. luaL_Reg[]).
-
-        Returns True if successful (instruction emitted), False otherwise.
-        """
-        init = getattr(decl, "initializer", None)
-        if not isinstance(init, Initializer):
-            return False
-        if self._sema_ctx is None:
-            return False
-
-        base = getattr(decl.type, "base", "")
-        if isinstance(base, str):
-            base = self._resolve_elem_type(base.strip())
-        if not self._is_struct_or_union_type(base):
-            return False
-
-        layout = getattr(self._sema_ctx, "layouts", {}).get(str(base))
-        if layout is None:
-            return False
-
-        # --- Array of structs: each top-level element is a struct initializer ---
-        arr_sz = getattr(decl, "array_size", None)
-        arr_dims = getattr(decl, "array_dims", None)
-        is_array = arr_sz is not None or arr_dims is not None
-        if is_array:
-            inits_top = self._const_initializer_list(init)
-            if inits_top is None:
-                return False
-            elem_size = int(getattr(layout, "size", 0))
-            if elem_size <= 0:
-                return False
-            # Build member descriptors for all elements concatenated.
-            all_descs = []
-            for elem_init in inits_top:
-                elem_descs = self._struct_member_descs(layout, elem_init)
-                if elem_descs is None:
-                    return False
-                all_descs.extend(elem_descs)
-            total_size = elem_size * len(inits_top)
-            self.instructions.append(
-                IRInstruction(
-                    op="gdef_struct",
-                    result=f"@{decl.name}",
-                    operand1=str(base),
-                    label=sc,
-                    meta={"members": all_descs, "size": total_size},
-                )
-            )
-            return True
-            return False
-
-        inits0 = self._const_initializer_list(init)
-        if inits0 is None:
-            return False
-
-        member_descs = self._struct_member_descs(layout, init)
-        if member_descs is None:
-            return False
-
-        struct_size = int(getattr(layout, "size", 0))
-        self.instructions.append(
-            IRInstruction(
-                op="gdef_struct",
-                result=f"@{decl.name}",
-                operand1=str(base),
-                label=sc,
-                meta={"members": member_descs, "size": struct_size},
-            )
-        )
-        return True
-
-    def _struct_member_descs(self, layout, init_or_list) -> Optional[list]:
-        """Build member descriptors for a single struct/union initializer.
-
-        Returns a list of (kind, size, value) tuples, or None if any member
-        cannot be encoded as a constant.
-        """
-        inits0 = self._const_initializer_list(init_or_list)
-        if inits0 is None:
-            # Scalar shorthand: treat as first-member initializer
-            inits0 = [init_or_list]
-
-        members = list(getattr(layout, "member_offsets", {}).keys())
-        offsets = getattr(layout, "member_offsets", {})
-        sizes = getattr(layout, "member_sizes", {})
-        mtypes = getattr(layout, "member_types", {})
-        struct_size = int(getattr(layout, "size", 0))
-
-        member_descs = []
-        prev_end = 0
-
-        for midx, m in enumerate(members):
-            off = int(offsets.get(m, 0))
-            sz = int(sizes.get(m, 8))
-
-            # Emit padding before this member
-            if off > prev_end:
-                member_descs.append(("zero", off - prev_end, 0))
-
-            if midx >= len(inits0):
-                # Remaining members zero-filled
-                member_descs.append(("zero", sz, 0))
-                prev_end = off + sz
-                continue
-
-            elem = inits0[midx]
-
-            # Try string literal (for pointer members like const char *)
-            if isinstance(elem, StringLiteral):
-                member_descs.append(("string", sz, elem.value))
-                prev_end = off + sz
-                continue
-
-            # Try integer constant
-            imm = self._const_expr_to_int(elem)
-            if imm is not None:
-                member_descs.append(("int", sz, int(imm)))
-                prev_end = off + sz
-                continue
-
-            # Try float constant
-            fv = self._const_expr_to_float(elem)
-            if fv is not None:
-                member_descs.append(("float", sz, float(fv)))
-                prev_end = off + sz
-                continue
-
-            # Try symbol reference (function name, global variable)
-            if isinstance(elem, Identifier):
-                member_descs.append(("symbol", sz, elem.name))
-                prev_end = off + sz
-                continue
-
-            # Try NULL pointer constant
-            if self._is_null_pointer_constant(elem):
-                member_descs.append(("int", sz, 0))
-                prev_end = off + sz
-                continue
-
-            # Unsupported member initializer
-            return None
-
-        # Trailing padding
-        if prev_end < struct_size:
-            member_descs.append(("zero", struct_size - prev_end, 0))
-
-        return member_descs
-
-    def _const_initializer_imm(self, init: Any) -> Optional[str]:
-        """Return an immediate like "$42" for supported constant initializers.
-
-        Uses the unified ICE evaluator to handle arbitrary compile-time
-        integer constant expressions (casts, bitwise ops, enum constants,
-        sizeof, ternary, etc.) instead of a fragile whitelist.
-        """
-        try:
-            v = _eval_const_int_expr(init, self._enum_constants)
-            return f"${v}"
-        except (IRGenError, Exception):
-            return None
-
-    def _const_initializer_ptr(self, init: Any) -> Optional[str]:
-        """Return a pointer constant operand for supported global pointer initializers.
-
-        Currently supports only string literals, encoded as a tagged operand
-        starting with "=str:"; codegen will intern the string and emit a
-        relocatable address.
-        """
-        from pycc.ast_nodes import StringLiteral
-
-        if isinstance(init, StringLiteral):
-            return f"=str:{init.value}"
-        return None
 
     def _is_null_pointer_constant(self, expr: Any) -> bool:
         """Check if an expression is a null pointer constant.
