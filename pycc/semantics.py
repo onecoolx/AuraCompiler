@@ -2557,6 +2557,9 @@ class SemanticAnalyzer:
 
             self._analyze_expr(expr.target)
             self._analyze_expr(expr.value)
+            # Type annotation for Assignment: result is the left operand's type
+            left_ct = getattr(expr.target, 'resolved_type', None)
+            self._annotate_type(expr, left_ct)
             return
 
         if isinstance(expr, ArrayAccess):
@@ -2891,6 +2894,9 @@ class SemanticAnalyzer:
         if isinstance(expr, CommaOp):
             self._analyze_expr(expr.left)
             self._analyze_expr(expr.right)
+            # Type annotation for CommaOp: result is the right operand's type
+            right_ct = getattr(expr.right, 'resolved_type', None)
+            self._annotate_type(expr, right_ct)
             return
 
         if isinstance(expr, Initializer):

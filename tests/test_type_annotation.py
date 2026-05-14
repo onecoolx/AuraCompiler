@@ -1027,3 +1027,124 @@ class TestTernaryOpTypeAnnotation:
         analyzer._analyze_expr(expr)
         assert isinstance(expr.resolved_type, IntegerType)
         assert expr.resolved_type.kind == TypeKind.INT
+
+class TestCommaOpTypeAnnotation:
+    """Tests for CommaOp type annotation (task 6.2).
+
+    The comma operator evaluates both operands left-to-right and the
+    result type is the type of the right operand.
+    """
+
+    def test_comma_int_int(self, analyzer):
+        """(a, b) where both are int -> result is int."""
+        from pycc.ast_nodes import CommaOp, IntLiteral
+
+        expr = CommaOp(
+            left=IntLiteral(value=1, line=1, column=1),
+            right=IntLiteral(value=2, line=1, column=4),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_comma_int_double(self, analyzer):
+        """(a, b) where left is int and right is double -> result is double."""
+        from pycc.ast_nodes import CommaOp, IntLiteral, FloatLiteral
+
+        expr = CommaOp(
+            left=IntLiteral(value=1, line=1, column=1),
+            right=FloatLiteral(value=3.14, line=1, column=4),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_comma_double_int(self, analyzer):
+        """(a, b) where left is double and right is int -> result is int (right operand)."""
+        from pycc.ast_nodes import CommaOp, IntLiteral, FloatLiteral
+
+        expr = CommaOp(
+            left=FloatLiteral(value=3.14, line=1, column=1),
+            right=IntLiteral(value=42, line=1, column=6),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_comma_result_is_pointer(self, analyzer):
+        """(a, p) where right is a pointer -> result is pointer."""
+        from pycc.ast_nodes import CommaOp, IntLiteral, Identifier
+
+        analyzer._decl_types = {
+            "p": ASTType(line=0, column=0, base="int", is_pointer=True, pointer_level=1)
+        }
+        expr = CommaOp(
+            left=IntLiteral(value=0, line=1, column=1),
+            right=Identifier(name="p", line=1, column=4),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.INT
+
+    def test_comma_left_is_pointer_right_is_int(self, analyzer):
+        """(p, n) where left is pointer and right is int -> result is int."""
+        from pycc.ast_nodes import CommaOp, IntLiteral, Identifier
+
+        analyzer._decl_types = {
+            "p": ASTType(line=0, column=0, base="char", is_pointer=True, pointer_level=1)
+        }
+        expr = CommaOp(
+            left=Identifier(name="p", line=1, column=1),
+            right=IntLiteral(value=5, line=1, column=4),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_comma_nested(self, analyzer):
+        """(a, (b, c)) nested comma -> result is type of innermost right."""
+        from pycc.ast_nodes import CommaOp, IntLiteral, FloatLiteral
+
+        inner = CommaOp(
+            left=IntLiteral(value=1, line=1, column=4),
+            right=FloatLiteral(value=2.0, line=1, column=7),
+            line=1, column=4,
+        )
+        expr = CommaOp(
+            left=IntLiteral(value=0, line=1, column=1),
+            right=inner,
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_comma_right_undeclared(self, analyzer):
+        """(a, unknown) where right has no type -> result is None."""
+        from pycc.ast_nodes import CommaOp, IntLiteral, Identifier
+
+        expr = CommaOp(
+            left=IntLiteral(value=1, line=1, column=1),
+            right=Identifier(name="unknown", line=1, column=4),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert expr.resolved_type is None
+
+    def test_comma_string_literal_right(self, analyzer):
+        """(a, "hello") -> result is char pointer."""
+        from pycc.ast_nodes import CommaOp, IntLiteral, StringLiteral
+
+        expr = CommaOp(
+            left=IntLiteral(value=0, line=1, column=1),
+            right=StringLiteral(value="hello", line=1, column=4),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR
