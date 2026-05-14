@@ -69,9 +69,12 @@ class TestIsUnsignedOperand:
         assert ir_gen._is_unsigned_operand("%t0") is False
 
     def test_fallback_unsigned_string(self, ir_gen):
+        """After migration, _var_types fallback is removed for _is_unsigned_operand.
+        When _sym_table is None and no global_types, returns False."""
         ir_gen._sym_table = None
         ir_gen._var_types["%t0"] = "unsigned int"
-        assert ir_gen._is_unsigned_operand("%t0") is True
+        # _var_types fallback removed — only _sym_table and global_types paths remain
+        assert ir_gen._is_unsigned_operand("%t0") is False
 
     def test_fallback_signed_string(self, ir_gen):
         ir_gen._sym_table = None

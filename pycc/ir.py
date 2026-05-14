@@ -1714,8 +1714,8 @@ class IRGenerator:
     def _is_unsigned_operand(self, op: str) -> bool:
         """Check whether an operand is unsigned integer type.
 
-        Queries _sym_table first (CType-based), falls back to _var_types
-        string parsing during the transition period.
+        Queries _sym_table (CType-based). For globals not in _sym_table,
+        falls back to sema_ctx.global_types.
         """
         if not isinstance(op, str):
             return False
@@ -1724,11 +1724,7 @@ class IRGenerator:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 return isinstance(ct, IntegerType) and ct.is_unsigned
-        # Fallback: _var_types string parsing
-        if op.startswith("%") or op.startswith("@"):
-            ty = getattr(self, "_var_types", {}).get(op)
-            if isinstance(ty, str) and ty.strip().lower().startswith("unsigned "):
-                return True
+        # Fallback for globals not in _sym_table: check sema_ctx.global_types
         if op.startswith("@") and self._sema_ctx is not None:
             g = getattr(self._sema_ctx, "global_types", {})
             ty2 = g.get(op[1:])
@@ -1899,19 +1895,33 @@ class IRGenerator:
         return "int"
 
     def _operand_type_string(self, op: str) -> str:
+        """Get the type string for an operand via CType system.
+
+        Uses _sym_table lookup → ctype_to_ir_type. For globals not in
+        _sym_table, falls back to sema_ctx.global_types.
+        Falls back to _var_types for function pointer types that the CType
+        system cannot yet represent accurately.
+        """
         if not isinstance(op, str):
             return ""
-        if op.startswith("%"):
-            return str(getattr(self, "_var_types", {}).get(op, ""))
-        if op.startswith("@"):
-            # locals first
-            ty = getattr(self, "_var_types", {}).get(op, "")
+        # Primary: CType-based path
+        if self._sym_table:
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                ir_str = ctype_to_ir_type(ct)
+                # If _var_types has a richer representation (e.g. function
+                # pointer "int (*)(int)" vs CType's "int*"), prefer it.
+                # This handles the case where CType can't represent fn ptrs.
+                vt = getattr(self, "_var_types", {}).get(op, "")
+                if isinstance(vt, str) and "(*)" in vt:
+                    return vt
+                return ir_str
+        # Fallback for globals: sema_ctx.global_types
+        if op.startswith("@") and self._sema_ctx is not None:
+            g = getattr(self._sema_ctx, "global_types", {})
+            ty = g.get(op[1:], "")
             if ty:
                 return str(ty)
-            # globals
-            if self._sema_ctx is not None:
-                g = getattr(self._sema_ctx, "global_types", {})
-                return str(g.get(op[1:], ""))
         return ""
 
     def _ensure_u32(self, op: str) -> str:
@@ -2117,10 +2127,11 @@ class IRGenerator:
     def _lookup_member_ctype(self, base: str, member: str) -> Optional[CType]:
         """Look up the CType of a struct/union member.
 
-        Resolves the struct type from the base symbol (via _sym_table or
-        _var_types), finds the StructLayout, and converts the member's
-        AST declaration type to a CType via ast_type_to_ctype_resolved.
+        Resolves the struct type from the base symbol (via _sym_table),
+        finds the StructLayout, and converts the member's AST declaration
+        type to a CType via ast_type_to_ctype_resolved.
 
+        For globals not in _sym_table, falls back to sema_ctx.global_types.
         Returns None if the layout or member type cannot be resolved.
         """
         if self._sema_ctx is None:
@@ -2144,14 +2155,13 @@ class IRGenerator:
                     prefix = "union " if inner.kind == TypeKind.UNION else "struct "
                     struct_key = prefix + inner.tag
 
-        # Strategy 2: Fall back to _var_types string.
-        if struct_key is None:
-            bty = self._var_types.get(base, "")
-            if isinstance(bty, str):
-                bty = bty.strip()
+        # Strategy 2: Fall back to sema_ctx.global_types for globals.
+        if struct_key is None and base.startswith("@") and self._sema_ctx is not None:
+            gty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], "")
+            if isinstance(gty, str):
+                bty = gty.strip()
                 if bty.endswith("*"):
                     bty = bty[:-1].strip()
-                # Resolve typedef to find the layout key.
                 resolved = self._resolve_elem_type(bty) if bty else bty
                 if resolved and (resolved.startswith("struct ") or resolved.startswith("union ")):
                     struct_key = resolved
@@ -3212,12 +3222,25 @@ class IRGenerator:
         Used to detect cases where unary * (dereference) on a function
         pointer should be a no-op (C89 §6.3.2.2).
 
-        Checks three sources of type information:
-        1. String type in _var_types (e.g. "int (*)()" contains "(*)")
-        2. Typedef resolution via sema_ctx (e.g. "lua_Alloc" → "... (*)()")
-        3. CType in symbol table (PointerType with FUNCTION pointee)
+        Primary: CType in symbol table (PointerType with FUNCTION pointee).
+        Fallback: typedef resolution via sema_ctx for function pointer typedefs
+        that the CType system cannot yet represent (e.g. Alloc → void (*)(...)).
         """
-        # 1. Check string type
+        # 1. Check CType system (primary path)
+        if self._sym_table:
+            ct = self._sym_table.lookup(ir_sym)
+            if ct is None and ast_expr is not None and isinstance(ast_expr, Identifier):
+                ct = self._sym_table.lookup(f"@{ast_expr.name}")
+            if isinstance(ct, PointerType) and ct.pointee is not None:
+                if ct.pointee.kind == TypeKind.FUNCTION:
+                    return True
+
+        # 2. Fallback: check _var_types string for function pointer patterns.
+        # This is needed because the CType system cannot yet represent
+        # function pointer typedefs (e.g. typedef void*(*Alloc)(...)).
+        # The typedef resolves to base="void (*)()" which _base_str_to_ctype
+        # doesn't handle, producing PointerType(pointee=IntegerType) instead
+        # of PointerType(pointee=FunctionTypeCType).
         op_ty = getattr(self, "_var_types", {}).get(ir_sym)
         if not op_ty and ast_expr is not None and isinstance(ast_expr, Identifier):
             op_ty = getattr(self, "_var_types", {}).get(f"@{ast_expr.name}")
@@ -3229,16 +3252,14 @@ class IRGenerator:
                 resolved = self._resolve_elem_type(op_ty.strip())
                 if "(*)" in resolved:
                     return True
-                # Also check global_types for "function ..." marker
-                gt = getattr(self._sema_ctx, "global_types", {}).get(
-                    ast_expr.name if ast_expr and isinstance(ast_expr, Identifier) else "")
-                if isinstance(gt, str) and gt.startswith("function "):
+        # 3. Fallback for globals: check sema_ctx.global_types
+        if self._sema_ctx is not None and ast_expr is not None and isinstance(ast_expr, Identifier):
+            gt = getattr(self._sema_ctx, "global_types", {}).get(ast_expr.name)
+            if isinstance(gt, str):
+                if "(*)" in gt or gt.startswith("function "):
                     return True
-        # 2. Check CType system
-        if self._sym_table:
-            ct = self._sym_table.lookup(ir_sym)
-            if isinstance(ct, PointerType) and ct.pointee is not None:
-                if ct.pointee.kind == TypeKind.FUNCTION:
+                resolved = self._resolve_elem_type(gt.strip())
+                if "(*)" in resolved:
                     return True
         return False
 
