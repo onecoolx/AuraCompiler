@@ -896,3 +896,134 @@ class TestFunctionCallTypeAnnotation:
         # Without a signature, it defaults to implicit int (C89)
         assert isinstance(expr.resolved_type, IntegerType)
         assert expr.resolved_type.kind == TypeKind.INT
+
+
+class TestTernaryOpTypeAnnotation:
+    """Tests for TernaryOp expression type annotation (task 6.1)."""
+
+    def test_ternary_both_int(self, analyzer):
+        """Both branches are int: result should be int."""
+        from pycc.ast_nodes import TernaryOp, IntLiteral
+
+        expr = TernaryOp(
+            condition=IntLiteral(value=1, line=1, column=1),
+            true_expr=IntLiteral(value=10, line=1, column=5),
+            false_expr=IntLiteral(value=20, line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_ternary_int_and_double_uac(self, analyzer):
+        """int and double branches: UAC should produce double."""
+        from pycc.ast_nodes import TernaryOp, IntLiteral, FloatLiteral
+
+        expr = TernaryOp(
+            condition=IntLiteral(value=1, line=1, column=1),
+            true_expr=IntLiteral(value=10, line=1, column=5),
+            false_expr=FloatLiteral(value=3.14, line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_ternary_float_and_double_uac(self, analyzer):
+        """float and double branches: UAC should produce double."""
+        from pycc.ast_nodes import TernaryOp, FloatLiteral, IntLiteral
+
+        expr = TernaryOp(
+            condition=IntLiteral(value=1, line=1, column=1),
+            true_expr=FloatLiteral(value=1.0, suffix='f', line=1, column=5),
+            false_expr=FloatLiteral(value=2.0, line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_ternary_both_pointers(self, analyzer):
+        """Both branches are pointers: result should be pointer type."""
+        from pycc.ast_nodes import TernaryOp, IntLiteral, Identifier
+
+        # Set up two pointer variables
+        analyzer._decl_types = {
+            "p": ASTType(line=0, column=0, base="int", is_pointer=True, pointer_level=1),
+            "q": ASTType(line=0, column=0, base="int", is_pointer=True, pointer_level=1),
+        }
+
+        expr = TernaryOp(
+            condition=IntLiteral(value=1, line=1, column=1),
+            true_expr=Identifier(name="p", line=1, column=5),
+            false_expr=Identifier(name="q", line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.INT
+
+    def test_ternary_pointer_and_null(self, analyzer):
+        """One branch is pointer, other is NULL (0): result should be pointer type."""
+        from pycc.ast_nodes import TernaryOp, IntLiteral, Identifier
+
+        analyzer._decl_types = {
+            "p": ASTType(line=0, column=0, base="char", is_pointer=True, pointer_level=1),
+        }
+
+        expr = TernaryOp(
+            condition=IntLiteral(value=1, line=1, column=1),
+            true_expr=Identifier(name="p", line=1, column=5),
+            false_expr=IntLiteral(value=0, line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+    def test_ternary_null_and_pointer(self, analyzer):
+        """NULL (0) in true branch, pointer in false branch: result should be pointer type."""
+        from pycc.ast_nodes import TernaryOp, IntLiteral, Identifier
+
+        analyzer._decl_types = {
+            "p": ASTType(line=0, column=0, base="int", is_pointer=True, pointer_level=1),
+        }
+
+        expr = TernaryOp(
+            condition=IntLiteral(value=0, line=1, column=1),
+            true_expr=IntLiteral(value=0, line=1, column=5),
+            false_expr=Identifier(name="p", line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.INT
+
+    def test_ternary_char_and_int_promotes(self, analyzer):
+        """char and int branches: integer promotion then UAC gives int."""
+        from pycc.ast_nodes import TernaryOp, IntLiteral, CharLiteral
+
+        expr = TernaryOp(
+            condition=IntLiteral(value=1, line=1, column=1),
+            true_expr=CharLiteral(value='a', line=1, column=5),
+            false_expr=IntLiteral(value=42, line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_ternary_one_branch_unknown(self, analyzer):
+        """If one branch has no resolved_type, use the other branch's type."""
+        from pycc.ast_nodes import TernaryOp, IntLiteral, Identifier
+
+        # unknown_var is not declared, so its resolved_type will be None
+        expr = TernaryOp(
+            condition=IntLiteral(value=1, line=1, column=1),
+            true_expr=IntLiteral(value=10, line=1, column=5),
+            false_expr=Identifier(name="unknown_var", line=1, column=9),
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT

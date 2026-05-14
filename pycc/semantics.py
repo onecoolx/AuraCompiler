@@ -16,6 +16,7 @@ from pycc.types import (
     ast_type_to_ctype_resolved,
     ctype_to_ast_type,
     integer_promote,
+    is_arithmetic as ctype_is_arithmetic,
     is_integer as ctype_is_integer,
     is_scalar as ctype_is_scalar,
     usual_arithmetic_conversions,
@@ -2861,6 +2862,30 @@ class SemanticAnalyzer:
             self._analyze_expr(expr.condition)
             self._analyze_expr(expr.true_expr)
             self._analyze_expr(expr.false_expr)
+            # Type annotation for TernaryOp (Requirements 2.7, 2.8)
+            true_ct = getattr(expr.true_expr, 'resolved_type', None)
+            false_ct = getattr(expr.false_expr, 'resolved_type', None)
+            if true_ct is not None and false_ct is not None:
+                if ctype_is_arithmetic(true_ct) and ctype_is_arithmetic(false_ct):
+                    # Both arithmetic: UAC
+                    result_ct = usual_arithmetic_conversions(
+                        integer_promote(true_ct), integer_promote(false_ct))
+                elif isinstance(true_ct, PointerType) and isinstance(false_ct, PointerType):
+                    # Both pointers: use compatible pointer type (simplified: use true branch)
+                    result_ct = true_ct
+                elif isinstance(true_ct, PointerType) and ctype_is_integer(false_ct):
+                    # One pointer, other is null constant (integer 0)
+                    result_ct = true_ct
+                elif isinstance(false_ct, PointerType) and ctype_is_integer(true_ct):
+                    # One pointer, other is null constant (integer 0)
+                    result_ct = false_ct
+                else:
+                    result_ct = true_ct  # fallback
+                self._annotate_type(expr, result_ct)
+            elif true_ct is not None:
+                self._annotate_type(expr, true_ct)
+            elif false_ct is not None:
+                self._annotate_type(expr, false_ct)
             return
 
         if isinstance(expr, CommaOp):
