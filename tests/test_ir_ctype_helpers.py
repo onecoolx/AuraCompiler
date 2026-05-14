@@ -31,12 +31,11 @@ class TestOperandCtype:
         result = ir_gen._operand_ctype("%t0")
         assert result is ct
 
-    def test_fallback_to_var_types(self, ir_gen):
+    def test_no_fallback_to_var_types(self, ir_gen):
+        """After removing _var_types fallback, returns None for symbols only in _var_types."""
         ir_gen._var_types["@x"] = "unsigned long"
         result = ir_gen._operand_ctype("@x")
-        assert result is not None
-        assert result.kind == TypeKind.LONG
-        assert result.is_unsigned is True
+        assert result is None
 
     def test_returns_none_for_unknown(self, ir_gen):
         result = ir_gen._operand_ctype("%t99")
@@ -99,12 +98,13 @@ class TestIsPointerOperand:
         ir_gen._sym_table.insert("@x", ct)
         assert ir_gen._is_pointer_operand("@x") is False
 
-    def test_fallback_pointer_string(self, ir_gen):
+    def test_no_fallback_pointer_string(self, ir_gen):
+        """After removing _var_types fallback, returns False when _sym_table is None."""
         ir_gen._sym_table = None
         ir_gen._var_types["@p"] = "int*"
-        assert ir_gen._is_pointer_operand("@p") is True
+        assert ir_gen._is_pointer_operand("@p") is False
 
-    def test_fallback_non_pointer_string(self, ir_gen):
+    def test_no_fallback_non_pointer_string(self, ir_gen):
         ir_gen._sym_table = None
         ir_gen._var_types["@x"] = "int"
         assert ir_gen._is_pointer_operand("@x") is False
@@ -123,12 +123,13 @@ class TestIsArrayOperand:
         ir_gen._sym_table.insert("@x", ct)
         assert ir_gen._is_array_operand("@x") is False
 
-    def test_fallback_array_string(self, ir_gen):
+    def test_no_fallback_array_string(self, ir_gen):
+        """After removing _var_types fallback, returns False when _sym_table is None."""
         ir_gen._sym_table = None
         ir_gen._var_types["@arr"] = "array(char,$4)"
-        assert ir_gen._is_array_operand("@arr") is True
+        assert ir_gen._is_array_operand("@arr") is False
 
-    def test_fallback_non_array_string(self, ir_gen):
+    def test_no_fallback_non_array_string(self, ir_gen):
         ir_gen._sym_table = None
         ir_gen._var_types["@x"] = "int"
         assert ir_gen._is_array_operand("@x") is False
@@ -152,17 +153,18 @@ class TestIsStructOperand:
         ir_gen._sym_table.insert("@x", ct)
         assert ir_gen._is_struct_operand("@x") is False
 
-    def test_fallback_struct_string(self, ir_gen):
+    def test_no_fallback_struct_string(self, ir_gen):
+        """After removing _var_types fallback, returns False when _sym_table is None."""
         ir_gen._sym_table = None
         ir_gen._var_types["@s"] = "struct Foo"
-        assert ir_gen._is_struct_operand("@s") is True
+        assert ir_gen._is_struct_operand("@s") is False
 
-    def test_fallback_union_string(self, ir_gen):
+    def test_no_fallback_union_string(self, ir_gen):
         ir_gen._sym_table = None
         ir_gen._var_types["@u"] = "union Bar"
-        assert ir_gen._is_struct_operand("@u") is True
+        assert ir_gen._is_struct_operand("@u") is False
 
-    def test_fallback_non_struct_string(self, ir_gen):
+    def test_no_fallback_non_struct_string(self, ir_gen):
         ir_gen._sym_table = None
         ir_gen._var_types["@x"] = "int"
         assert ir_gen._is_struct_operand("@x") is False
@@ -186,17 +188,18 @@ class TestIsFloatOperand:
         ir_gen._sym_table.insert("%t0", ct)
         assert ir_gen._is_float_operand("%t0") is False
 
-    def test_fallback_float_string(self, ir_gen):
+    def test_no_fallback_float_string(self, ir_gen):
+        """After removing _var_types fallback, returns False when _sym_table is None."""
         ir_gen._sym_table = None
         ir_gen._var_types["%t0"] = "float"
-        assert ir_gen._is_float_operand("%t0") is True
+        assert ir_gen._is_float_operand("%t0") is False
 
-    def test_fallback_double_string(self, ir_gen):
+    def test_no_fallback_double_string(self, ir_gen):
         ir_gen._sym_table = None
         ir_gen._var_types["%t0"] = "double"
-        assert ir_gen._is_float_operand("%t0") is True
+        assert ir_gen._is_float_operand("%t0") is False
 
-    def test_fallback_non_float_string(self, ir_gen):
+    def test_no_fallback_non_float_string(self, ir_gen):
         ir_gen._sym_table = None
         ir_gen._var_types["%t0"] = "int"
         assert ir_gen._is_float_operand("%t0") is False

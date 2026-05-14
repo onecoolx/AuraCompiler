@@ -1700,15 +1700,11 @@ class IRGenerator:
         return False
 
     def _operand_ctype(self, op: str) -> Optional[CType]:
-        """Unified operand type query: _sym_table first, fallback to _var_types."""
+        """Unified operand type query via _sym_table."""
         if self._sym_table:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 return ct
-        # Fallback: parse from _var_types string
-        ty = self._var_types.get(op, "")
-        if ty:
-            return _str_to_ctype(ty)
         return None
 
     def _is_unsigned_operand(self, op: str) -> bool:
@@ -1733,57 +1729,36 @@ class IRGenerator:
         return False
 
     def _is_pointer_operand(self, op: str) -> bool:
-        """Check whether an operand is a pointer type.
-
-        Queries _sym_table first (CType-based), falls back to _var_types
-        string parsing during the transition period.
-        """
+        """Check whether an operand is a pointer type via _sym_table."""
         if self._sym_table:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 return ct.kind == TypeKind.POINTER
-        ty = self._var_types.get(op, "")
-        return isinstance(ty, str) and ty.strip().endswith("*")
+        return False
 
     def _is_array_operand(self, op: str) -> bool:
-        """Check whether an operand is an array type.
-
-        Queries _sym_table first (CType-based), falls back to _var_types
-        string parsing during the transition period.
-        """
+        """Check whether an operand is an array type via _sym_table."""
         if self._sym_table:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 return ct.kind == TypeKind.ARRAY
-        ty = self._var_types.get(op, "")
-        return isinstance(ty, str) and ty.strip().startswith("array(")
+        return False
 
     def _is_struct_operand(self, op: str) -> bool:
-        """Check whether an operand is a struct or union type.
-
-        Queries _sym_table first (CType-based), falls back to _var_types
-        string parsing during the transition period.
-        """
+        """Check whether an operand is a struct or union type via _sym_table."""
         if self._sym_table:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 return ct.kind in (TypeKind.STRUCT, TypeKind.UNION)
-        ty = self._var_types.get(op, "")
-        return isinstance(ty, str) and (
-            ty.strip().startswith("struct ") or ty.strip().startswith("union "))
+        return False
 
     def _is_float_operand(self, op: str) -> bool:
-        """Check whether an operand is a floating-point type.
-
-        Queries _sym_table first (CType-based), falls back to _var_types
-        string parsing during the transition period.
-        """
+        """Check whether an operand is a floating-point type via _sym_table."""
         if self._sym_table:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 return ct.kind in (TypeKind.FLOAT, TypeKind.DOUBLE)
-        ty = self._var_types.get(op, "")
-        return isinstance(ty, str) and ty.strip() in ("float", "double")
+        return False
 
     def _normalize_int_type(self, ty: str) -> str:
         if not isinstance(ty, str):
@@ -1899,8 +1874,8 @@ class IRGenerator:
 
         Uses _sym_table lookup → ctype_to_ir_type. For globals not in
         _sym_table, falls back to sema_ctx.global_types.
-        Falls back to _var_types for function pointer types that the CType
-        system cannot yet represent accurately.
+        Preserves _var_types representation for function pointer types
+        that ctype_to_ir_type cannot accurately represent.
         """
         if not isinstance(op, str):
             return ""
@@ -1909,9 +1884,9 @@ class IRGenerator:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 ir_str = ctype_to_ir_type(ct)
-                # If _var_types has a richer representation (e.g. function
-                # pointer "int (*)(int)" vs CType's "int*"), prefer it.
-                # This handles the case where CType can't represent fn ptrs.
+                # If _var_types has a richer function pointer representation
+                # (e.g. "int (*)(int)" vs CType's "int *"), prefer it.
+                # ctype_to_ir_type cannot represent FunctionTypeCType yet.
                 vt = getattr(self, "_var_types", {}).get(op, "")
                 if isinstance(vt, str) and "(*)" in vt:
                     return vt
@@ -3223,8 +3198,7 @@ class IRGenerator:
         pointer should be a no-op (C89 §6.3.2.2).
 
         Primary: CType in symbol table (PointerType with FUNCTION pointee).
-        Fallback: typedef resolution via sema_ctx for function pointer typedefs
-        that the CType system cannot yet represent (e.g. Alloc → void (*)(...)).
+        Fallback: sema_ctx.global_types for function pointer typedefs.
         """
         # 1. Check CType system (primary path)
         if self._sym_table:
@@ -3235,12 +3209,12 @@ class IRGenerator:
                 if ct.pointee.kind == TypeKind.FUNCTION:
                     return True
 
-        # 2. Fallback: check _var_types string for function pointer patterns.
-        # This is needed because the CType system cannot yet represent
-        # function pointer typedefs (e.g. typedef void*(*Alloc)(...)).
-        # The typedef resolves to base="void (*)()" which _base_str_to_ctype
-        # doesn't handle, producing PointerType(pointee=IntegerType) instead
-        # of PointerType(pointee=FunctionTypeCType).
+        # 2. Fallback: check _var_types for function pointer patterns.
+        # The CType system cannot yet represent function pointer typedefs
+        # (e.g. typedef void*(*Alloc)(...)) — _base_str_to_ctype produces
+        # PointerType(pointee=IntegerType) instead of
+        # PointerType(pointee=FunctionTypeCType). Keep this until CType
+        # handles function pointer typedefs natively.
         op_ty = getattr(self, "_var_types", {}).get(ir_sym)
         if not op_ty and ast_expr is not None and isinstance(ast_expr, Identifier):
             op_ty = getattr(self, "_var_types", {}).get(f"@{ast_expr.name}")
