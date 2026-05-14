@@ -42,8 +42,10 @@ class FakeLayout:
 
 def _make_codegen(sema_ctx=None, sym_table=None):
     """Create a CodeGenerator with optional sema_ctx and sym_table."""
+    if sym_table is None:
+        from pycc.types import TypedSymbolTable
+        sym_table = TypedSymbolTable(sema_ctx=sema_ctx)
     cg = CodeGenerator(optimize=False, sema_ctx=sema_ctx, sym_table=sym_table)
-    cg._var_types = {}
     return cg
 
 
@@ -196,10 +198,11 @@ class TestGetBaseStructCtype:
         cg = _make_codegen()
         assert cg._get_base_struct_ctype("@unknown") is None
 
-    def test_fallback_to_var_types(self):
-        """When symbol table has no entry, _get_type falls back to _var_types."""
+    def test_fallback_to_sym_table(self):
+        """_get_base_struct_ctype finds struct type via symbol table."""
         cg = _make_codegen()
-        cg._var_types["@s"] = "struct Point"
+        from pycc.types import StructType, TypeKind
+        cg._sym_table.insert("@s", StructType(kind=TypeKind.STRUCT, tag="Point"))
         ct = cg._get_base_struct_ctype("@s")
         assert ct is not None
         assert ct.kind == TypeKind.STRUCT
@@ -233,7 +236,7 @@ class TestResolveMemberCtype:
         )
         sema = FakeSemaCtx(layouts={"struct Point": layout})
         cg = _make_codegen(sema_ctx=sema)
-        cg._var_types["@p"] = "struct Point"
+        cg._sym_table.insert("@p", _str_to_ctype("struct Point"))
         off, sz = cg._resolve_member("@p", "y")
         assert off == 4
         assert sz == 4
@@ -266,7 +269,7 @@ class TestResolveMemberTypeCtype:
         )
         sema = FakeSemaCtx(layouts={"struct S": layout})
         cg = _make_codegen(sema_ctx=sema)
-        cg._var_types["@s"] = "struct S"
+        cg._sym_table.insert("@s", _str_to_ctype("struct S"))
         assert cg._resolve_member_type("@s", "x") == "signed char"
 
 
@@ -527,15 +530,15 @@ class TestOperandSizeof:
         cg = _make_codegen()
         assert cg._operand_sizeof("@unknown") == 8
 
-    def test_fallback_to_var_types(self):
-        """When sym_table has no entry, falls back to _var_types via _get_type."""
+    def test_fallback_via_sym_table(self):
+        """When sym_table has no entry, uses symbol table via _get_type."""
         cg = _make_codegen()
-        cg._var_types["@x"] = "int"
+        cg._sym_table.insert("@x", _str_to_ctype("int"))
         assert cg._operand_sizeof("@x") == 4
 
-    def test_fallback_var_types_double(self):
+    def test_fallback_sym_table_double(self):
         cg = _make_codegen()
-        cg._var_types["%t0"] = "double"
+        cg._sym_table.insert("%t0", _str_to_ctype("double"))
         assert cg._operand_sizeof("%t0") == 8
 
 
@@ -571,20 +574,20 @@ class TestIsFloatTypeOp:
         cg = _make_codegen()
         assert cg._is_float_type_op("@unknown") is False
 
-    def test_fallback_to_var_types_float(self):
-        """Falls back to _var_types string parsing via _get_type."""
+    def test_fallback_via_sym_table_float(self):
+        """Uses symbol table string parsing via _get_type."""
         cg = _make_codegen()
-        cg._var_types["%t0"] = "float"
+        cg._sym_table.insert("%t0", _str_to_ctype("float"))
         assert cg._is_float_type_op("%t0") is True
 
-    def test_fallback_to_var_types_double(self):
+    def test_fallback_via_sym_table_double(self):
         cg = _make_codegen()
-        cg._var_types["%t0"] = "double"
+        cg._sym_table.insert("%t0", _str_to_ctype("double"))
         assert cg._is_float_type_op("%t0") is True
 
-    def test_fallback_to_var_types_int(self):
+    def test_fallback_via_sym_table_int(self):
         cg = _make_codegen()
-        cg._var_types["@x"] = "int"
+        cg._sym_table.insert("@x", _str_to_ctype("int"))
         assert cg._is_float_type_op("@x") is False
 
 
@@ -622,15 +625,15 @@ class TestIsArrayTypeOp:
         cg = _make_codegen()
         assert cg._is_array_type_op("@unknown") is False
 
-    def test_fallback_to_var_types_array(self):
+    def test_fallback_via_sym_table_array(self):
         """_str_to_ctype cannot parse internal array(...) format, so fallback
         returns False. The CType path (sym_table) is the correct way to detect arrays."""
         cg = _make_codegen()
-        cg._var_types["@arr"] = "array(int,$10)"
+        cg._sym_table.insert("@arr", _str_to_ctype("array(int,$10)"))
         # _str_to_ctype doesn't handle "array(...)" format — returns non-array CType
         assert cg._is_array_type_op("@arr") is False
 
-    def test_fallback_to_var_types_non_array(self):
+    def test_fallback_via_sym_table_non_array(self):
         cg = _make_codegen()
-        cg._var_types["@x"] = "int"
+        cg._sym_table.insert("@x", _str_to_ctype("int"))
         assert cg._is_array_type_op("@x") is False

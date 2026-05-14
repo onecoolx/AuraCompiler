@@ -603,6 +603,9 @@ class TypedSymbolTable:
         # Populated by pop_scope(func_name=...) during IR generation.
         # Codegen calls activate_function() to restore the correct locals.
         self._func_locals: Dict[str, Dict[str, CType]] = {}
+        # Flag: True after activate_function() is called, so insert() knows
+        # to write into _locals (codegen runtime) rather than _globals.
+        self._func_active: bool = False
 
     def push_scope(self) -> None:
         """Enter a new function scope."""
@@ -628,17 +631,22 @@ class TypedSymbolTable:
         Called by codegen when it begins processing a function's IR.
         """
         self._locals = self._func_locals.get(func_name, {})
+        self._func_active = True
 
     def insert(self, name: str, ctype: CType) -> None:
         """Insert a symbol and its resolved CType.
 
         If inside a function scope, inserts into the current scope;
-        otherwise inserts into the global scope.
+        otherwise inserts into the active locals (if any) or global scope.
         Typedefs are resolved to the underlying concrete type at insertion time.
         """
         resolved = self._resolve_typedef(ctype)
         if self._scope_stack:
             self._scope_stack[-1][name] = resolved
+        elif self._func_active:
+            # After activate_function(), insert into locals so codegen
+            # runtime registrations override IR-generator archived types.
+            self._locals[name] = resolved
         else:
             self._globals[name] = resolved
 

@@ -201,15 +201,11 @@ class CodeGenerator:
     # ------------------------------------------------------------------
 
     def _get_type(self, name: str) -> Optional[CType]:
-        """Get operand CType, prefer symbol table, fall back to string."""
+        """Get operand CType from symbol table."""
         if self._sym_table:
             ct = self._sym_table.lookup(name)
             if ct is not None:
                 return ct
-        # Fallback: from _var_types string
-        ty_str = self._var_types.get(name)
-        if ty_str:
-            return _str_to_ctype(ty_str)
         return None
 
     def _ctype_is_struct_or_union(self, ct: Optional[CType]) -> bool:
@@ -309,35 +305,58 @@ class CodeGenerator:
         return False
 
     def _get_type_str(self, op: str) -> str:
-        """Get the type string for an operand, for string-based width logic.
+        """Get the type string for an operand via CType symbol table.
 
-        Prefers _var_types raw string (preserves typedef names needed by
-        _type_size_bytes / _pointee_size_bytes). Falls back to _sym_table
-        CType only for @-locals (not temps), since IR gen may register
-        temps with imprecise types that cause wrong load/store widths.
+        For temps (%t*), only returns type info for pointers, arrays,
+        floats, and structs. Scalar integer types on temps use the
+        default 8-byte load/store which is always safe.
+        For non-temps (@locals), returns full type info.
         """
-        # Prefer raw _var_types string (preserves typedef names)
-        vt = self._var_types.get(op, "")
-        if vt:
-            return vt
-        # For @-locals and globals, fall back to _sym_table CType
-        # (these are registered during _begin_function with correct types)
-        if self._sym_table and isinstance(op, str) and not op.startswith("%t"):
+        if self._sym_table and isinstance(op, str):
+            # For temps, only return type info for non-scalar-integer types
+            if op.startswith("%t"):
+                ct = self._sym_table.lookup(op)
+                if ct is not None and ct.kind in (TypeKind.POINTER, TypeKind.ARRAY,
+                                                   TypeKind.FLOAT, TypeKind.DOUBLE,
+                                                   TypeKind.STRUCT, TypeKind.UNION):
+                    return self._ctype_to_type_str(ct)
+                return ""
             ct = self._sym_table.lookup(op)
             if ct is not None:
-                return ctype_to_ir_type(ct)
+                return self._ctype_to_type_str(ct)
         return ""
+
+    def _ctype_to_type_str(self, ct: CType) -> str:
+        """Convert CType to a type string compatible with codegen string-based logic.
+
+        Unlike ctype_to_ir_type(), this produces the array(...) format needed
+        by _type_size_bytes, _pointee_size_bytes, etc.
+        """
+        if ct.kind == TypeKind.ARRAY and isinstance(ct, ArrayType) and ct.element:
+            # Produce array(elem,$size) format - flatten nested arrays
+            elem = ct.element
+            size = getattr(ct, 'size', 0) or 0
+            while isinstance(elem, ArrayType) and elem.element:
+                inner_size = getattr(elem, 'size', 0) or 1
+                size *= inner_size
+                elem = elem.element
+            elem_str = ctype_to_ir_type(elem)
+            return f"array({elem_str},${size})"
+        return ctype_to_ir_type(ct)
+
+    def _register_type(self, name: str, ctype: CType) -> None:
+        """Register a type in the symbol table.
+
+        This is the codegen's unified type registration method.
+        """
+        if self._sym_table:
+            self._sym_table.insert(name, ctype)
 
     def generate(self, instructions: List[IRInstruction]) -> str:
         """Generate x86-64 assembly from IR"""
         self.assembly_lines = []
         self._string_pool = {}
         self._string_counter = 0
-        # String-based type table for temps and locals. TypedSymbolTable now
-        # preserves per-function scopes via _func_locals / activate_function(),
-        # but _var_types is still used as a fallback by many codegen paths.
-        # Removal is tracked in docs/NEXT_PLAN.md plan 3.
-        self._var_types: Dict[str, str] = {}
         # Optional per-temp pointer arithmetic step overrides (bytes).
         # Populated from IRInstruction.meta (e.g. for pointer-to-array decay).
         self._ptr_step_bytes: Dict[str, int] = {}
@@ -537,18 +556,16 @@ class CodeGenerator:
                         else:
                             self._emit(f"  .zero {sz}")
 
-        # Seed _var_types for local static array symbols so codegen knows to
+        # Seed symbol table for local static array symbols so codegen knows to
         # emit leaq (address) instead of movslq (value load).
         for ins in instructions:
             if ins.op == "gdecl" and ins.result and ins.operand1:
                 ty = str(ins.operand1)
-                if ty.startswith("array(") and ins.result not in self._var_types:
-                    self._var_types[ins.result] = ty
-                    # Dual-write: also register in _sym_table
-                    if self._sym_table:
+                if ty.startswith("array(") and self._sym_table:
+                    if self._sym_table.lookup(ins.result) is None:
                         ct = _str_to_ctype(ty)
                         if ct is not None:
-                            self._sym_table.insert(ins.result, ct)
+                            self._register_type(ins.result, ct)
 
         self._emit(".text")
         i = 0
@@ -582,40 +599,30 @@ class CodeGenerator:
                                 self._fn_ret_ty = rest
                 except Exception:
                     self._fn_ret_ty = ""
-                # Pre-scan: seed _var_types for decls and pointer-producing ops.
+                # Pre-scan: seed symbol table for decls and pointer-producing ops.
                 j = i + 1
                 while j < len(instructions) and instructions[j].op != "func_end":
                     d = instructions[j]
-                    if d.op == "decl" and d.result and d.operand1:
-                        self._var_types[d.result] = str(d.operand1)
-                        # Dual-write: also register in _sym_table
-                        if self._sym_table:
-                            ct = _str_to_ctype(str(d.operand1))
-                            if ct is not None:
-                                self._sym_table.insert(d.result, ct)
-                    if d.op == "addr_index" and d.result:
-                        if d.result not in self._var_types:
-                            self._var_types[d.result] = "ptr"
-                            # Dual-write: register as generic pointer in _sym_table
-                            if self._sym_table:
-                                self._sym_table.insert(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
-                    if d.op in ("addr_of_member", "addr_of_member_ptr") and d.result:
-                        if d.result not in self._var_types:
-                            # Use member_type from meta for correct pointer type
-                            # (array-to-pointer decay needs element type info).
-                            _mty = d.meta.get("member_type") if isinstance(d.meta, dict) else None
-                            if isinstance(_mty, str) and _mty.strip():
-                                self._var_types[d.result] = f"{_mty}*"
-                                # Dual-write: register as pointer to member type
-                                if self._sym_table:
-                                    base_ct = _str_to_ctype(_mty)
-                                    if base_ct is not None:
-                                        self._sym_table.insert(d.result, PointerType(kind=TypeKind.POINTER, pointee=base_ct))
+                    if d.op == "decl" and d.result and d.operand1 and self._sym_table:
+                        _decl_ty = self._resolve_type(str(d.operand1).strip())
+                        ct = _str_to_ctype(_decl_ty)
+                        if ct is not None:
+                            self._register_type(d.result, ct)
+                    if d.op == "addr_index" and d.result and self._sym_table:
+                        if self._sym_table.lookup(d.result) is None:
+                            self._register_type(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
+                    if d.op in ("addr_of_member", "addr_of_member_ptr") and d.result and self._sym_table:
+                        _mty = d.meta.get("member_type") if isinstance(d.meta, dict) else None
+                        if isinstance(_mty, str) and _mty.strip():
+                            # Resolve typedefs before parsing to CType
+                            _resolved_mty = self._resolve_type(_mty.strip())
+                            base_ct = _str_to_ctype(_resolved_mty)
+                            if base_ct is not None:
+                                self._register_type(d.result, PointerType(kind=TypeKind.POINTER, pointee=base_ct))
                             else:
-                                self._var_types[d.result] = "ptr"
-                                # Dual-write: register as generic pointer
-                                if self._sym_table:
-                                    self._sym_table.insert(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
+                                self._register_type(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
+                        elif self._sym_table.lookup(d.result) is None:
+                            self._register_type(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
                     j += 1
                 # Collect ALL decl/param instructions in the function body
                 # (not just top-of-function). C89 allows declarations after
@@ -677,12 +684,10 @@ class CodeGenerator:
                 # Keep type info in sync for decls emitted after prologue scan
                 # (e.g. local `char s[] = "..."` lowers by overriding decl).
                 if ins.operand1:
-                    self._var_types[ins.result] = str(ins.operand1)
-                    # Dual-write: register in _sym_table
                     if self._sym_table:
                         ct = _str_to_ctype(str(ins.operand1))
                         if ct is not None:
-                            self._sym_table.insert(ins.result, ct)
+                            self._register_type(ins.result, ct)
                     # If an array decl is introduced late, remember its size so
                     # later stack addressing and array decay behaves consistently.
                     op1 = str(ins.operand1)
@@ -825,13 +830,11 @@ class CodeGenerator:
                 size_bytes = max(0, elems) * elem_sz
                 offset += size_bytes
                 self._locals[sym] = offset
-                self._var_types[sym] = f"array({base_part},${elems})"
-                # Dual-write: register array type in _sym_table
                 if self._sym_table:
                     elem_ct = _str_to_ctype(base_part)
                     if elem_ct is not None:
                         arr_ct = ArrayType(kind=TypeKind.ARRAY, element=elem_ct, size=elems)
-                        self._sym_table.insert(sym, arr_ct)
+                        self._register_type(sym, arr_ct)
                 if elems > 0:
                     self._arrays[sym] = size_bytes
             else:
@@ -856,10 +859,8 @@ class CodeGenerator:
                     size_bytes = max(size_bytes, 8)
                     offset += size_bytes
                     self._locals[sym] = offset
-                    self._var_types[sym] = resolved_ty
-                    # Dual-write: register struct/union type in _sym_table
                     if self._sym_table and decl_ct is not None:
-                        self._sym_table.insert(sym, decl_ct)
+                        self._register_type(sym, decl_ct)
                 elif ty_str.strip() == "long double":
                     # long double needs 16-byte aligned slot (x86-64 ABI)
                     # Align offset to 16-byte boundary first
@@ -867,22 +868,18 @@ class CodeGenerator:
                         offset += 16 - (offset % 16)
                     offset += 16
                     self._locals[sym] = offset
-                    self._var_types[sym] = "long double"
-                    # Dual-write: register long double in _sym_table
                     if self._sym_table:
-                        self._sym_table.insert(sym, FloatType(kind=TypeKind.DOUBLE))
+                        self._register_type(sym, FloatType(kind=TypeKind.DOUBLE))
                 else:
                     # Scalar locals: reserve a full 8-byte slot (simplifies addressing).
                     offset += 8
                     self._locals[sym] = offset
                     if d.operand1:
                         # remember declared type base for load/store width decisions
-                        self._var_types[sym] = str(d.operand1)
-                        # Dual-write: register scalar type in _sym_table
                         if self._sym_table:
                             ct = _str_to_ctype(str(d.operand1))
                             if ct is not None:
-                                self._sym_table.insert(sym, ct)
+                                self._register_type(sym, ct)
 
         # Seed stack slots for late-discovered locals.
         # IR currently emits decls before first use, but codegen also allocates
@@ -897,13 +894,10 @@ class CodeGenerator:
                 continue
             offset += 8
             self._locals[sym] = offset
-            if d.operand1:
-                self._var_types[sym] = str(d.operand1)
-                # Dual-write: register in _sym_table
-                if self._sym_table:
-                    ct = _str_to_ctype(str(d.operand1))
-                    if ct is not None:
-                        self._sym_table.insert(sym, ct)
+            if d.operand1 and self._sym_table:
+                ct = _str_to_ctype(str(d.operand1))
+                if ct is not None:
+                    self._register_type(sym, ct)
 
         # Record declared locals size *before* reserving the spill area.
         # Offsets in self._locals are positive and used as -off(%rbp).
@@ -987,10 +981,8 @@ class CodeGenerator:
                 self._emit(f"  movq %rax, -{off}(%rbp)")
                 self._emit(f"  movq {16 + stack_arg_off + 8}(%rbp), %rax")
                 self._emit(f"  movq %rax, -{off - 8}(%rbp)")
-                self._var_types[d.result] = "long double"
-                # Dual-write: register long double param in _sym_table
                 if self._sym_table:
-                    self._sym_table.insert(d.result, FloatType(kind=TypeKind.DOUBLE))
+                    self._register_type(d.result, FloatType(kind=TypeKind.DOUBLE))
                 stack_arg_off += 16
             elif ty in ("float", "double"):
                 if xmm_idx < len(xmm_arg_regs):
@@ -1073,13 +1065,10 @@ class CodeGenerator:
                     else:
                         self._emit(f"  movq {arg_regs[gp_idx]}, -{off}(%rbp)")
                 gp_idx += 1
-            if d.operand1:
-                self._var_types[d.result] = str(d.operand1)
-                # Dual-write: register param type in _sym_table
-                if self._sym_table:
-                    ct = _str_to_ctype(str(d.operand1))
-                    if ct is not None:
-                        self._sym_table.insert(d.result, ct)
+            if d.operand1 and self._sym_table:
+                ct = _str_to_ctype(str(d.operand1))
+                if ct is not None:
+                    self._register_type(d.result, ct)
 
         # Varargs support (SysV AMD64): reserve a fixed reg_save_area and tag
         # area in the callee frame so `__builtin_va_start` can produce a glibc
@@ -1220,11 +1209,9 @@ class CodeGenerator:
                 else:
                     self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)")
                 # Propagate float type
-                self._var_types[ins.result] = src_ty
-                # Dual-write: register float type in _sym_table
                 if self._sym_table and ins.result:
                     ft = FloatType(kind=TypeKind.FLOAT) if src_ty == "float" else FloatType(kind=TypeKind.DOUBLE)
-                    self._sym_table.insert(ins.result, ft)
+                    self._register_type(ins.result, ft)
                 return
             if _is_volatile_mov:
                 self._emit("  # volatile")
@@ -1262,10 +1249,8 @@ class CodeGenerator:
                 if ins.result:
                     off = self._ensure_local(ins.result, size=16)
                     self._emit(f"  fstpt -{off}(%rbp)")
-                    self._var_types[ins.result] = "long double"
-                    # Dual-write: register long double in _sym_table
                     if self._sym_table:
-                        self._sym_table.insert(ins.result, FloatType(kind=TypeKind.DOUBLE))
+                        self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
                 else:
                     # Pop x87 stack if no result
                     self._emit("  fstp %st(0)")
@@ -1282,11 +1267,9 @@ class CodeGenerator:
                     self._emit(f"  movss %xmm0, -{off}(%rbp)")
                 else:
                     self._emit(f"  movsd %xmm0, -{off}(%rbp)")
-                self._var_types[ins.result] = fp_type
-                # Dual-write: register float type in _sym_table
                 if self._sym_table:
                     ft = FloatType(kind=TypeKind.FLOAT) if fp_type == "float" else FloatType(kind=TypeKind.DOUBLE)
-                    self._sym_table.insert(ins.result, ft)
+                    self._register_type(ins.result, ft)
             return
 
         if op in ("fadd", "fsub", "fmul", "fdiv"):
@@ -1306,10 +1289,8 @@ class CodeGenerator:
                 # Store result from x87 stack
                 off_r = self._ensure_local(ins.result, size=16)
                 self._emit(f"  fstpt -{off_r}(%rbp)")
-                self._var_types[ins.result] = "long double"
-                # Dual-write: register long double in _sym_table
                 if self._sym_table and ins.result:
-                    self._sym_table.insert(ins.result, FloatType(kind=TypeKind.DOUBLE))
+                    self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
                 return
             s = "s" if fp_type == "float" else "d"
             mov = f"movs{s}"
@@ -1322,11 +1303,9 @@ class CodeGenerator:
             self._emit(f"  {sse_ops[op]} %xmm1, %xmm0")
             off_r = self._ensure_local(ins.result)
             self._emit(f"  {mov} %xmm0, -{off_r}(%rbp)")
-            self._var_types[ins.result] = fp_type
-            # Dual-write: register float type in _sym_table
             if self._sym_table and ins.result:
                 ft = FloatType(kind=TypeKind.FLOAT) if fp_type == "float" else FloatType(kind=TypeKind.DOUBLE)
-                self._sym_table.insert(ins.result, ft)
+                self._register_type(ins.result, ft)
             return
 
         if op == "fcmp":
@@ -1384,11 +1363,8 @@ class CodeGenerator:
                 self._emit("  cvtsi2sdq %rax, %xmm0")
                 off_r = self._ensure_local(ins.result)
                 self._emit(f"  movsd %xmm0, -{off_r}(%rbp)")
-            self._var_types[ins.result] = fp_type
-            # Dual-write: register float type in _sym_table
-            if self._sym_table and ins.result:
-                ft = FloatType(kind=TypeKind.FLOAT) if fp_type == "float" else FloatType(kind=TypeKind.DOUBLE)
-                self._sym_table.insert(ins.result, ft)
+            ft = FloatType(kind=TypeKind.FLOAT) if fp_type == "float" else FloatType(kind=TypeKind.DOUBLE)
+            self._register_type(ins.result, ft)
             return
 
         if op in ("f2i", "d2i"):
@@ -1428,9 +1404,8 @@ class CodeGenerator:
             self._emit("  cvtss2sd %xmm0, %xmm0")
             off_r = self._ensure_local(ins.result)
             self._emit(f"  movsd %xmm0, -{off_r}(%rbp)")
-            # Dual-write: register double type in _sym_table
             if self._sym_table and ins.result:
-                self._sym_table.insert(ins.result, FloatType(kind=TypeKind.DOUBLE))
+                self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
             return
 
         if op == "d2f":
@@ -1439,9 +1414,8 @@ class CodeGenerator:
             self._emit("  cvtsd2ss %xmm0, %xmm0")
             off_r = self._ensure_local(ins.result)
             self._emit(f"  movss %xmm0, -{off_r}(%rbp)")
-            # Dual-write: register float type in _sym_table
             if self._sym_table and ins.result:
-                self._sym_table.insert(ins.result, FloatType(kind=TypeKind.FLOAT))
+                self._register_type(ins.result, FloatType(kind=TypeKind.FLOAT))
             return
 
         # --- long double (x87) conversion ops ---
@@ -1456,10 +1430,7 @@ class CodeGenerator:
             off_r = self._ensure_local(ins.result, size=16)
             self._emit(f"  fstpt -{off_r}(%rbp)")
             # CType-based: result_type already set by IR gen; keep string fallback
-            self._var_types[ins.result] = "long double"
-            # Dual-write: register long double in _sym_table
-            if self._sym_table and ins.result:
-                self._sym_table.insert(ins.result, FloatType(kind=TypeKind.DOUBLE))
+            self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
             return
 
         if op == "ld2i":
@@ -1489,10 +1460,7 @@ class CodeGenerator:
             self._emit(f"  fldl -{off1}(%rbp)")
             off_r = self._ensure_local(ins.result, size=16)
             self._emit(f"  fstpt -{off_r}(%rbp)")
-            self._var_types[ins.result] = "long double"
-            # Dual-write: register long double in _sym_table
-            if self._sym_table and ins.result:
-                self._sym_table.insert(ins.result, FloatType(kind=TypeKind.DOUBLE))
+            self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
             return
 
         if op == "ld2d":
@@ -1501,10 +1469,7 @@ class CodeGenerator:
             self._emit(f"  fldt -{off1}(%rbp)")
             off_r = self._ensure_local(ins.result)
             self._emit(f"  fstpl -{off_r}(%rbp)")
-            self._var_types[ins.result] = "double"
-            # Dual-write: register double in _sym_table
-            if self._sym_table and ins.result:
-                self._sym_table.insert(ins.result, FloatType(kind=TypeKind.DOUBLE))
+            self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
             return
 
         if op == "f2ld":
@@ -1513,10 +1478,7 @@ class CodeGenerator:
             self._emit(f"  flds -{off1}(%rbp)")
             off_r = self._ensure_local(ins.result, size=16)
             self._emit(f"  fstpt -{off_r}(%rbp)")
-            self._var_types[ins.result] = "long double"
-            # Dual-write: register long double in _sym_table
-            if self._sym_table and ins.result:
-                self._sym_table.insert(ins.result, FloatType(kind=TypeKind.DOUBLE))
+            self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
             return
 
         if op == "ld2f":
@@ -1525,10 +1487,7 @@ class CodeGenerator:
             self._emit(f"  fldt -{off1}(%rbp)")
             off_r = self._ensure_local(ins.result)
             self._emit(f"  fstps -{off_r}(%rbp)")
-            self._var_types[ins.result] = "float"
-            # Dual-write: register float in _sym_table
-            if self._sym_table and ins.result:
-                self._sym_table.insert(ins.result, FloatType(kind=TypeKind.FLOAT))
+            self._register_type(ins.result, FloatType(kind=TypeKind.FLOAT))
             return
 
         if op == "sext16":
@@ -1584,7 +1543,8 @@ class CodeGenerator:
                 # signed vs unsigned behavior correctly.
                 try:
                     if ins.result:
-                        self._var_types[ins.result] = "unsigned short" if self._pointee_is_unsigned(base_ty) else "short"
+                        if self._sym_table and ins.result:
+                            self._register_type(ins.result, IntegerType(kind=TypeKind.SHORT, is_unsigned=self._pointee_is_unsigned(base_ty)))
                 except Exception:
                     pass
             elif elem_sz == 4:
@@ -1638,33 +1598,19 @@ class CodeGenerator:
             # such temps in `sema_ctx.var_types` (or rely on generator-side tables),
             # but codegen needs it to choose correct element size in load_index.
             if ins.result and isinstance(src, str):
-                # Check if source is an array: prefer _var_types string (which
-                # preserves array encoding) since _sym_table may have element type
-                # instead of array type due to scope precedence.
-                src_vt = self._var_types.get(src, "")
-                _is_src_array_str = isinstance(src_vt, str) and src_vt.strip().startswith("array(")
+                # Check if source is an array via CType.
                 src_ct = self._get_type(src)
-                _is_src_array = (src_ct is not None and src_ct.kind == TypeKind.ARRAY) or _is_src_array_str
+                _is_src_array = src_ct is not None and src_ct.kind == TypeKind.ARRAY
                 if _is_src_array:
-                    # Extract element type from CType or string
+                    # Extract element type from CType
                     elem_ct = None
-                    elem_str = "int"
-                    if src_ct is not None and src_ct.kind == TypeKind.ARRAY and isinstance(src_ct, ArrayType):
+                    if isinstance(src_ct, ArrayType) and src_ct.element is not None:
                         elem_ct = src_ct.element
-                        elem_str = ctype_to_ir_type(elem_ct) if elem_ct is not None else "int"
-                    elif _is_src_array_str:
-                        inner = src_vt.strip()[len("array("):]
-                        if inner.endswith(")"):
-                            inner = inner[:-1]
-                        elem_str = inner.split(",", 1)[0].strip()
-                        elem_ct = _str_to_ctype(elem_str)
-                    self._var_types[ins.result] = f"{elem_str}*"
-                    # Dual-write: register pointer to element type in _sym_table
                     if self._sym_table:
                         if elem_ct is not None:
-                            self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=elem_ct))
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=elem_ct))
                         else:
-                            self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
             # Carry optional pointer arithmetic scaling overrides (e.g. decay of
             # multi-dimensional arrays to pointer-to-row).
             try:
@@ -1756,33 +1702,24 @@ class CodeGenerator:
                 )
                 if not _already_specific_ptr:
                     if isinstance(base_ty, str) and (base_ty.startswith("struct ") or base_ty.startswith("union ")):
-                        self._var_types[ins.result] = f"{base_ty}*"
-                        # Dual-write: register pointer to struct/union in _sym_table
-                        if self._sym_table:
-                            base_ct_for_ptr = _str_to_ctype(base_ty)
-                            if base_ct_for_ptr is not None:
-                                self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=base_ct_for_ptr))
-                            else:
-                                self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
+                        base_ct_for_ptr = _str_to_ctype(base_ty)
+                        if base_ct_for_ptr is not None:
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=base_ct_for_ptr))
+                        else:
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
                     elif isinstance(base_ty, str) and base_ty.strip().startswith("array("):
                         enc = base_ty.strip()
                         inner = enc[len("array(") :]
                         if inner.endswith(")"):
                             inner = inner[:-1]
                         elem_ty = inner.split(",", 1)[0].strip()
-                        self._var_types[ins.result] = f"{elem_ty}*"
-                        # Dual-write: register pointer to element type in _sym_table
-                        if self._sym_table:
-                            elem_ct = _str_to_ctype(elem_ty)
-                            if elem_ct is not None:
-                                self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=elem_ct))
-                            else:
-                                self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
+                        elem_ct = _str_to_ctype(elem_ty)
+                        if elem_ct is not None:
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=elem_ct))
+                        else:
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
                     else:
-                        self._var_types[ins.result] = "ptr"
-                        # Dual-write: register generic pointer in _sym_table
-                        if self._sym_table:
-                            self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
+                        self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
             # Carry optional pointer arithmetic scaling overrides (bytes).
             # This is used for row pointers produced by multi-dimensional array
             # indexing lowerings.
@@ -1871,9 +1808,13 @@ class CodeGenerator:
                 if ins.result:
                     off_r = self._ensure_local(ins.result, size=8)
                     self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
-                    self._var_types[ins.result] = fp_ty
+                    if self._sym_table and ins.result:
+                        self._register_type(ins.result, FloatType(kind=TypeKind.FLOAT) if fp_ty == "float" else FloatType(kind=TypeKind.DOUBLE))
                 if isinstance(ins.meta, dict) and "member_type" in ins.meta:
-                    self._var_types[ins.result] = ins.meta["member_type"]
+                    if self._sym_table and ins.result:
+                        _mct = _str_to_ctype(ins.meta["member_type"])
+                        if _mct is not None:
+                            self._register_type(ins.result, _mct)
                 return
 
             if sz == 1:
@@ -1894,7 +1835,10 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             # Propagate member type for correct pointer arithmetic downstream.
             if isinstance(ins.meta, dict) and "member_type" in ins.meta:
-                self._var_types[ins.result] = ins.meta["member_type"]
+                if self._sym_table and ins.result:
+                    _mct = _str_to_ctype(ins.meta["member_type"])
+                    if _mct is not None:
+                        self._register_type(ins.result, _mct)
             return
 
         if op == "addr_of_member_ptr":
@@ -1912,17 +1856,28 @@ class CodeGenerator:
             if ins.result and isinstance(ins.meta, dict) and "member_type" in ins.meta:
                 mty = ins.meta["member_type"]
                 if isinstance(mty, str) and mty.strip():
-                    self._var_types[ins.result] = f"{mty}*"
+                    if self._sym_table and ins.result:
+                        _resolved_mty = self._resolve_type(mty.strip())
+                        _bct = _str_to_ctype(_resolved_mty)
+                        if _bct is not None:
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=_bct))
+                        else:
+                            self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
             return
 
         if op == "load_member_ptr":
             # result = operand1->member
             base = ins.operand1 or ""
             member = ins.operand2 or ""
-            # If IR carries struct type metadata from a cast, seed _var_types
+            # If IR carries struct type metadata from a cast, seed type info
             # so _resolve_member_offset can find the layout.
             if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
-                self._var_types[base] = f"{ins.meta['struct_type']}*"
+                if self._sym_table and base:
+                    _bct = _str_to_ctype(ins.meta['struct_type'])
+                    if _bct is not None:
+                        self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=_bct))
+                    else:
+                        self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
             # Load pointer value into %rax then add member offset, then load value.
             self._load_operand(base, "%rax")
             off = self._resolve_member_offset(base, member)
@@ -1958,9 +1913,13 @@ class CodeGenerator:
                 if ins.result:
                     off_r = self._ensure_local(ins.result, size=8)
                     self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
-                    self._var_types[ins.result] = fp_ty
+                    if self._sym_table and ins.result:
+                        self._register_type(ins.result, FloatType(kind=TypeKind.FLOAT) if fp_ty == "float" else FloatType(kind=TypeKind.DOUBLE))
                 if isinstance(ins.meta, dict) and "member_type" in ins.meta:
-                    self._var_types[ins.result] = ins.meta["member_type"]
+                    if self._sym_table and ins.result:
+                        _mct = _str_to_ctype(ins.meta["member_type"])
+                        if _mct is not None:
+                            self._register_type(ins.result, _mct)
                 return
 
             # Load the member value based on its size.
@@ -1983,7 +1942,10 @@ class CodeGenerator:
             # Propagate member type to result for correct pointer arithmetic
             # and array indexing downstream.
             if isinstance(ins.meta, dict) and "member_type" in ins.meta:
-                self._var_types[ins.result] = ins.meta["member_type"]
+                if self._sym_table and ins.result:
+                    _mct = _str_to_ctype(ins.meta["member_type"])
+                    if _mct is not None:
+                        self._register_type(ins.result, _mct)
             return
 
         if op == "unop":
@@ -2710,7 +2672,8 @@ class CodeGenerator:
                 if ins.result:
                     off_r = self._ensure_local(ins.result, size=16)
                     self._emit(f"  fstpt -{off_r}(%rbp)")
-                    self._var_types[ins.result] = "long double"
+                    if self._sym_table and ins.result:
+                        self._register_type(ins.result, FloatType(kind=TypeKind.DOUBLE))
                 else:
                     # Pop x87 stack if no result needed
                     self._emit("  fstp %st(0)")
@@ -2721,7 +2684,8 @@ class CodeGenerator:
                 if ins.result:
                     off_r = self._ensure_local(ins.result)
                     self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
-                    self._var_types[ins.result] = fp
+                    if self._sym_table and ins.result:
+                        self._register_type(ins.result, FloatType(kind=TypeKind.FLOAT) if fp == "float" else FloatType(kind=TypeKind.DOUBLE))
             else:
                 # Struct/union return: use StructClassifier to determine registers.
                 ret_ty_s = ret_ty.replace("function ", "").strip() if ret_ty.startswith("function ") else ""
@@ -2745,7 +2709,10 @@ class CodeGenerator:
                             self._emit(f"  leaq -{off_r}(%rbp), %rdi")
                             self._emit(f"  movq ${sz}, %rcx")
                             self._emit("  rep movsb")
-                            self._var_types[ins.result] = ret_ty_s
+                            if self._sym_table and ins.result:
+                                _rct = _str_to_ctype(ret_ty_s)
+                                if _rct is not None:
+                                    self._register_type(ins.result, _rct)
                     else:
                         # Register return: extract from rax/rdx and/or xmm0/xmm1.
                         if ins.result:
@@ -2763,8 +2730,14 @@ class CodeGenerator:
                                 else:
                                     self._emit(f"  movq {ret_gp_regs[gp_ri]}, -{off_r - ci * 8}(%rbp)")
                                     gp_ri += 1
-                            self._var_types[ins.result] = ret_ty_s
-                        self._var_types[ins.result] = ret_ty_s
+                            if self._sym_table and ins.result:
+                                _rct = _str_to_ctype(ret_ty_s)
+                                if _rct is not None:
+                                    self._register_type(ins.result, _rct)
+                        if self._sym_table and ins.result:
+                            _rct = _str_to_ctype(ret_ty_s)
+                            if _rct is not None:
+                                self._register_type(ins.result, _rct)
                 else:
                     self._store_result(ins.result, "%rax")
             return
@@ -2886,7 +2859,7 @@ class CodeGenerator:
                 elif isinstance(base_ty, str) and ("*" in base_ty or base_ty.strip() == "ptr"):
                     is_ptr_temp = True
             is_ptr_base = (isinstance(base_ty, str) and "*" in base_ty) or is_ptr_temp
-            # Also check CType for pointer base (covers cases where _var_types
+            # Also check CType for pointer base (covers cases where symbol table
             # doesn't have the info but symbol table does)
             if not is_ptr_base and base_ct is not None and self._ctype_is_pointer(base_ct):
                 is_ptr_base = True
@@ -2997,11 +2970,21 @@ class CodeGenerator:
                     if rt is not None:
                         tag = self._ctype_struct_tag(rt)
                         if tag:
-                            self._var_types[ins.result] = f"{tag}*"
+                            if self._sym_table and ins.result:
+                                _bct = _str_to_ctype(tag)
+                                if _bct is not None:
+                                    self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=_bct))
+                                else:
+                                    self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
                     else:
                         mem_ty_s = str(mem_ty).strip() if mem_ty is not None else ""
                         if mem_ty_s:
-                            self._var_types[ins.result] = f"{mem_ty_s}*"
+                            if self._sym_table and ins.result:
+                                _bct = _str_to_ctype(mem_ty_s)
+                                if _bct is not None:
+                                    self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=_bct))
+                                else:
+                                    self._register_type(ins.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
                 self._store_result(ins.result, "%rax")
                 return
 
@@ -3030,7 +3013,8 @@ class CodeGenerator:
                 if ins.result:
                     off_r = self._ensure_local(ins.result, size=8)
                     self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
-                    self._var_types[ins.result] = fp_ty
+                    if self._sym_table and ins.result:
+                        self._register_type(ins.result, FloatType(kind=TypeKind.FLOAT) if fp_ty == "float" else FloatType(kind=TypeKind.DOUBLE))
                 return
 
             # load based on member size
@@ -3053,7 +3037,8 @@ class CodeGenerator:
                 self._emit("  movq (%rax), %rax")
             # After loading the member value, %rax no longer holds an address.
             if ins.result and isinstance(ins.result, str) and ins.result.startswith("%t"):
-                self._var_types[ins.result] = "long"
+                if self._sym_table and ins.result:
+                    self._register_type(ins.result, IntegerType(kind=TypeKind.LONG, is_unsigned=False))
             self._store_result(ins.result, "%rax")
             return
 
@@ -3062,7 +3047,12 @@ class CodeGenerator:
             base = ins.operand1 or ""
             member = ins.operand2 or ""
             if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
-                self._var_types[base] = f"{ins.meta['struct_type']}*"
+                if self._sym_table and base:
+                    _bct = _str_to_ctype(ins.meta['struct_type'])
+                    if _bct is not None:
+                        self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=_bct))
+                    else:
+                        self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
             self._load_operand(base, "%rax")
             # CType-based path: use result_type to determine member size
             rt = getattr(ins, "result_type", None)
@@ -3099,7 +3089,8 @@ class CodeGenerator:
                 if ins.result:
                     off_r = self._ensure_local(ins.result, size=8)
                     self._emit(f"  movs{s} %xmm0, -{off_r}(%rbp)")
-                    self._var_types[ins.result] = fp_ty
+                    if self._sym_table and ins.result:
+                        self._register_type(ins.result, FloatType(kind=TypeKind.FLOAT) if fp_ty == "float" else FloatType(kind=TypeKind.DOUBLE))
                 return
 
             if sz == 1:
@@ -3119,7 +3110,8 @@ class CodeGenerator:
             else:
                 self._emit("  movq (%rax), %rax")
             if ins.result and isinstance(ins.result, str) and ins.result.startswith("%t"):
-                self._var_types[ins.result] = "long"
+                if self._sym_table and ins.result:
+                    self._register_type(ins.result, IntegerType(kind=TypeKind.LONG, is_unsigned=False))
             self._store_result(ins.result, "%rax")
             return
 
@@ -3231,7 +3223,12 @@ class CodeGenerator:
             member = ins.operand2 or ""
             val = ins.result
             if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
-                self._var_types[base] = f"{ins.meta['struct_type']}*"
+                if self._sym_table and base:
+                    _bct = _str_to_ctype(ins.meta['struct_type'])
+                    if _bct is not None:
+                        self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=_bct))
+                    else:
+                        self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
             self._load_operand(base, "%rax")
             off, sz = self._resolve_member(base, member)
             if off:
@@ -3413,22 +3410,38 @@ class CodeGenerator:
             # determine element size
             elem_sz = 4
             base_ty = None
-            if isinstance(base, str):
-                base_ty = self._get_type_str(base) or None
-                if (base_ty is None or base_ty == "") and base.startswith("@"):
-                    sym = base[1:]
-                    base_ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-            if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
-                inner = base_ty.strip()[len("array(") :]
-                if inner.endswith(")"):
-                    inner = inner[:-1]
-                base_part = inner.split(",", 1)[0].strip()
-                elem_sz = self._type_size_bytes(base_part)
-            elif isinstance(base_ty, str) and "*" in base_ty:
-                elem_sz = self._pointee_size_bytes(base_ty)
+            # CType-based path: determine element size from symbol table
+            base_ct = self._get_type(base) if isinstance(base, str) else None
+            if base_ct is not None:
+                if isinstance(base_ct, ArrayType) and base_ct.element is not None:
+                    elem_sz = type_sizeof(base_ct.element) if base_ct.element.kind not in (TypeKind.STRUCT, TypeKind.UNION) else self._ctype_sizeof(base_ct.element)
+                    if elem_sz == 0:
+                        elem_sz = 4
+                elif self._ctype_is_pointer(base_ct):
+                    pointee = self._ctype_deref(base_ct)
+                    if pointee is not None:
+                        elem_sz = type_sizeof(pointee) if pointee.kind not in (TypeKind.STRUCT, TypeKind.UNION) else self._ctype_sizeof(pointee)
+                        if elem_sz == 0:
+                            elem_sz = 4
+            else:
+                # String-based fallback
+                if isinstance(base, str):
+                    base_ty = self._get_type_str(base) or None
+                    if (base_ty is None or base_ty == "") and base.startswith("@"):
+                        sym = base[1:]
+                        base_ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
+                if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
+                    inner = base_ty.strip()[len("array(") :]
+                    if inner.endswith(")"):
+                        inner = inner[:-1]
+                    base_part = inner.split(",", 1)[0].strip()
+                    elem_sz = self._type_size_bytes(base_part)
+                elif isinstance(base_ty, str) and "*" in base_ty:
+                    elem_sz = self._pointee_size_bytes(base_ty)
 
             # compute address
-            if isinstance(base_ty, str) and "*" in base_ty:
+            is_ptr_base = (base_ct is not None and self._ctype_is_pointer(base_ct)) or (isinstance(base_ty, str) and "*" in base_ty)
+            if is_ptr_base:
                 self._load_operand(base, "%rax")
             else:
                 # base is an array object or a raw address temp
@@ -3990,9 +4003,7 @@ class CodeGenerator:
                     if off is not None and sz is not None:
                         return int(off), int(sz)
         # String-based fallback
-        decl_ty = self._var_types.get(base_sym)
-        if isinstance(decl_ty, str) and decl_ty.strip().endswith("*"):
-            decl_ty = decl_ty.strip()[:-1].strip()
+        decl_ty = None
         if not decl_ty and isinstance(base_sym, str) and base_sym.startswith("@") and self._sema_ctx is not None:
             decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
         if self._sema_ctx is not None and decl_ty and hasattr(self._sema_ctx, "layouts"):
@@ -4023,9 +4034,7 @@ class CodeGenerator:
                     if members and member in members:
                         return members[member]
         # String-based fallback
-        decl_ty = self._var_types.get(base_sym)
-        if isinstance(decl_ty, str) and decl_ty.strip().endswith("*"):
-            decl_ty = decl_ty.strip()[:-1].strip()
+        decl_ty = None
         if not decl_ty and isinstance(base_sym, str) and base_sym.startswith("@") and self._sema_ctx is not None:
             decl_ty = getattr(self._sema_ctx, "global_types", {}).get(base_sym[1:])
         if self._sema_ctx is not None and decl_ty:
