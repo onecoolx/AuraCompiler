@@ -263,6 +263,30 @@ class CodeGenerator:
             ct = self._ctype_deref(ct)
         return ct if ct is not None and self._ctype_is_struct_or_union(ct) else None
 
+    def _operand_sizeof(self, op: str) -> int:
+        """Get operand size in bytes via CType lookup.
+
+        Falls back to 8 (pointer size) when type is unknown.
+        """
+        ct = self._get_type(op)
+        if ct is not None:
+            return self._ctype_sizeof(ct)
+        return 8  # default: pointer size
+
+    def _is_float_type_op(self, op: str) -> bool:
+        """Check if operand is a float or double type via CType lookup."""
+        ct = self._get_type(op)
+        if ct is not None:
+            return ct.kind in (TypeKind.FLOAT, TypeKind.DOUBLE)
+        return False
+
+    def _is_array_type_op(self, op: str) -> bool:
+        """Check if operand is an array type via CType lookup."""
+        ct = self._get_type(op)
+        if ct is not None:
+            return ct.kind == TypeKind.ARRAY
+        return False
+
     def generate(self, instructions: List[IRInstruction]) -> str:
         """Generate x86-64 assembly from IR"""
         self.assembly_lines = []

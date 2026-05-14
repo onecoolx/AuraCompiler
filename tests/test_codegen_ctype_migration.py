@@ -456,3 +456,181 @@ class TestPointerArithmeticCTypeMigration:
         ct = cg._get_type("@p")
         deref = cg._ctype_deref(ct)
         assert cg._ctype_is_unsigned_char(deref) is False
+
+
+# ---------------------------------------------------------------------------
+# Task 1.2: _operand_sizeof, _is_float_type_op, _is_array_type_op
+# ---------------------------------------------------------------------------
+
+class TestOperandSizeof:
+    """Tests for _operand_sizeof CType-based helper."""
+
+    def test_int_operand(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@x", IntegerType(kind=TypeKind.INT))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("@x") == 4
+
+    def test_char_operand(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@c", IntegerType(kind=TypeKind.CHAR))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("@c") == 1
+
+    def test_long_operand(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@l", IntegerType(kind=TypeKind.LONG))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("@l") == 8
+
+    def test_short_operand(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@s", IntegerType(kind=TypeKind.SHORT))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("@s") == 2
+
+    def test_pointer_operand(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@p", PointerType(kind=TypeKind.POINTER,
+                                           pointee=IntegerType(kind=TypeKind.INT)))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("@p") == 8
+
+    def test_float_operand(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("%t0", FloatType(kind=TypeKind.FLOAT))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("%t0") == 4
+
+    def test_double_operand(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("%t1", FloatType(kind=TypeKind.DOUBLE))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("%t1") == 8
+
+    def test_array_operand(self):
+        sym_table = TypedSymbolTable()
+        elem = IntegerType(kind=TypeKind.INT)
+        sym_table.insert("@arr", ArrayType(kind=TypeKind.ARRAY, element=elem, size=10))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._operand_sizeof("@arr") == 40  # 4 * 10
+
+    def test_struct_operand_with_layout(self):
+        layout = FakeLayout(size=24)
+        sema = FakeSemaCtx(layouts={"struct Point": layout})
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@s", StructType(kind=TypeKind.STRUCT, tag="Point"))
+        cg = _make_codegen(sema_ctx=sema, sym_table=sym_table)
+        assert cg._operand_sizeof("@s") == 24
+
+    def test_unknown_operand_defaults_to_8(self):
+        cg = _make_codegen()
+        assert cg._operand_sizeof("@unknown") == 8
+
+    def test_fallback_to_var_types(self):
+        """When sym_table has no entry, falls back to _var_types via _get_type."""
+        cg = _make_codegen()
+        cg._var_types["@x"] = "int"
+        assert cg._operand_sizeof("@x") == 4
+
+    def test_fallback_var_types_double(self):
+        cg = _make_codegen()
+        cg._var_types["%t0"] = "double"
+        assert cg._operand_sizeof("%t0") == 8
+
+
+class TestIsFloatTypeOp:
+    """Tests for _is_float_type_op CType-based helper."""
+
+    def test_float_type(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("%t0", FloatType(kind=TypeKind.FLOAT))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_float_type_op("%t0") is True
+
+    def test_double_type(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("%t1", FloatType(kind=TypeKind.DOUBLE))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_float_type_op("%t1") is True
+
+    def test_int_type(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@x", IntegerType(kind=TypeKind.INT))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_float_type_op("@x") is False
+
+    def test_pointer_type(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@p", PointerType(kind=TypeKind.POINTER,
+                                           pointee=IntegerType(kind=TypeKind.INT)))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_float_type_op("@p") is False
+
+    def test_unknown_operand_returns_false(self):
+        cg = _make_codegen()
+        assert cg._is_float_type_op("@unknown") is False
+
+    def test_fallback_to_var_types_float(self):
+        """Falls back to _var_types string parsing via _get_type."""
+        cg = _make_codegen()
+        cg._var_types["%t0"] = "float"
+        assert cg._is_float_type_op("%t0") is True
+
+    def test_fallback_to_var_types_double(self):
+        cg = _make_codegen()
+        cg._var_types["%t0"] = "double"
+        assert cg._is_float_type_op("%t0") is True
+
+    def test_fallback_to_var_types_int(self):
+        cg = _make_codegen()
+        cg._var_types["@x"] = "int"
+        assert cg._is_float_type_op("@x") is False
+
+
+class TestIsArrayTypeOp:
+    """Tests for _is_array_type_op CType-based helper."""
+
+    def test_array_type(self):
+        sym_table = TypedSymbolTable()
+        elem = IntegerType(kind=TypeKind.INT)
+        sym_table.insert("@arr", ArrayType(kind=TypeKind.ARRAY, element=elem, size=5))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_array_type_op("@arr") is True
+
+    def test_char_array(self):
+        sym_table = TypedSymbolTable()
+        elem = IntegerType(kind=TypeKind.CHAR)
+        sym_table.insert("@buf", ArrayType(kind=TypeKind.ARRAY, element=elem, size=256))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_array_type_op("@buf") is True
+
+    def test_int_type(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@x", IntegerType(kind=TypeKind.INT))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_array_type_op("@x") is False
+
+    def test_pointer_type(self):
+        sym_table = TypedSymbolTable()
+        sym_table.insert("@p", PointerType(kind=TypeKind.POINTER,
+                                           pointee=IntegerType(kind=TypeKind.INT)))
+        cg = _make_codegen(sym_table=sym_table)
+        assert cg._is_array_type_op("@p") is False
+
+    def test_unknown_operand_returns_false(self):
+        cg = _make_codegen()
+        assert cg._is_array_type_op("@unknown") is False
+
+    def test_fallback_to_var_types_array(self):
+        """_str_to_ctype cannot parse internal array(...) format, so fallback
+        returns False. The CType path (sym_table) is the correct way to detect arrays."""
+        cg = _make_codegen()
+        cg._var_types["@arr"] = "array(int,$10)"
+        # _str_to_ctype doesn't handle "array(...)" format — returns non-array CType
+        assert cg._is_array_type_op("@arr") is False
+
+    def test_fallback_to_var_types_non_array(self):
+        cg = _make_codegen()
+        cg._var_types["@x"] = "int"
+        assert cg._is_array_type_op("@x") is False
