@@ -610,3 +610,69 @@ class TestBitwiseIntegerPromotionProperty:
         expected = usual_arithmetic_conversions(
             integer_promote(left), integer_promote(right))
         assert result == expected
+
+
+# =============================================================================
+# Property 9: 取地址/解引用 round-trip
+# Feature: expr-type-annotation, Property 9: 取地址/解引用 round-trip
+# =============================================================================
+
+_base_types_for_unary = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    FloatType(kind=TypeKind.FLOAT),
+    FloatType(kind=TypeKind.DOUBLE),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT)),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR)),
+])
+
+
+class TestAddressDerefRoundTripProperty:
+    """Property 9: 取地址/解引用 round-trip
+
+    For any type T, `&expr` of type T produces PointerType(pointee=T);
+    For any PointerType(pointee=T), `*expr` produces T.
+    Thus `*(&expr)` has the same type as expr (round-trip).
+
+    **Validates: Requirements 3.1, 3.2**
+    """
+
+    @settings(max_examples=100)
+    @given(t=_base_types_for_unary)
+    def test_address_of_produces_pointer(self, t):
+        """&expr of type T produces PointerType(pointee=T).
+
+        **Validates: Requirements 3.1**
+        """
+        sa = _make_analyzer()
+        result = sa._unary_result_type('&', t)
+        assert isinstance(result, PointerType)
+        assert result.kind == TypeKind.POINTER
+        assert result.pointee == t
+
+    @settings(max_examples=100)
+    @given(t=_base_types_for_unary)
+    def test_deref_of_pointer_produces_pointee(self, t):
+        """*expr of type PointerType(pointee=T) produces T.
+
+        **Validates: Requirements 3.2**
+        """
+        sa = _make_analyzer()
+        ptr = PointerType(kind=TypeKind.POINTER, pointee=t)
+        result = sa._unary_result_type('*', ptr)
+        assert result == t
+
+    @settings(max_examples=100)
+    @given(t=_base_types_for_unary)
+    def test_deref_address_of_round_trip(self, t):
+        """*(&expr) has the same type as expr (round-trip).
+
+        **Validates: Requirements 3.1, 3.2**
+        """
+        sa = _make_analyzer()
+        addr = sa._unary_result_type('&', t)
+        result = sa._unary_result_type('*', addr)
+        assert result == t
