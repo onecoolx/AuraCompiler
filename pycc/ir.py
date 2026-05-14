@@ -1916,8 +1916,8 @@ class IRGenerator:
 
     def _ensure_u32(self, op: str) -> str:
         """Ensure operand is treated as 32-bit unsigned (zero-extended)."""
-        t = self._new_temp()
-        self._var_types[t] = "unsigned int"
+        _ct = IntegerType(kind=TypeKind.INT, is_unsigned=True)
+        t = self._new_temp_typed(_ct)
         self.instructions.append(IRInstruction(op="zext32", result=t, operand1=op))
         return t
 
@@ -1927,12 +1927,14 @@ class IRGenerator:
         On x86-64, values are already held in 64-bit registers; we mainly
         preserve type info for comparisons/division selection in codegen.
         """
+        _ct = IntegerType(kind=TypeKind.LONG, is_unsigned=True)
         if isinstance(op, str) and op.startswith("%"):
             # Preserve existing temp but annotate as unsigned long.
             self._var_types[op] = "unsigned long"
+            if self._sym_table:
+                self._sym_table.insert(op, _ct)
             return op
-        t = self._new_temp()
-        self._var_types[t] = "unsigned long"
+        t = self._new_temp_typed(_ct)
         self.instructions.append(IRInstruction(op="mov", result=t, operand1=op))
         return t
 
@@ -3934,6 +3936,10 @@ class IRGenerator:
                         rtn = rt.strip().lower()
                         if rtn in {"short", "unsigned short", "signed short", "char", "unsigned char", "signed char"}:
                             self._var_types[v] = rt
+                            if self._sym_table:
+                                _ret_ct = _str_to_ctype(rt)
+                                if _ret_ct is not None:
+                                    self._sym_table.insert(v, _ret_ct)
                 except Exception:
                     pass
                 self.instructions.append(IRInstruction(op="ret", operand1=v))
@@ -4333,8 +4339,13 @@ class IRGenerator:
                         self._var_types[v] = cast_ty
                 else:
                     self._var_types[v] = cast_ty
-                    if self._sym_table and _cast_dst_ctype is not None:
-                        self._sym_table.insert(v, _cast_dst_ctype)
+                    if self._sym_table:
+                        if _cast_dst_ctype is not None:
+                            self._sym_table.insert(v, _cast_dst_ctype)
+                        elif isinstance(cast_ty, str) and cast_ty.strip():
+                            _fallback_ct = _str_to_ctype(cast_ty)
+                            if _fallback_ct is not None:
+                                self._sym_table.insert(v, _fallback_ct)
             # If casting to pointer, allow integer literal 0 to stay 0; otherwise passthrough.
             return v
         if isinstance(expr, Identifier):
@@ -4473,6 +4484,10 @@ class IRGenerator:
                                 else:
                                     taddr = self._new_temp()
                                     self._var_types[taddr] = f"{mty}*"
+                                    if self._sym_table:
+                                        _mty_ct = _str_to_ctype(mty)
+                                        if _mty_ct is not None:
+                                            self._sym_table.insert(taddr, PointerType(kind=TypeKind.POINTER, pointee=_mty_ct))
                                 aom_meta = {"member_type": mty}
                                 if member_ctype is not None:
                                     aom_meta["member_ctype"] = member_ctype
@@ -4504,6 +4519,10 @@ class IRGenerator:
                                 if isinstance(mty, str):
                                     taddr = self._new_temp()
                                     self._var_types[taddr] = f"{mty}*"
+                                    if self._sym_table:
+                                        _mty_ct = _str_to_ctype(mty)
+                                        if _mty_ct is not None:
+                                            self._sym_table.insert(taddr, PointerType(kind=TypeKind.POINTER, pointee=_mty_ct))
                                     aom_meta = {"member_type": mty}
                                     _base_is_ptr = False
                                     _bty_c = self._var_types.get(base, "")
@@ -4539,6 +4558,10 @@ class IRGenerator:
                             load_meta["member_type"] = mty
                             if "*" in mty or mty.strip() in ("float", "double", "long double"):
                                 self._var_types[t] = mty
+                                if self._sym_table and member_ct is None:
+                                    _mty_ct = _str_to_ctype(mty)
+                                    if _mty_ct is not None:
+                                        self._sym_table.insert(t, _mty_ct)
             except Exception:
                 pass
             if member_ct is not None:
@@ -4731,6 +4754,10 @@ class IRGenerator:
                                     # the full row (e.g. array(char, $4)), so that later
                                     # `load_index` on it will not treat it as a scalar pointer.
                                     self._var_types[row_ptr] = f"array({base_part}, ${int(dims[1])})"
+                                    if self._sym_table:
+                                        _elem_ct = _str_to_ctype(base_part)
+                                        if _elem_ct is not None:
+                                            self._sym_table.insert(row_ptr, CArrayType(kind=TypeKind.ARRAY, element=_elem_ct, size=int(dims[1])))
                         except Exception:
                             pass
                         self.instructions.append(ins_row)
@@ -4835,6 +4862,10 @@ class IRGenerator:
                                 else:
                                     taddr = self._new_temp()
                                     self._var_types[taddr] = f"{mty}*"
+                                    if self._sym_table:
+                                        _mty_ct = _str_to_ctype(mty)
+                                        if _mty_ct is not None:
+                                            self._sym_table.insert(taddr, PointerType(kind=TypeKind.POINTER, pointee=_mty_ct))
                                 aom_meta = dict(meta)
                                 if member_ctype is not None:
                                     aom_meta["member_ctype"] = member_ctype
@@ -4855,6 +4886,10 @@ class IRGenerator:
                             if _member_is_array:
                                 taddr = self._new_temp()
                                 self._var_types[taddr] = f"{mty}*"
+                                if self._sym_table:
+                                    _mty_ct = _str_to_ctype(mty)
+                                    if _mty_ct is not None:
+                                        self._sym_table.insert(taddr, PointerType(kind=TypeKind.POINTER, pointee=_mty_ct))
                                 aom_meta = dict(meta)
                                 self.instructions.append(IRInstruction(op="addr_of_member_ptr", result=taddr, operand1=base, operand2=expr.member, meta=aom_meta))
                                 return taddr
@@ -4876,6 +4911,10 @@ class IRGenerator:
                 mty_str = meta.get("member_type", "")
                 if isinstance(mty_str, str) and mty_str.strip():
                     self._var_types[t] = mty_str.strip()
+                    if self._sym_table and member_ct is None:
+                        _mty_ct = _str_to_ctype(mty_str.strip())
+                        if _mty_ct is not None:
+                            self._sym_table.insert(t, _mty_ct)
             except Exception:
                 pass
             self.instructions.append(IRInstruction(op="load_member_ptr", result=t, operand1=base, operand2=expr.member, meta=meta if meta else None, result_type=member_ct))
@@ -5296,6 +5335,14 @@ class IRGenerator:
                 # Record the type of the loaded value for downstream ops
                 if pointee_ty:
                     self._var_types[t] = pointee_ty
+                    if self._sym_table:
+                        _pt_ct = _str_to_ctype(pointee_ty)
+                        if _pt_ct is not None:
+                            self._sym_table.insert(t, _pt_ct)
+                elif self._sym_table:
+                    base_ct = self._sym_table.lookup(base)
+                    if isinstance(base_ct, PointerType) and base_ct.pointee is not None:
+                        self._sym_table.insert(t, base_ct.pointee)
                 return t
 
             # ++/-- operators
@@ -5375,6 +5422,10 @@ class IRGenerator:
                         src_ty = getattr(self, "_var_types", {}).get(src_sym)
                         if isinstance(src_ty, str) and not src_ty.strip().startswith("array("):
                             self._var_types[t] = f"{src_ty.strip()}*"
+                            if self._sym_table:
+                                _src_ct = self._sym_table.lookup(src_sym)
+                                if _src_ct is not None:
+                                    self._sym_table.insert(t, PointerType(kind=TypeKind.POINTER, pointee=_src_ct))
                 except Exception:
                     pass
             else:
@@ -5382,11 +5433,13 @@ class IRGenerator:
                 if expr.operator == "-":
                     v_ty = self._var_types.get(v, "")
                     if isinstance(v_ty, str) and v_ty in ("float", "double", "long double"):
-                        zero = self._new_temp()
+                        _fp_ct = FloatType(kind=TypeKind.FLOAT if v_ty == "float" else TypeKind.DOUBLE)
+                        zero = self._new_temp_typed(_fp_ct)
                         self.instructions.append(IRInstruction(op="fmov", result=zero, operand1="0.0", meta={"fp_type": v_ty}))
-                        self._var_types[zero] = v_ty
                         self.instructions.append(IRInstruction(op="fsub", result=t, operand1=zero, operand2=v, meta={"fp_type": v_ty}))
                         self._var_types[t] = v_ty
+                        if self._sym_table:
+                            self._sym_table.insert(t, _fp_ct)
                         return t
                 self.instructions.append(IRInstruction(op="unop", result=t, operand1=v, label=expr.operator))
             return t
@@ -5444,7 +5497,8 @@ class IRGenerator:
                     fp_type = "float"
                 # Promote operands to common fp type
                 if lty_fp not in _FP_TYPES_BIN:
-                    conv = self._new_temp()
+                    _conv_ct = FloatType(kind=TypeKind.FLOAT if fp_type == "float" else TypeKind.DOUBLE)
+                    conv = self._new_temp_typed(_conv_ct)
                     if fp_type == "float":
                         conv_op = "i2f"
                     elif fp_type == "long double":
@@ -5454,10 +5508,10 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(
                         op=conv_op,
                         result=conv, operand1=l, meta={"fp_type": fp_type}))
-                    self._var_types[conv] = fp_type
                     l = conv
                 elif lty_fp != fp_type:
-                    conv = self._new_temp()
+                    _conv_ct = FloatType(kind=TypeKind.FLOAT if fp_type == "float" else TypeKind.DOUBLE)
+                    conv = self._new_temp_typed(_conv_ct)
                     if lty_fp == "float" and fp_type == "double":
                         conv_op = "f2d"
                     elif lty_fp == "float" and fp_type == "long double":
@@ -5467,10 +5521,10 @@ class IRGenerator:
                     else:
                         conv_op = "f2d"
                     self.instructions.append(IRInstruction(op=conv_op, result=conv, operand1=l, meta={"fp_type": fp_type}))
-                    self._var_types[conv] = fp_type
                     l = conv
                 if rty_fp not in _FP_TYPES_BIN:
-                    conv = self._new_temp()
+                    _conv_ct = FloatType(kind=TypeKind.FLOAT if fp_type == "float" else TypeKind.DOUBLE)
+                    conv = self._new_temp_typed(_conv_ct)
                     if fp_type == "float":
                         conv_op = "i2f"
                     elif fp_type == "long double":
@@ -5480,10 +5534,10 @@ class IRGenerator:
                     self.instructions.append(IRInstruction(
                         op=conv_op,
                         result=conv, operand1=r, meta={"fp_type": fp_type}))
-                    self._var_types[conv] = fp_type
                     r = conv
                 elif rty_fp != fp_type:
-                    conv = self._new_temp()
+                    _conv_ct = FloatType(kind=TypeKind.FLOAT if fp_type == "float" else TypeKind.DOUBLE)
+                    conv = self._new_temp_typed(_conv_ct)
                     if rty_fp == "float" and fp_type == "double":
                         conv_op = "f2d"
                     elif rty_fp == "float" and fp_type == "long double":
@@ -5493,7 +5547,6 @@ class IRGenerator:
                     else:
                         conv_op = "f2d"
                     self.instructions.append(IRInstruction(op=conv_op, result=conv, operand1=r, meta={"fp_type": fp_type}))
-                    self._var_types[conv] = fp_type
                     r = conv
                 # Determine CType for the float binary op result.
                 if fp_type == "float":
@@ -5739,12 +5792,12 @@ class IRGenerator:
                 }
                 if fname in _CONST_BUILTINS:
                     val_str, fp_type = _CONST_BUILTINS[fname]
-                    t = self._new_temp()
+                    _fp_ct = FloatType(kind=TypeKind.FLOAT if fp_type == "float" else TypeKind.DOUBLE)
+                    t = self._new_temp_typed(_fp_ct)
                     self.instructions.append(IRInstruction(
                         op="fmov", result=t, operand1=val_str,
                         meta={"fp_type": fp_type}
                     ))
-                    self._var_types[t] = fp_type
                     return t
                 c_name = get_c_library_name(fname)
                 if c_name is not None:
@@ -5802,20 +5855,20 @@ class IRGenerator:
                                 continue
                             # Integer argument needs conversion to float/double.
                             if pt == "float":
-                                conv_t = self._new_temp()
-                                self._var_types[conv_t] = "float"
+                                _conv_ct = FloatType(kind=TypeKind.FLOAT)
+                                conv_t = self._new_temp_typed(_conv_ct)
                                 self.instructions.append(IRInstruction(
                                     op="i2f", result=conv_t, operand1=args[pi],
                                     meta={"fp_type": "float"},
-                                    result_type=FloatType(kind=TypeKind.FLOAT)))
+                                    result_type=_conv_ct))
                                 args[pi] = conv_t
                             else:
-                                conv_t = self._new_temp()
-                                self._var_types[conv_t] = "double"
+                                _conv_ct = FloatType(kind=TypeKind.DOUBLE)
+                                conv_t = self._new_temp_typed(_conv_ct)
                                 self.instructions.append(IRInstruction(
                                     op="i2d", result=conv_t, operand1=args[pi],
                                     meta={"fp_type": "double"},
-                                    result_type=FloatType(kind=TypeKind.DOUBLE)))
+                                    result_type=_conv_ct))
                                 args[pi] = conv_t
             except Exception:
                 pass
@@ -5864,6 +5917,10 @@ class IRGenerator:
                     common = self._usual_arithmetic_conversion(ty_tv, ty_fv)
                     if isinstance(common, str) and common:
                         self._var_types[t] = common
+                        if self._sym_table:
+                            _common_ct = _str_to_ctype(common)
+                            if _common_ct is not None:
+                                self._sym_table.insert(t, _common_ct)
             except Exception:
                 pass
 
@@ -5880,21 +5937,19 @@ class IRGenerator:
             def _materialize_int_promotion(opnd: str, ty: object) -> str:
                 tyn = self._canon_int_type(ty)
                 if tyn == "char":
-                    s = self._new_temp()
+                    _s_ct = IntegerType(kind=TypeKind.INT, is_unsigned=False)
+                    s = self._new_temp_typed(_s_ct)
                     self.instructions.append(IRInstruction(op="sext8", result=s, operand1=opnd))
-                    self._var_types[s] = "int"
                     return s
                 if tyn == "short":
-                    s = self._new_temp()
+                    _s_ct = IntegerType(kind=TypeKind.INT, is_unsigned=False)
+                    s = self._new_temp_typed(_s_ct)
                     self.instructions.append(IRInstruction(op="sext16", result=s, operand1=opnd))
-                    self._var_types[s] = "int"
                     return s
                 if tyn in {"unsigned char", "unsigned short"}:
-                    s = self._new_temp()
+                    _s_ct = IntegerType(kind=TypeKind.INT, is_unsigned=True)
+                    s = self._new_temp_typed(_s_ct)
                     self.instructions.append(IRInstruction(op="zext32", result=s, operand1=opnd))
-                    # Integer promotions for unsigned short/char yield an
-                    # unsigned int in our model.
-                    self._var_types[s] = "unsigned int"
                     return s
                 return opnd
 
@@ -5914,14 +5969,15 @@ class IRGenerator:
             res_ty_n = res_ty.strip().lower() if isinstance(res_ty, str) else ""
             if res_ty_n.startswith("unsigned long"):
                 self._var_types[t] = "unsigned long"
+                if self._sym_table:
+                    self._sym_table.insert(t, IntegerType(kind=TypeKind.LONG, is_unsigned=True))
 
             # If the result is unsigned int, ensure both arms are zero-extended
             # to 64-bit so that negative int values behave like UINT_MAX, etc.
             if res_ty_n.startswith("unsigned int"):
-                tv2 = self._new_temp()
-                fv2 = self._new_temp()
-                self._var_types[tv2] = "unsigned int"
-                self._var_types[fv2] = "unsigned int"
+                _uint_ct = IntegerType(kind=TypeKind.INT, is_unsigned=True)
+                tv2 = self._new_temp_typed(_uint_ct)
+                fv2 = self._new_temp_typed(_uint_ct)
                 self.instructions.append(IRInstruction(op="zext32", result=tv2, operand1=tv))
                 self.instructions.append(IRInstruction(op="zext32", result=fv2, operand1=fv))
                 tv, fv = tv2, fv2
