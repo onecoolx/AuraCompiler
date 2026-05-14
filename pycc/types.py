@@ -366,6 +366,19 @@ def ctype_to_ast_type(ct: CType):
             is_volatile=ct.quals.volatile,
         )
 
+    # --- FunctionTypeCType ---
+    if isinstance(ct, FunctionTypeCType):
+        # Function types in expression context should have been decayed to
+        # pointer-to-function. If we reach here, represent as a void base
+        # with function metadata (return type).
+        ret_ast = ctype_to_ast_type(ct.return_type) if ct.return_type else ASTType(line=0, column=0, base='int')
+        return ASTType(
+            line=0, column=0,
+            base=ret_ast.base if ret_ast else 'int',
+            fn_param_count=len(ct.param_types) if ct.param_types else None,
+            fn_return_type=ret_ast,
+        )
+
     # --- VoidType ---
     if ct.kind == TypeKind.VOID:
         return ASTType(

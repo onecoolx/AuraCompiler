@@ -7,10 +7,11 @@ Feature: expr-type-annotation
 """
 
 import pytest
+from dataclasses import dataclass
 from hypothesis import given, strategies as st, settings
 
 from pycc.semantics import SemanticAnalyzer
-from pycc.ast_nodes import IntLiteral, CharLiteral, FloatLiteral, StringLiteral
+from pycc.ast_nodes import IntLiteral, CharLiteral, FloatLiteral, StringLiteral, TernaryOp, Expression, CommaOp, Assignment
 from pycc.types import (
     FloatType,
     IntegerType,
@@ -613,6 +614,71 @@ class TestBitwiseIntegerPromotionProperty:
 
 
 # =============================================================================
+# Property 7: 三元运算符算术 UAC
+# Feature: expr-type-annotation, Property 7: 三元运算符算术 UAC
+# =============================================================================
+
+
+@dataclass
+class _TypedExpr(Expression):
+    """A dummy expression node with a pre-set resolved_type.
+
+    _analyze_expr won't recognize this subclass, so it won't overwrite
+    the resolved_type we set. This lets us control the branch types
+    for testing the ternary operator's UAC logic.
+    """
+    pass
+
+
+def _make_typed_expr(ctype):
+    """Create a dummy expression with a given resolved_type."""
+    expr = _TypedExpr(line=1, column=1)
+    expr.resolved_type = ctype
+    return expr
+
+
+class TestTernaryArithmeticUACProperty:
+    """Property 7: 三元运算符算术 UAC
+
+    For any two arithmetic types used as the true/false branches of a ternary
+    operator, the result's .resolved_type should equal
+    usual_arithmetic_conversions(true_type, false_type).
+
+    **Validates: Requirements 2.7**
+    """
+
+    @settings(max_examples=100)
+    @given(true_type=_arithmetic_types, false_type=_arithmetic_types)
+    def test_ternary_arithmetic_result_equals_uac(self, true_type, false_type):
+        """Ternary with arithmetic branches produces UAC(promote(true), promote(false)).
+
+        **Validates: Requirements 2.7**
+        """
+        sa = _make_analyzer()
+
+        # Create condition expression (IntLiteral will get resolved_type=INT)
+        condition = IntLiteral(value=1, line=1, column=1)
+        # Create true/false branch expressions with pre-set resolved_type
+        # Using _TypedExpr so _analyze_expr won't overwrite the type
+        true_expr = _make_typed_expr(true_type)
+        false_expr = _make_typed_expr(false_type)
+
+        # Build TernaryOp node
+        ternary = TernaryOp(
+            condition=condition,
+            true_expr=true_expr,
+            false_expr=false_expr,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(ternary)
+
+        expected = usual_arithmetic_conversions(
+            integer_promote(true_type), integer_promote(false_type))
+        assert ternary.resolved_type == expected
+
+
+# =============================================================================
 # Property 9: 取地址/解引用 round-trip
 # Feature: expr-type-annotation, Property 9: 取地址/解引用 round-trip
 # =============================================================================
@@ -717,3 +783,466 @@ class TestUnaryPromotionProperty:
         result = sa._unary_result_type(op, t)
         expected = integer_promote(t)
         assert result == expected
+
+
+# =============================================================================
+# Property 8: 逗号和赋值类型规则
+# Feature: expr-type-annotation, Property 8: 逗号和赋值类型规则
+# =============================================================================
+
+# Strategy for generating random CTypes for comma/assignment tests
+_all_ctypes_for_comma_assign = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=True),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.SHORT, is_unsigned=True),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+    FloatType(kind=TypeKind.FLOAT),
+    FloatType(kind=TypeKind.DOUBLE),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT)),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR)),
+    PointerType(kind=TypeKind.POINTER, pointee=FloatType(kind=TypeKind.DOUBLE)),
+])
+
+
+class TestCommaAndAssignmentTypeRulesProperty:
+    """Property 8: 逗号和赋值类型规则
+
+    For any comma expression `(a, b)`, .resolved_type should equal b's type;
+    For any assignment expression `a = b`, .resolved_type should equal a's type.
+
+    **Validates: Requirements 2.9, 2.10**
+    """
+
+    @settings(max_examples=100)
+    @given(left_type=_all_ctypes_for_comma_assign, right_type=_all_ctypes_for_comma_assign)
+    def test_comma_result_type_equals_right_operand(self, left_type, right_type):
+        """CommaOp (a, b) has resolved_type equal to b's type.
+
+        **Validates: Requirements 2.9**
+        """
+        sa = _make_analyzer()
+
+        # Create left and right expressions with pre-set resolved_type
+        left_expr = _make_typed_expr(left_type)
+        right_expr = _make_typed_expr(right_type)
+
+        # Build CommaOp node
+        comma = CommaOp(
+            left=left_expr,
+            right=right_expr,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(comma)
+
+        assert comma.resolved_type == right_type
+
+    @settings(max_examples=100)
+    @given(left_type=_all_ctypes_for_comma_assign, right_type=_all_ctypes_for_comma_assign)
+    def test_assignment_result_type_equals_left_operand(self, left_type, right_type):
+        """Assignment (a = b) has resolved_type equal to a's type.
+
+        **Validates: Requirements 2.10**
+        """
+        sa = _make_analyzer()
+
+        # Create target and value expressions with pre-set resolved_type
+        target_expr = _make_typed_expr(left_type)
+        value_expr = _make_typed_expr(right_type)
+
+        # Build Assignment node
+        assign = Assignment(
+            target=target_expr,
+            operator='=',
+            value=value_expr,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(assign)
+
+        assert assign.resolved_type == left_type
+
+    @settings(max_examples=100)
+    @given(
+        left_type=_all_ctypes_for_comma_assign,
+        mid_type=_all_ctypes_for_comma_assign,
+        right_type=_all_ctypes_for_comma_assign,
+    )
+    def test_nested_comma_result_type_equals_rightmost(self, left_type, mid_type, right_type):
+        """Nested comma (a, (b, c)) has resolved_type equal to c's type.
+
+        **Validates: Requirements 2.9**
+        """
+        sa = _make_analyzer()
+
+        left_expr = _make_typed_expr(left_type)
+        mid_expr = _make_typed_expr(mid_type)
+        right_expr = _make_typed_expr(right_type)
+
+        # Inner comma: (b, c) -> type of c
+        inner_comma = CommaOp(
+            left=mid_expr,
+            right=right_expr,
+            line=1, column=1,
+        )
+
+        # Outer comma: (a, (b, c)) -> type of inner comma = type of c
+        outer_comma = CommaOp(
+            left=left_expr,
+            right=inner_comma,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(outer_comma)
+
+        assert outer_comma.resolved_type == right_type
+
+    @settings(max_examples=100)
+    @given(
+        assign_ops=st.sampled_from(['=', '+=', '-=', '*=', '/=', '%=']),
+        left_type=_all_ctypes_for_comma_assign,
+        right_type=_all_ctypes_for_comma_assign,
+    )
+    def test_compound_assignment_result_type_equals_left(self, assign_ops, left_type, right_type):
+        """Compound assignment (a op= b) has resolved_type equal to a's type.
+
+        **Validates: Requirements 2.10**
+        """
+        sa = _make_analyzer()
+
+        target_expr = _make_typed_expr(left_type)
+        value_expr = _make_typed_expr(right_type)
+
+        assign = Assignment(
+            target=target_expr,
+            operator=assign_ops,
+            value=value_expr,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(assign)
+
+        assert assign.resolved_type == left_type
+
+
+# =============================================================================
+# Property 14: 下标运算类型
+# Feature: expr-type-annotation, Property 14: 下标运算类型
+# =============================================================================
+
+from pycc.ast_nodes import ArrayAccess
+
+# Strategy for element types used in array/pointer subscript tests
+_element_types_for_subscript = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=True),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.SHORT, is_unsigned=True),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+    FloatType(kind=TypeKind.FLOAT),
+    FloatType(kind=TypeKind.DOUBLE),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT)),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR)),
+])
+
+
+class TestSubscriptOperatorTypeProperty:
+    """Property 14: 下标运算类型
+
+    For any ArrayType(element=T) or PointerType(pointee=T) expression,
+    the subscript operation `expr[i]` should have .resolved_type equal to T.
+
+    **Validates: Requirements 4.1, 4.2**
+    """
+
+    @settings(max_examples=100)
+    @given(elem_type=_element_types_for_subscript,
+           array_size=st.integers(min_value=1, max_value=100))
+    def test_array_subscript_yields_element_type(self, elem_type, array_size):
+        """ArrayType(element=T)[i] has resolved_type == T.
+
+        **Validates: Requirements 4.1**
+        """
+        sa = _make_analyzer()
+
+        # Create base expression with ArrayType resolved_type
+        array_ct = ArrayType(kind=TypeKind.ARRAY, element=elem_type, size=array_size)
+        base_expr = _make_typed_expr(array_ct)
+
+        # Create index expression (integer literal)
+        index_expr = IntLiteral(value=0, line=1, column=1)
+
+        # Build ArrayAccess node
+        access = ArrayAccess(
+            array=base_expr,
+            index=index_expr,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(access)
+
+        assert access.resolved_type is not None
+        assert access.resolved_type == elem_type
+
+    @settings(max_examples=100)
+    @given(elem_type=_element_types_for_subscript)
+    def test_pointer_subscript_yields_pointee_type(self, elem_type):
+        """PointerType(pointee=T)[i] has resolved_type == T.
+
+        **Validates: Requirements 4.2**
+        """
+        sa = _make_analyzer()
+
+        # Create base expression with PointerType resolved_type
+        ptr_ct = PointerType(kind=TypeKind.POINTER, pointee=elem_type)
+        base_expr = _make_typed_expr(ptr_ct)
+
+        # Create index expression (integer literal)
+        index_expr = IntLiteral(value=0, line=1, column=1)
+
+        # Build ArrayAccess node
+        access = ArrayAccess(
+            array=base_expr,
+            index=index_expr,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(access)
+
+        assert access.resolved_type is not None
+        assert access.resolved_type == elem_type
+
+    @settings(max_examples=100)
+    @given(
+        elem_type=_element_types_for_subscript,
+        use_array=st.booleans(),
+        array_size=st.integers(min_value=1, max_value=50),
+        index_val=st.integers(min_value=0, max_value=49),
+    )
+    def test_subscript_type_independent_of_index_value(self, elem_type, use_array, array_size, index_val):
+        """Subscript result type is T regardless of the index value used.
+
+        **Validates: Requirements 4.1, 4.2**
+        """
+        sa = _make_analyzer()
+
+        # Create base with either ArrayType or PointerType
+        if use_array:
+            base_ct = ArrayType(kind=TypeKind.ARRAY, element=elem_type, size=array_size)
+        else:
+            base_ct = PointerType(kind=TypeKind.POINTER, pointee=elem_type)
+
+        base_expr = _make_typed_expr(base_ct)
+        index_expr = IntLiteral(value=index_val, line=1, column=1)
+
+        access = ArrayAccess(
+            array=base_expr,
+            index=index_expr,
+            line=1, column=1,
+        )
+
+        sa._analyze_expr(access)
+
+        assert access.resolved_type is not None
+        assert access.resolved_type == elem_type
+
+
+# =============================================================================
+# Property 17: _expr_type 兼容性
+# Feature: expr-type-annotation, Property 17: _expr_type 兼容性
+# =============================================================================
+
+from pycc.types import ctype_to_ast_type, StructType, EnumType, CType, ast_type_to_ctype
+
+
+# Strategy for all CType variants that can appear as resolved_type
+_all_resolved_ctypes = st.sampled_from([
+    # Integer types
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=True),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.SHORT, is_unsigned=True),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+    # Float types
+    FloatType(kind=TypeKind.FLOAT),
+    FloatType(kind=TypeKind.DOUBLE),
+    # Pointer types
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT)),
+    PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.CHAR)),
+    PointerType(kind=TypeKind.POINTER, pointee=FloatType(kind=TypeKind.DOUBLE)),
+    PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)),
+    # Double pointer
+    PointerType(kind=TypeKind.POINTER, pointee=PointerType(kind=TypeKind.POINTER, pointee=IntegerType(kind=TypeKind.INT))),
+    # Struct/Union types
+    StructType(kind=TypeKind.STRUCT, tag='MyStruct'),
+    StructType(kind=TypeKind.UNION, tag='MyUnion'),
+    # Enum type
+    EnumType(kind=TypeKind.ENUM, tag='Color'),
+    # Void type
+    CType(kind=TypeKind.VOID),
+])
+
+
+class TestExprTypeCompatibilityProperty:
+    """Property 17: _expr_type 兼容性
+
+    For any expression node with .resolved_type set, calling _expr_type()
+    returns an ast_nodes.Type that is semantically equivalent to the
+    .resolved_type (same base type, pointer level, signedness, etc.).
+
+    **Validates: Requirements 6.3**
+    """
+
+    @settings(max_examples=100)
+    @given(ct=_all_resolved_ctypes)
+    def test_expr_type_returns_equivalent_ast_type(self, ct):
+        """_expr_type() on a node with resolved_type returns semantically equivalent Type.
+
+        **Validates: Requirements 6.3**
+        """
+        sa = _make_analyzer()
+
+        # Create a dummy expression with resolved_type set
+        expr = _make_typed_expr(ct)
+
+        # Call _expr_type which should use the resolved_type path
+        result = sa._expr_type(expr)
+
+        # Verify result is not None
+        assert result is not None, f"_expr_type returned None for resolved_type={ct}"
+
+        # Convert back to CType and verify round-trip equivalence
+        round_trip = ast_type_to_ctype(result)
+
+        # Verify kind matches
+        assert round_trip.kind == ct.kind, (
+            f"Kind mismatch: expected {ct.kind}, got {round_trip.kind} "
+            f"(resolved_type={ct}, ast_type={result})"
+        )
+
+    @settings(max_examples=100)
+    @given(ct=_all_resolved_ctypes)
+    def test_expr_type_pointer_level_matches(self, ct):
+        """_expr_type() preserves pointer level from resolved_type.
+
+        **Validates: Requirements 6.3**
+        """
+        sa = _make_analyzer()
+        expr = _make_typed_expr(ct)
+        result = sa._expr_type(expr)
+
+        assert result is not None
+
+        # Count pointer depth in the CType
+        expected_ptr_level = 0
+        inner = ct
+        while isinstance(inner, PointerType):
+            expected_ptr_level += 1
+            inner = inner.pointee if inner.pointee else CType(kind=TypeKind.VOID)
+
+        # Check the ast_nodes.Type pointer_level
+        actual_ptr_level = getattr(result, 'pointer_level', 0) or 0
+        assert actual_ptr_level == expected_ptr_level, (
+            f"Pointer level mismatch: expected {expected_ptr_level}, "
+            f"got {actual_ptr_level} for resolved_type={ct}"
+        )
+
+    @settings(max_examples=100)
+    @given(
+        base=st.sampled_from(['int', 'char', 'short', 'long']),
+        is_unsigned=st.booleans(),
+    )
+    def test_expr_type_preserves_signedness(self, base, is_unsigned):
+        """_expr_type() preserves unsigned flag from resolved_type.
+
+        **Validates: Requirements 6.3**
+        """
+        kind_map = {'int': TypeKind.INT, 'char': TypeKind.CHAR,
+                    'short': TypeKind.SHORT, 'long': TypeKind.LONG}
+        ct = IntegerType(kind=kind_map[base], is_unsigned=is_unsigned)
+
+        sa = _make_analyzer()
+        expr = _make_typed_expr(ct)
+        result = sa._expr_type(expr)
+
+        assert result is not None
+        assert getattr(result, 'is_unsigned', False) == is_unsigned, (
+            f"Unsigned mismatch: expected {is_unsigned}, "
+            f"got {getattr(result, 'is_unsigned', False)} for {ct}"
+        )
+
+    @settings(max_examples=100)
+    @given(ct=_all_resolved_ctypes)
+    def test_expr_type_base_name_correct(self, ct):
+        """_expr_type() produces correct base name for the resolved_type.
+
+        **Validates: Requirements 6.3**
+        """
+        sa = _make_analyzer()
+        expr = _make_typed_expr(ct)
+        result = sa._expr_type(expr)
+
+        assert result is not None
+        base = getattr(result, 'base', '')
+
+        # Verify base name matches the CType kind
+        if ct.kind == TypeKind.INT:
+            assert base == 'int'
+        elif ct.kind == TypeKind.CHAR:
+            assert base == 'char'
+        elif ct.kind == TypeKind.SHORT:
+            assert base == 'short'
+        elif ct.kind == TypeKind.LONG:
+            assert base == 'long'
+        elif ct.kind == TypeKind.FLOAT:
+            assert base == 'float'
+        elif ct.kind == TypeKind.DOUBLE:
+            assert base == 'double'
+        elif ct.kind == TypeKind.VOID:
+            assert base == 'void'
+        elif ct.kind == TypeKind.POINTER:
+            # For pointers, base is the innermost non-pointer type's base
+            inner = ct
+            while isinstance(inner, PointerType):
+                inner = inner.pointee if inner.pointee else CType(kind=TypeKind.VOID)
+            inner_ast = ctype_to_ast_type(inner)
+            assert base == getattr(inner_ast, 'base', ''), (
+                f"Pointer base mismatch: expected '{getattr(inner_ast, 'base', '')}', got '{base}'"
+            )
+        elif ct.kind == TypeKind.STRUCT:
+            assert 'struct' in base or 'union' in base
+        elif ct.kind == TypeKind.UNION:
+            assert 'union' in base
+        elif ct.kind == TypeKind.ENUM:
+            assert 'enum' in base
+
+    @settings(max_examples=100)
+    @given(ct=_all_resolved_ctypes)
+    def test_expr_type_is_pointer_flag_correct(self, ct):
+        """_expr_type() sets is_pointer correctly based on resolved_type.
+
+        **Validates: Requirements 6.3**
+        """
+        sa = _make_analyzer()
+        expr = _make_typed_expr(ct)
+        result = sa._expr_type(expr)
+
+        assert result is not None
+
+        is_ptr_type = isinstance(ct, PointerType)
+        result_is_ptr = getattr(result, 'is_pointer', False)
+
+        assert result_is_ptr == is_ptr_type, (
+            f"is_pointer mismatch: expected {is_ptr_type}, "
+            f"got {result_is_ptr} for resolved_type={ct}"
+        )
