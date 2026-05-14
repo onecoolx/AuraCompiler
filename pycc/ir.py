@@ -1699,41 +1699,95 @@ class IRGenerator:
                 return True
         return False
 
+    def _operand_ctype(self, op: str) -> Optional[CType]:
+        """Unified operand type query: _sym_table first, fallback to _var_types."""
+        if self._sym_table:
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                return ct
+        # Fallback: parse from _var_types string
+        ty = self._var_types.get(op, "")
+        if ty:
+            return _str_to_ctype(ty)
+        return None
+
     def _is_unsigned_operand(self, op: str) -> bool:
-        """Best-effort check whether an operand is unsigned.
+        """Check whether an operand is unsigned integer type.
 
-        We only use this for comparison lowering in the current milestone.
-        Operands are IR strings like:
-        - locals: "@x"
-        - immediates: "$5"
-        - temps: "%t0"
-
-        We conservatively treat immediates as signed.
+        Queries _sym_table first (CType-based), falls back to _var_types
+        string parsing during the transition period.
         """
-
         if not isinstance(op, str):
             return False
-        if op.startswith("%"):
+        # CType-based path (primary)
+        if self._sym_table:
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                return isinstance(ct, IntegerType) and ct.is_unsigned
+        # Fallback: _var_types string parsing
+        if op.startswith("%") or op.startswith("@"):
             ty = getattr(self, "_var_types", {}).get(op)
             if isinstance(ty, str) and ty.strip().lower().startswith("unsigned "):
                 return True
-        if op.startswith("@"):  # locals / globals
-            # local type table (populated from decl/param operand1)
-            ty = getattr(self, "_var_types", {}).get(op)
-            if isinstance(ty, str):
-                ty_norm = ty.strip().lower()
-                if ty_norm.startswith("unsigned "):
-                    return True
-            # global type table (from semantic pass)
-            if self._sema_ctx is not None:
-                g = getattr(self._sema_ctx, "global_types", {})
-                # stored without '@'
-                ty2 = g.get(op[1:])
-                if isinstance(ty2, str):
-                    ty2_norm = ty2.strip().lower()
-                    if ty2_norm.startswith("unsigned "):
-                        return True
+        if op.startswith("@") and self._sema_ctx is not None:
+            g = getattr(self._sema_ctx, "global_types", {})
+            ty2 = g.get(op[1:])
+            if isinstance(ty2, str) and ty2.strip().lower().startswith("unsigned "):
+                return True
         return False
+
+    def _is_pointer_operand(self, op: str) -> bool:
+        """Check whether an operand is a pointer type.
+
+        Queries _sym_table first (CType-based), falls back to _var_types
+        string parsing during the transition period.
+        """
+        if self._sym_table:
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                return ct.kind == TypeKind.POINTER
+        ty = self._var_types.get(op, "")
+        return isinstance(ty, str) and ty.strip().endswith("*")
+
+    def _is_array_operand(self, op: str) -> bool:
+        """Check whether an operand is an array type.
+
+        Queries _sym_table first (CType-based), falls back to _var_types
+        string parsing during the transition period.
+        """
+        if self._sym_table:
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                return ct.kind == TypeKind.ARRAY
+        ty = self._var_types.get(op, "")
+        return isinstance(ty, str) and ty.strip().startswith("array(")
+
+    def _is_struct_operand(self, op: str) -> bool:
+        """Check whether an operand is a struct or union type.
+
+        Queries _sym_table first (CType-based), falls back to _var_types
+        string parsing during the transition period.
+        """
+        if self._sym_table:
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                return ct.kind in (TypeKind.STRUCT, TypeKind.UNION)
+        ty = self._var_types.get(op, "")
+        return isinstance(ty, str) and (
+            ty.strip().startswith("struct ") or ty.strip().startswith("union "))
+
+    def _is_float_operand(self, op: str) -> bool:
+        """Check whether an operand is a floating-point type.
+
+        Queries _sym_table first (CType-based), falls back to _var_types
+        string parsing during the transition period.
+        """
+        if self._sym_table:
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                return ct.kind in (TypeKind.FLOAT, TypeKind.DOUBLE)
+        ty = self._var_types.get(op, "")
+        return isinstance(ty, str) and ty.strip() in ("float", "double")
 
     def _normalize_int_type(self, ty: str) -> str:
         if not isinstance(ty, str):
