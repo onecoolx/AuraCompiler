@@ -2699,6 +2699,41 @@ class SemanticAnalyzer:
 
             for a in expr.arguments:
                 self._analyze_expr(a)
+
+            # Type annotation for FunctionCall: resolve return type
+            func_name = None
+            if isinstance(expr.function, Identifier):
+                func_name = expr.function.name
+            if func_name is not None:
+                sig = self._function_full_sig.get(func_name)
+                if sig is not None:
+                    _param_types, ret_type = sig
+                    if ret_type is not None:
+                        sema_ctx = self._make_sema_ctx_for_types()
+                        ret_ct = ast_type_to_ctype_resolved(ret_type, sema_ctx)
+                        self._annotate_type(expr, ret_ct)
+                    else:
+                        # No return type info -> implicit int (C89)
+                        self._annotate_type(expr, IntegerType(kind=TypeKind.INT))
+                else:
+                    # Undeclared function or no prototype -> implicit int (C89)
+                    self._annotate_type(expr, IntegerType(kind=TypeKind.INT))
+            else:
+                # Function pointer call - try to infer return type from callee type
+                callee_ct = getattr(expr.function, 'resolved_type', None)
+                if callee_ct is not None:
+                    # If callee is a pointer to function, get the return type
+                    if isinstance(callee_ct, PointerType) and getattr(callee_ct, 'pointee', None) is not None:
+                        pointee = callee_ct.pointee
+                        ret_ct = getattr(pointee, 'return_type', None)
+                        if ret_ct is not None:
+                            self._annotate_type(expr, ret_ct)
+                        else:
+                            self._annotate_type(expr, IntegerType(kind=TypeKind.INT))
+                    else:
+                        self._annotate_type(expr, IntegerType(kind=TypeKind.INT))
+                else:
+                    self._annotate_type(expr, None)
             return
 
         if isinstance(expr, SizeOf):

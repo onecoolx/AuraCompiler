@@ -745,3 +745,154 @@ class TestSizeOfTypeAnnotation:
         assert isinstance(expr.resolved_type, IntegerType)
         assert expr.resolved_type.kind == TypeKind.LONG
         assert expr.resolved_type.is_unsigned is True
+
+
+class TestFunctionCallTypeAnnotation:
+    """Tests for FunctionCall expression type annotation (task 5.5)."""
+
+    def test_function_call_returns_int(self, analyzer):
+        """A function declared as returning int should annotate the call with IntegerType(INT)."""
+        from pycc.ast_nodes import FunctionCall, Identifier
+
+        # Register function signature: int foo(void)
+        ret_type = ASTType(line=0, column=0, base="int")
+        analyzer._function_full_sig = {"foo": ([], ret_type)}
+        analyzer._functions = {"foo"}
+
+        expr = FunctionCall(
+            function=Identifier(name="foo", line=1, column=1),
+            arguments=[],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_function_call_returns_pointer(self, analyzer):
+        """A function returning char* should annotate the call with PointerType(CHAR)."""
+        from pycc.ast_nodes import FunctionCall, Identifier
+
+        ret_type = ASTType(line=0, column=0, base="char", is_pointer=True, pointer_level=1)
+        analyzer._function_full_sig = {"get_str": ([], ret_type)}
+        analyzer._functions = {"get_str"}
+
+        expr = FunctionCall(
+            function=Identifier(name="get_str", line=1, column=1),
+            arguments=[],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+    def test_function_call_returns_double(self, analyzer):
+        """A function returning double should annotate the call with FloatType(DOUBLE)."""
+        from pycc.ast_nodes import FunctionCall, Identifier
+
+        ret_type = ASTType(line=0, column=0, base="double")
+        analyzer._function_full_sig = {"compute": ([], ret_type)}
+        analyzer._functions = {"compute"}
+
+        expr = FunctionCall(
+            function=Identifier(name="compute", line=1, column=1),
+            arguments=[],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, FloatType)
+        assert expr.resolved_type.kind == TypeKind.DOUBLE
+
+    def test_function_call_returns_long(self, analyzer):
+        """A function returning long should annotate the call with IntegerType(LONG)."""
+        from pycc.ast_nodes import FunctionCall, Identifier
+
+        ret_type = ASTType(line=0, column=0, base="long")
+        analyzer._function_full_sig = {"get_size": ([], ret_type)}
+        analyzer._functions = {"get_size"}
+
+        expr = FunctionCall(
+            function=Identifier(name="get_size", line=1, column=1),
+            arguments=[],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.LONG
+
+    def test_function_call_implicit_int_for_undeclared(self, analyzer):
+        """An undeclared function (C89 implicit declaration) should default to int return."""
+        from pycc.ast_nodes import FunctionCall, Identifier
+
+        # No signature registered - simulates implicit declaration
+        analyzer._function_full_sig = {}
+        analyzer._functions = set()
+
+        expr = FunctionCall(
+            function=Identifier(name="unknown_func", line=1, column=1),
+            arguments=[],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_function_call_with_arguments(self, analyzer):
+        """Function call with arguments should still annotate return type correctly."""
+        from pycc.ast_nodes import FunctionCall, Identifier, IntLiteral
+
+        ret_type = ASTType(line=0, column=0, base="int")
+        param_types = [ASTType(line=0, column=0, base="int")]
+        analyzer._function_full_sig = {"add": (param_types, ret_type)}
+        analyzer._functions = {"add"}
+        analyzer._function_sigs = {"add": ("int", 1, False)}
+
+        expr = FunctionCall(
+            function=Identifier(name="add", line=1, column=1),
+            arguments=[IntLiteral(value=5, line=1, column=5)],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_function_call_returns_unsigned_int(self, analyzer):
+        """A function returning unsigned int should annotate correctly."""
+        from pycc.ast_nodes import FunctionCall, Identifier
+
+        ret_type = ASTType(line=0, column=0, base="int", is_unsigned=True)
+        analyzer._function_full_sig = {"get_count": ([], ret_type)}
+        analyzer._functions = {"get_count"}
+
+        expr = FunctionCall(
+            function=Identifier(name="get_count", line=1, column=1),
+            arguments=[],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
+        assert expr.resolved_type.is_unsigned is True
+
+    def test_function_pointer_call_no_type_info(self, analyzer):
+        """A function pointer call with no signature defaults to implicit int (C89)."""
+        from pycc.ast_nodes import FunctionCall, Identifier
+
+        # Simulate calling through a name that has no registered signature
+        callee = Identifier(name="fptr", line=1, column=1)
+        analyzer._decl_types = {
+            "fptr": ASTType(line=0, column=0, base="int", is_pointer=True, pointer_level=1)
+        }
+        analyzer._function_full_sig = {}
+        analyzer._functions = set()
+        analyzer._function_sigs = {}
+
+        expr = FunctionCall(
+            function=callee,
+            arguments=[],
+            line=1, column=1,
+        )
+        analyzer._analyze_expr(expr)
+        # fptr is an Identifier so it goes through the named function path
+        # Without a signature, it defaults to implicit int (C89)
+        assert isinstance(expr.resolved_type, IntegerType)
+        assert expr.resolved_type.kind == TypeKind.INT
