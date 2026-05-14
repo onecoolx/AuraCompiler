@@ -503,6 +503,11 @@ class CodeGenerator:
                 ty = str(ins.operand1)
                 if ty.startswith("array(") and ins.result not in self._var_types:
                     self._var_types[ins.result] = ty
+                    # Dual-write: also register in _sym_table
+                    if self._sym_table:
+                        ct = _str_to_ctype(ty)
+                        if ct is not None:
+                            self._sym_table.insert(ins.result, ct)
 
         self._emit(".text")
         i = 0
@@ -542,9 +547,17 @@ class CodeGenerator:
                     d = instructions[j]
                     if d.op == "decl" and d.result and d.operand1:
                         self._var_types[d.result] = str(d.operand1)
+                        # Dual-write: also register in _sym_table
+                        if self._sym_table:
+                            ct = _str_to_ctype(str(d.operand1))
+                            if ct is not None:
+                                self._sym_table.insert(d.result, ct)
                     if d.op == "addr_index" and d.result:
                         if d.result not in self._var_types:
                             self._var_types[d.result] = "ptr"
+                            # Dual-write: register as generic pointer in _sym_table
+                            if self._sym_table:
+                                self._sym_table.insert(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
                     if d.op in ("addr_of_member", "addr_of_member_ptr") and d.result:
                         if d.result not in self._var_types:
                             # Use member_type from meta for correct pointer type
@@ -552,8 +565,16 @@ class CodeGenerator:
                             _mty = d.meta.get("member_type") if isinstance(d.meta, dict) else None
                             if isinstance(_mty, str) and _mty.strip():
                                 self._var_types[d.result] = f"{_mty}*"
+                                # Dual-write: register as pointer to member type
+                                if self._sym_table:
+                                    base_ct = _str_to_ctype(_mty)
+                                    if base_ct is not None:
+                                        self._sym_table.insert(d.result, PointerType(kind=TypeKind.POINTER, pointee=base_ct))
                             else:
                                 self._var_types[d.result] = "ptr"
+                                # Dual-write: register as generic pointer
+                                if self._sym_table:
+                                    self._sym_table.insert(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
                     j += 1
                 # Collect ALL decl/param instructions in the function body
                 # (not just top-of-function). C89 allows declarations after
@@ -616,6 +637,11 @@ class CodeGenerator:
                 # (e.g. local `char s[] = "..."` lowers by overriding decl).
                 if ins.operand1:
                     self._var_types[ins.result] = str(ins.operand1)
+                    # Dual-write: register in _sym_table
+                    if self._sym_table:
+                        ct = _str_to_ctype(str(ins.operand1))
+                        if ct is not None:
+                            self._sym_table.insert(ins.result, ct)
                     # If an array decl is introduced late, remember its size so
                     # later stack addressing and array decay behaves consistently.
                     op1 = str(ins.operand1)
@@ -757,6 +783,12 @@ class CodeGenerator:
                 offset += size_bytes
                 self._locals[sym] = offset
                 self._var_types[sym] = f"array({base_part},${elems})"
+                # Dual-write: register array type in _sym_table
+                if self._sym_table:
+                    elem_ct = _str_to_ctype(base_part)
+                    if elem_ct is not None:
+                        arr_ct = ArrayType(kind=TypeKind.ARRAY, element=elem_ct, size=elems)
+                        self._sym_table.insert(sym, arr_ct)
                 if elems > 0:
                     self._arrays[sym] = size_bytes
             else:
@@ -782,6 +814,9 @@ class CodeGenerator:
                     offset += size_bytes
                     self._locals[sym] = offset
                     self._var_types[sym] = resolved_ty
+                    # Dual-write: register struct/union type in _sym_table
+                    if self._sym_table and decl_ct is not None:
+                        self._sym_table.insert(sym, decl_ct)
                 elif ty_str.strip() == "long double":
                     # long double needs 16-byte aligned slot (x86-64 ABI)
                     # Align offset to 16-byte boundary first
@@ -790,6 +825,9 @@ class CodeGenerator:
                     offset += 16
                     self._locals[sym] = offset
                     self._var_types[sym] = "long double"
+                    # Dual-write: register long double in _sym_table
+                    if self._sym_table:
+                        self._sym_table.insert(sym, FloatType(kind=TypeKind.DOUBLE))
                 else:
                     # Scalar locals: reserve a full 8-byte slot (simplifies addressing).
                     offset += 8
@@ -797,6 +835,11 @@ class CodeGenerator:
                     if d.operand1:
                         # remember declared type base for load/store width decisions
                         self._var_types[sym] = str(d.operand1)
+                        # Dual-write: register scalar type in _sym_table
+                        if self._sym_table:
+                            ct = _str_to_ctype(str(d.operand1))
+                            if ct is not None:
+                                self._sym_table.insert(sym, ct)
 
         # Seed stack slots for late-discovered locals.
         # IR currently emits decls before first use, but codegen also allocates
@@ -813,6 +856,11 @@ class CodeGenerator:
             self._locals[sym] = offset
             if d.operand1:
                 self._var_types[sym] = str(d.operand1)
+                # Dual-write: register in _sym_table
+                if self._sym_table:
+                    ct = _str_to_ctype(str(d.operand1))
+                    if ct is not None:
+                        self._sym_table.insert(sym, ct)
 
         # Record declared locals size *before* reserving the spill area.
         # Offsets in self._locals are positive and used as -off(%rbp).
@@ -897,6 +945,9 @@ class CodeGenerator:
                 self._emit(f"  movq {16 + stack_arg_off + 8}(%rbp), %rax")
                 self._emit(f"  movq %rax, -{off - 8}(%rbp)")
                 self._var_types[d.result] = "long double"
+                # Dual-write: register long double param in _sym_table
+                if self._sym_table:
+                    self._sym_table.insert(d.result, FloatType(kind=TypeKind.DOUBLE))
                 stack_arg_off += 16
             elif ty in ("float", "double"):
                 if xmm_idx < len(xmm_arg_regs):
@@ -981,6 +1032,11 @@ class CodeGenerator:
                 gp_idx += 1
             if d.operand1:
                 self._var_types[d.result] = str(d.operand1)
+                # Dual-write: register param type in _sym_table
+                if self._sym_table:
+                    ct = _str_to_ctype(str(d.operand1))
+                    if ct is not None:
+                        self._sym_table.insert(d.result, ct)
 
         # Varargs support (SysV AMD64): reserve a fixed reg_save_area and tag
         # area in the callee frame so `__builtin_va_start` can produce a glibc
