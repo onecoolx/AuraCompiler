@@ -4043,13 +4043,23 @@ class IRGenerator:
             # This handles typedef targets (e.g. PrivPtr -> struct Priv *)
             # and pointer-to-typedef-struct (e.g. (cJSON_bool)x).
             _cast_dst_ctype = None  # type: Optional[CType]
-            _cast_ast_ty = getattr(expr, "type", None)
-            if _cast_ast_ty is not None and self._sema_ctx is not None:
-                try:
-                    _cast_dst_ctype = ast_type_to_ctype_resolved(
-                        _cast_ast_ty, self._sema_ctx)
-                except Exception:
-                    pass
+
+            # Prefer pre-computed .resolved_type from the type annotator (Req 6.1, 6.2).
+            _rt = getattr(expr, 'resolved_type', None)
+            if _rt is not None:
+                _cast_dst_ctype = _rt
+
+            # Fallback: compute from AST type node if .resolved_type unavailable.
+            if _cast_dst_ctype is None:
+                _cast_ast_ty = getattr(expr, "type", None)
+                if _cast_ast_ty is not None and self._sema_ctx is not None:
+                    try:
+                        _cast_dst_ctype = ast_type_to_ctype_resolved(
+                            _cast_ast_ty, self._sema_ctx)
+                    except Exception:
+                        pass
+            else:
+                _cast_ast_ty = getattr(expr, "type", None)
 
             # Float casts: int↔float/double/long double, float↔double↔long double
             _FP_TYPES = {"float", "double", "long double"}
@@ -5470,6 +5480,12 @@ class IRGenerator:
                 lty0 = getattr(self, "_var_types", {}).get(l)
                 rty0 = getattr(self, "_var_types", {}).get(r)
 
+                # Check .resolved_type on sub-expressions for pointer detection (Req 6.1, 6.2).
+                _left_rt = getattr(expr.left, 'resolved_type', None)
+                _right_rt = getattr(expr.right, 'resolved_type', None)
+                _left_rt_is_ptr = isinstance(_left_rt, PointerType)
+                _right_rt_is_ptr = isinstance(_right_rt, PointerType)
+
                 def _pointee_sz(ptr_ty: object) -> int:
                     """String-based fallback for pointee size."""
                     if not isinstance(ptr_ty, str) or "*" not in ptr_ty:
@@ -5483,16 +5499,25 @@ class IRGenerator:
                             pass
                     return self._sizeof(base)
 
-                def _resolve_ptr_scale(operand: str, str_ty: object) -> int:
+                def _resolve_ptr_scale(operand: str, str_ty: object, resolved_type_ct=None) -> int:
                     """Resolve pointee element size: string primary, CType fallback.
 
                     During migration, casts update _var_types but not _sym_table
                     for named variables, so _var_types is more accurate after casts.
                     Use CType only when string path gives no useful result.
+                    Also checks .resolved_type from the type annotator (Req 6.1).
                     """
                     str_sz = _pointee_sz(str_ty)
                     if str_sz > 0 and str_sz != 1:
                         return str_sz
+                    # Try .resolved_type from the type annotator.
+                    if isinstance(resolved_type_ct, PointerType) and resolved_type_ct.pointee is not None:
+                        try:
+                            rt_sz = type_sizeof(resolved_type_ct.pointee)
+                            if rt_sz > 0 and rt_sz != 1:
+                                return rt_sz
+                        except Exception:
+                            pass
                     # String path gave 1 (char*) or failed; try CType.
                     ct_sz = self._pointee_size_from_ctype(operand)
                     if ct_sz is not None and ct_sz > 0:
@@ -5505,17 +5530,17 @@ class IRGenerator:
                     return str_sz
 
                 # Detect which side is the pointer operand.
-                l_is_ptr = (isinstance(lty0, str) and "*" in lty0) or self._lookup_pointer_ctype(l) is not None
-                r_is_ptr = (isinstance(rty0, str) and "*" in rty0) or self._lookup_pointer_ctype(r) is not None
+                l_is_ptr = (isinstance(lty0, str) and "*" in lty0) or self._lookup_pointer_ctype(l) is not None or _left_rt_is_ptr
+                r_is_ptr = (isinstance(rty0, str) and "*" in rty0) or self._lookup_pointer_ctype(r) is not None or _right_rt_is_ptr
 
                 if l_is_ptr and not r_is_ptr:
-                    sz = _resolve_ptr_scale(l, lty0)
+                    sz = _resolve_ptr_scale(l, lty0, _left_rt)
                     if sz != 1:
                         s = self._new_temp()
                         self.instructions.append(IRInstruction(op="binop", result=s, operand1=r, operand2=f"${sz}", label="*"))
                         r = s
                 elif r_is_ptr and not l_is_ptr:
-                    sz = _resolve_ptr_scale(r, rty0)
+                    sz = _resolve_ptr_scale(r, rty0, _right_rt)
                     if sz != 1:
                         s = self._new_temp()
                         self.instructions.append(IRInstruction(op="binop", result=s, operand1=l, operand2=f"${sz}", label="*"))
@@ -5734,12 +5759,15 @@ class IRGenerator:
 
             self.instructions.append(IRInstruction(op="call", result=t, operand1=fn, operand2=str(call_ty) if call_ty is not None else None, args=args))
             # Register return type CType in symbol table for the call result temp.
+            # Prefer .resolved_type from the type annotator (Req 6.1, 6.2).
             # Skip struct/union returns: the ABI uses a hidden pointer, so the
             # call result temp is not the struct value itself.
-            if self._sym_table and isinstance(expr.function, Identifier):
-                ret_ct = self._return_type_to_ctype(expr.function.name)
-                if ret_ct is not None and ret_ct.kind not in (TypeKind.STRUCT, TypeKind.UNION):
-                    self._sym_table.insert(t, ret_ct)
+            _call_ret_ct = getattr(expr, 'resolved_type', None)
+            if _call_ret_ct is None and self._sym_table and isinstance(expr.function, Identifier):
+                _call_ret_ct = self._return_type_to_ctype(expr.function.name)
+            if _call_ret_ct is not None and self._sym_table:
+                if _call_ret_ct.kind not in (TypeKind.STRUCT, TypeKind.UNION):
+                    self._sym_table.insert(t, _call_ret_ct)
             # Record return type for float-aware codegen
             if isinstance(call_ty, str) and ("float" in call_ty or "double" in call_ty):
                 ct = call_ty.strip()
