@@ -676,3 +676,44 @@ class TestAddressDerefRoundTripProperty:
         addr = sa._unary_result_type('&', t)
         result = sa._unary_result_type('*', addr)
         assert result == t
+
+
+# =============================================================================
+# Property 10: 一元提升运算符
+# Feature: expr-type-annotation, Property 10: 一元提升运算符
+# =============================================================================
+
+_integer_types_for_unary = st.sampled_from([
+    IntegerType(kind=TypeKind.CHAR),
+    IntegerType(kind=TypeKind.CHAR, is_unsigned=True),
+    IntegerType(kind=TypeKind.SHORT),
+    IntegerType(kind=TypeKind.SHORT, is_unsigned=True),
+    IntegerType(kind=TypeKind.INT),
+    IntegerType(kind=TypeKind.INT, is_unsigned=True),
+    IntegerType(kind=TypeKind.LONG),
+    IntegerType(kind=TypeKind.LONG, is_unsigned=True),
+])
+
+_unary_promote_ops = st.sampled_from(['~', '+', '-'])
+
+
+class TestUnaryPromotionProperty:
+    """Property 10: 一元提升运算符
+
+    For any integer type T and unary operator ~, +, -, the result's
+    .resolved_type should equal integer_promote(T).
+
+    **Validates: Requirements 3.4, 3.5**
+    """
+
+    @settings(max_examples=100)
+    @given(t=_integer_types_for_unary, op=_unary_promote_ops)
+    def test_unary_promotion_equals_integer_promote(self, t, op):
+        """Unary ~, +, - on integer type T produces integer_promote(T).
+
+        **Validates: Requirements 3.4, 3.5**
+        """
+        sa = _make_analyzer()
+        result = sa._unary_result_type(op, t)
+        expected = integer_promote(t)
+        assert result == expected
