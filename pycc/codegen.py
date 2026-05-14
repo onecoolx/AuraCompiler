@@ -287,6 +287,47 @@ class CodeGenerator:
             return ct.kind == TypeKind.ARRAY
         return False
 
+    def _is_pointer_type_op(self, op: str) -> bool:
+        """Check if operand is a pointer type via CType lookup."""
+        ct = self._get_type(op)
+        if ct is not None:
+            return ct.kind == TypeKind.POINTER
+        return False
+
+    def _is_struct_type_op(self, op: str) -> bool:
+        """Check if operand is a struct/union type via CType lookup."""
+        ct = self._get_type(op)
+        if ct is not None:
+            return ct.kind in (TypeKind.STRUCT, TypeKind.UNION)
+        return False
+
+    def _is_unsigned_type_op(self, op: str) -> bool:
+        """Check if operand is an unsigned integer type via CType lookup."""
+        ct = self._get_type(op)
+        if ct is not None:
+            return isinstance(ct, IntegerType) and ct.is_unsigned
+        return False
+
+    def _get_type_str(self, op: str) -> str:
+        """Get the type string for an operand, for string-based width logic.
+
+        Prefers _var_types raw string (preserves typedef names needed by
+        _type_size_bytes / _pointee_size_bytes). Falls back to _sym_table
+        CType only for @-locals (not temps), since IR gen may register
+        temps with imprecise types that cause wrong load/store widths.
+        """
+        # Prefer raw _var_types string (preserves typedef names)
+        vt = self._var_types.get(op, "")
+        if vt:
+            return vt
+        # For @-locals and globals, fall back to _sym_table CType
+        # (these are registered during _begin_function with correct types)
+        if self._sym_table and isinstance(op, str) and not op.startswith("%t"):
+            ct = self._sym_table.lookup(op)
+            if ct is not None:
+                return ctype_to_ir_type(ct)
+        return ""
+
     def generate(self, instructions: List[IRInstruction]) -> str:
         """Generate x86-64 assembly from IR"""
         self.assembly_lines = []
@@ -719,18 +760,20 @@ class CodeGenerator:
                         if isinstance(mt, str):
                             return mt
 
-        # String-based fallback
-        ty = self._var_types.get(base)
-        if isinstance(ty, str) and ty.strip().endswith("*"):
-            ty = ty.strip()[:-1].strip()
+        # String-based fallback: derive struct type from _get_type() or global_types
+        ct = self._get_type(base)
+        ty = None
+        if ct is not None:
+            # If pointer, dereference to get the struct type string
+            if self._ctype_is_pointer(ct):
+                pointee = self._ctype_deref(ct)
+                if pointee is not None:
+                    tag = self._ctype_struct_tag(pointee)
+                    ty = tag
+            elif self._ctype_is_struct_or_union(ct):
+                ty = self._ctype_struct_tag(ct)
         if (ty is None or ty == "") and isinstance(base, str) and base.startswith("@"):
             ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], None)
-        # Temps holding struct pointers (from addr_of_member etc.) are stored
-        # as "<ty>*" in _var_types.
-        if (ty is None or ty == "") and isinstance(base, str) and base.startswith("%t"):
-            ty = self._var_types.get(base)
-            if isinstance(ty, str) and ty.strip().endswith("*"):
-                ty = ty.strip()[:-1].strip()
 
         if not isinstance(ty, str) or not ty:
             return None
@@ -1160,9 +1203,11 @@ class CodeGenerator:
             # variables so they are never optimised away.
             _is_volatile_mov = bool(ins.meta and ins.meta.get("volatile"))
             # Float-aware move: if source is a float-typed temp, use SSE move
-            src_ty = self._var_types.get(ins.operand1, "")
-            if isinstance(src_ty, str) and src_ty in ("float", "double"):
-                s = "s" if src_ty == "float" else "d"
+            src_ct = self._get_type(ins.operand1) if ins.operand1 else None
+            _src_is_float = src_ct is not None and src_ct.kind in (TypeKind.FLOAT, TypeKind.DOUBLE)
+            if _src_is_float:
+                src_ty = "float" if src_ct.kind == TypeKind.FLOAT else "double"
+                s = "s" if src_ct.kind == TypeKind.FLOAT else "d"
                 mov = f"movs{s}"
                 off1 = self._ensure_local(ins.operand1)
                 if _is_volatile_mov:
@@ -1504,8 +1549,8 @@ class CodeGenerator:
             elem_sz = 4
             base_ty = None
             if isinstance(addr, str):
-                base_ty = self._var_types.get(addr)
-                if base_ty is None and addr.startswith("@") and self._sema_ctx is not None:
+                base_ty = self._get_type_str(addr) or None
+                if (base_ty is None or base_ty == "") and addr.startswith("@") and self._sema_ctx is not None:
                     base_ty = getattr(self._sema_ctx, "global_types", {}).get(addr[1:], None)
                 # If this is a temp holding a pointer but we didn't record its
                 # type, default to a generic byte pointer so we don't accidentally
@@ -1565,8 +1610,8 @@ class CodeGenerator:
             elem_sz = 4
             base_ty = None
             if isinstance(addr, str):
-                base_ty = self._var_types.get(addr)
-                if base_ty is None and addr.startswith("@") and self._sema_ctx is not None:
+                base_ty = self._get_type_str(addr) or None
+                if (base_ty is None or base_ty == "") and addr.startswith("@") and self._sema_ctx is not None:
                     base_ty = getattr(self._sema_ctx, "global_types", {}).get(addr[1:], None)
             if isinstance(base_ty, str) and "*" in base_ty:
                 elem_sz = self._pointee_size_bytes(base_ty)
@@ -1593,16 +1638,29 @@ class CodeGenerator:
             # such temps in `sema_ctx.var_types` (or rely on generator-side tables),
             # but codegen needs it to choose correct element size in load_index.
             if ins.result and isinstance(src, str):
-                ty = self._var_types.get(src)
-                if isinstance(ty, str) and ty.strip().startswith("array("):
-                    inner = ty.strip()[len("array(") :]
-                    if inner.endswith(")"):
-                        inner = inner[:-1]
-                    base_part = inner.split(",", 1)[0].strip()
-                    self._var_types[ins.result] = f"{base_part}*"
+                # Check if source is an array: prefer _var_types string (which
+                # preserves array encoding) since _sym_table may have element type
+                # instead of array type due to scope precedence.
+                src_vt = self._var_types.get(src, "")
+                _is_src_array_str = isinstance(src_vt, str) and src_vt.strip().startswith("array(")
+                src_ct = self._get_type(src)
+                _is_src_array = (src_ct is not None and src_ct.kind == TypeKind.ARRAY) or _is_src_array_str
+                if _is_src_array:
+                    # Extract element type from CType or string
+                    elem_ct = None
+                    elem_str = "int"
+                    if src_ct is not None and src_ct.kind == TypeKind.ARRAY and isinstance(src_ct, ArrayType):
+                        elem_ct = src_ct.element
+                        elem_str = ctype_to_ir_type(elem_ct) if elem_ct is not None else "int"
+                    elif _is_src_array_str:
+                        inner = src_vt.strip()[len("array("):]
+                        if inner.endswith(")"):
+                            inner = inner[:-1]
+                        elem_str = inner.split(",", 1)[0].strip()
+                        elem_ct = _str_to_ctype(elem_str)
+                    self._var_types[ins.result] = f"{elem_str}*"
                     # Dual-write: register pointer to element type in _sym_table
                     if self._sym_table:
-                        elem_ct = _str_to_ctype(base_part)
                         if elem_ct is not None:
                             self._sym_table.insert(ins.result, PointerType(kind=TypeKind.POINTER, pointee=elem_ct))
                         else:
@@ -1638,13 +1696,10 @@ class CodeGenerator:
                         ctype_elem_sz = None
 
             # String-based fallback: existing type info for the base temp/symbol.
-            base_ty = self._var_types.get(base, "")
+            base_ty = self._get_type_str(base) if isinstance(base, str) else ""
             if (base_ty is None or base_ty == "") and isinstance(base, str) and base.startswith("@") and self._sema_ctx is not None:
                 base_ty = getattr(self._sema_ctx, "global_types", {}).get(base[1:], "")
 
-            # If base is a temp holding a pointer, use the pointee type to size elements.
-            if (base_ty is None or base_ty == "") and isinstance(base, str) and base.startswith("%t"):
-                base_ty = self._var_types.get(base, "")
             elem_sz = 4
             step_override = None
             try:
@@ -1689,9 +1744,17 @@ class CodeGenerator:
             self._store_result(ins.result, "%rax")
             # Best-effort: record that the resulting temp holds an address.
             if ins.result and isinstance(ins.result, str) and ins.result.startswith("%t"):
-                # If IR already knows the result temp's type (e.g. "struct S*"), keep it.
-                existing = self._var_types.get(ins.result, "")
-                if not (isinstance(existing, str) and "*" in existing):
+                # If IR already knows the result temp's type as a specific pointer
+                # (not void*), keep it. Otherwise register the struct/array pointer.
+                existing_ct = self._get_type(ins.result)
+                _already_specific_ptr = (
+                    existing_ct is not None
+                    and self._ctype_is_pointer(existing_ct)
+                    and isinstance(existing_ct, PointerType)
+                    and existing_ct.pointee is not None
+                    and existing_ct.pointee.kind != TypeKind.VOID
+                )
+                if not _already_specific_ptr:
                     if isinstance(base_ty, str) and (base_ty.startswith("struct ") or base_ty.startswith("union ")):
                         self._var_types[ins.result] = f"{base_ty}*"
                         # Dual-write: register pointer to struct/union in _sym_table
@@ -1737,8 +1800,8 @@ class CodeGenerator:
             # Load base address into %rax then add member offset.
             # IMPORTANT: `base` is an lvalue (struct/union object). We must take
             # its address rather than load its value.
-            base_ty = self._var_types.get(base, "")
-            if isinstance(base, str) and base.startswith("%t") and isinstance(base_ty, str) and (base_ty.strip().endswith("*") or base_ty.strip() == "ptr"):
+            _base_is_ptr = self._is_pointer_type_op(base) if isinstance(base, str) else False
+            if isinstance(base, str) and base.startswith("%t") and _base_is_ptr:
                 # addr_of_member can be used on a temp that already is a pointer
                 # to a struct/union object (e.g. when rewriting `s.b` as an
                 # lvalue address). In that case, load the pointer value.
@@ -1754,8 +1817,12 @@ class CodeGenerator:
         if op == "load_member":
             base = ins.operand1 or ""
             member = ins.operand2 or ""
-            base_ty = self._var_types.get(base, "")
-            if isinstance(base, str) and base.startswith("%t") and isinstance(base_ty, str) and (base_ty.strip().endswith("*") or base_ty.strip() == "ptr"):
+            # Compute base address.
+            # - locals/globals: take address of the symbol
+            # - temps holding addresses (e.g. from addr_index/addr_of_member): load pointer value
+            # For load_member we want the *pointee* type when `base` is a pointer.
+            _base_is_ptr_lm = self._is_pointer_type_op(base) if isinstance(base, str) else False
+            if isinstance(base, str) and base.startswith("%t") and _base_is_ptr_lm:
                 self._load_operand(base, "%rax")
             else:
                 self._addr_of_symbol(base, "%rax")
@@ -1990,12 +2057,12 @@ class CodeGenerator:
                     # pointer-typed. CType-based check takes priority.
                     if not s1 and isinstance(ins.operand1, str):
                         ct1 = self._get_type(ins.operand1)
-                        is_ptr1 = (ct1 is not None and self._ctype_is_pointer(ct1)) or ("*" in self._var_types.get(ins.operand1, ""))
+                        is_ptr1 = (ct1 is not None and self._ctype_is_pointer(ct1))
                         if is_ptr1:
                             s1 = self._ptr_step_bytes.get(str(ins.operand1))
                     if not s2 and isinstance(ins.operand2, str):
                         ct2 = self._get_type(ins.operand2)
-                        is_ptr2 = (ct2 is not None and self._ctype_is_pointer(ct2)) or ("*" in self._var_types.get(ins.operand2, ""))
+                        is_ptr2 = (ct2 is not None and self._ctype_is_pointer(ct2))
                         if is_ptr2:
                             s2 = self._ptr_step_bytes.get(str(ins.operand2))
 
@@ -2013,8 +2080,8 @@ class CodeGenerator:
             # Best-effort usual arithmetic conversions for 32-bit unsigned ints:
             # if either operand is an unsigned-32 value, perform arithmetic in
             # 32-bit and zero-extend the result.
-            ty1 = self._var_types.get(ins.operand1, "")
-            ty2 = self._var_types.get(ins.operand2, "")
+            ty1 = self._get_type_str(ins.operand1) if isinstance(ins.operand1, str) else ""
+            ty2 = self._get_type_str(ins.operand2) if isinstance(ins.operand2, str) else ""
             if not ty1 and isinstance(ins.operand1, str) and ins.operand1.startswith("@") and self._sema_ctx is not None:
                 ty1 = getattr(self._sema_ctx, "global_types", {}).get(ins.operand1[1:], "")
             if not ty2 and isinstance(ins.operand2, str) and ins.operand2.startswith("@") and self._sema_ctx is not None:
@@ -2078,8 +2145,8 @@ class CodeGenerator:
                 # in 32-bit to avoid treating zero-extended UINT32 as signed 64-bit.
                 # Prefer 32-bit compare if either operand is known to be unsigned int.
                 unsigned = bop.startswith("u")
-                lty = self._var_types.get(ins.operand1 or "", "") if hasattr(self, "_var_types") else ""
-                rty = self._var_types.get(ins.operand2 or "", "") if hasattr(self, "_var_types") else ""
+                lty = self._get_type_str(ins.operand1 or "") if isinstance(ins.operand1, str) else ""
+                rty = self._get_type_str(ins.operand2 or "") if isinstance(ins.operand2, str) else ""
                 lty_n = lty.strip().lower() if isinstance(lty, str) else ""
                 rty_n = rty.strip().lower() if isinstance(rty, str) else ""
 
@@ -2162,7 +2229,7 @@ class CodeGenerator:
                 self._emit("  movb %cl, %cl")
                 # Best-effort: if the left operand is declared unsigned, use logical shift.
                 # Otherwise use arithmetic shift.
-                lty = self._var_types.get(ins.operand1, "")
+                lty = self._get_type_str(ins.operand1) if isinstance(ins.operand1, str) else ""
                 if not lty and isinstance(ins.operand1, str) and ins.operand1.startswith("@") and self._sema_ctx is not None:
                     lty = getattr(self._sema_ctx, "global_types", {}).get(ins.operand1[1:], "")
                 unsigned_left = isinstance(lty, str) and lty.strip().startswith("unsigned ")
@@ -2381,7 +2448,7 @@ class CodeGenerator:
             _pre_gp = gp_idx
             _pre_xmm = 0
             for idx, a in enumerate(ins.args or []):
-                a_ty = self._var_types.get(a, "") if isinstance(a, str) else ""
+                a_ty = self._get_type_str(a) if isinstance(a, str) else ""
                 # CType-based: use symbol table to determine argument type
                 # for correct GP vs SSE classification.
                 a_ct = self._get_type(a) if isinstance(a, str) else None
@@ -2637,7 +2704,7 @@ class CodeGenerator:
             _ret_is_ld = False
             if "long double" in ret_ty and "function" in ret_ty:
                 _ret_is_ld = True
-            elif ins.result and isinstance(self._var_types.get(ins.result, ""), str) and self._var_types.get(ins.result, "").strip() == "long double":
+            elif ins.result and isinstance(self._get_type_str(ins.result), str) and self._get_type_str(ins.result).strip() == "long double":
                 _ret_is_ld = True
             if _ret_is_ld:
                 if ins.result:
@@ -2745,8 +2812,8 @@ class CodeGenerator:
             except Exception:
                 step_override = None
             if isinstance(base, str):
-                base_ty = self._var_types.get(base)
-                if base_ty is None and base.startswith("@"):
+                base_ty = self._get_type_str(base) or None
+                if (base_ty is None or base_ty == "") and base.startswith("@"):
                     sym = base[1:]
                     base_ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
 
@@ -2756,7 +2823,7 @@ class CodeGenerator:
             # be a row-object temp.
             try:
                 if ins.result:
-                    rty = self._var_types.get(str(ins.result))
+                    rty = self._get_type_str(str(ins.result))
                     if isinstance(rty, str) and rty and ("*" not in rty) and not rty.strip().startswith("array("):
                         elem_sz = self._type_size_bytes(rty.strip())
             except Exception:
@@ -2767,7 +2834,7 @@ class CodeGenerator:
             # objects in multi-dimensional arrays).
             try:
                 if ins.result:
-                    rty = self._var_types.get(str(ins.result))
+                    rty = self._get_type_str(str(ins.result))
                     if isinstance(rty, str) and rty.strip() and ("*" not in rty) and not rty.strip().startswith("array("):
                         elem_sz = self._type_size_bytes(rty.strip())
             except Exception:
@@ -2789,8 +2856,8 @@ class CodeGenerator:
                 # Global fixed-size arrays are tracked as their element type.
                 elem_sz = self._type_size_bytes(base_ty.strip())
             elif isinstance(base, str) and base.startswith("%t"):
-                # For temps used as addresses, consult `_var_types` to infer pointee size.
-                tyt = self._var_types.get(base)
+                # For temps used as addresses, consult CType to infer pointee size.
+                tyt = self._get_type_str(base) if base else None
                 if isinstance(tyt, str) and "*" in tyt:
                     elem_sz = self._pointee_size_bytes(tyt)
                 else:
@@ -2874,24 +2941,24 @@ class CodeGenerator:
             # - locals/globals: take address of the symbol
             # - temps holding addresses (e.g. from addr_index/addr_of_member): load pointer value
             # For load_member we want the *pointee* type when `base` is a pointer.
-            base_ty = self._var_types.get(base, "")
-            if isinstance(base_ty, str) and base_ty.strip().endswith("*"):
-                base_ty = base_ty.strip()[:-1].strip()
+            # CType-based: check if base is a pointer type
+            _lm2_base_ct = self._get_type(base) if isinstance(base, str) else None
+            _lm2_is_ptr = _lm2_base_ct is not None and self._ctype_is_pointer(_lm2_base_ct)
             # For temps, decide whether it holds an address (pointer value) or a scalar.
-            # - If we know it is pointer-typed ("...*") or tagged as "ptr", treat as pointer value.
+            # - If we know it is pointer-typed, treat as pointer value.
             # - Otherwise it's a scalar temp stored in a stack slot; use its address as base.
             # IMPORTANT: for non-temp locals like "@s" (a struct object), ALWAYS take
             # the address of the object. Do not treat it as a pointer even if the type
             # string contains '*' somewhere (e.g. "struct X*" for pointer vars).
             if isinstance(base, str) and base.startswith("%t"):
                 # Temps may hold either a pointer value or a scalar in a spill slot.
-                if isinstance(base_ty, str) and (base_ty.strip().endswith("*") or base_ty == "ptr"):
+                if _lm2_is_ptr:
                     self._load_operand(base, "%rax")
                 else:
                     self._addr_of_symbol(base, "%rax")
             else:
                 # Non-temp: treat as pointer value only if the variable is pointer-typed.
-                if isinstance(base_ty, str) and base_ty.strip().endswith("*"):
+                if _lm2_is_ptr:
                     self._load_operand(base, "%rax")
                 else:
                     self._addr_of_symbol(base, "%rax")
@@ -2915,7 +2982,7 @@ class CodeGenerator:
                 # treat it as an address.
                 if mem_ty is None:
                     try:
-                        rty = self._var_types.get(ins.result or "")
+                        rty = self._get_type_str(ins.result or "") if ins.result else None
                     except Exception:
                         rty = None
                     if isinstance(rty, str) and (rty.strip().startswith("struct ") or rty.strip().startswith("union ")):
@@ -3061,10 +3128,10 @@ class CodeGenerator:
             base = ins.operand1 or ""
             member = ins.operand2 or ""
             val = ins.result
-            base_ty = self._var_types.get(base, "")
+            _sm_base_is_ptr = self._is_pointer_type_op(base) if isinstance(base, str) else False
             if isinstance(base, str) and base.startswith("%t"):
                 self._load_operand(base, "%rax")
-            elif isinstance(base_ty, str) and "*" in base_ty:
+            elif _sm_base_is_ptr:
                 self._load_operand(base, "%rax")
             else:
                 self._addr_of_symbol(base, "%rax")
@@ -3108,7 +3175,12 @@ class CodeGenerator:
                     pass
             if is_float_mem or is_double_mem:
                 self._emit("  movq %rax, %rdx")  # save dest address
-                val_ty = self._var_types.get(val, "") if isinstance(val, str) else ""
+                val_ct = self._get_type(val) if isinstance(val, str) else None
+                val_ty = ""
+                if val_ct is not None and val_ct.kind == TypeKind.FLOAT:
+                    val_ty = "float"
+                elif val_ct is not None and val_ct.kind == TypeKind.DOUBLE:
+                    val_ty = "double"
                 val_off = self._ensure_local(val) if isinstance(val, str) else 0
                 if is_float_mem:
                     if val_ty == "float":
@@ -3184,7 +3256,12 @@ class CodeGenerator:
                     pass
             if is_float_mem or is_double_mem:
                 self._emit("  movq %rax, %rdx")  # save dest address
-                val_ty = self._var_types.get(val, "") if isinstance(val, str) else ""
+                val_ct_ptr = self._get_type(val) if isinstance(val, str) else None
+                val_ty = ""
+                if val_ct_ptr is not None and val_ct_ptr.kind == TypeKind.FLOAT:
+                    val_ty = "float"
+                elif val_ct_ptr is not None and val_ct_ptr.kind == TypeKind.DOUBLE:
+                    val_ty = "double"
                 val_off = self._ensure_local(val) if isinstance(val, str) else 0
                 if is_float_mem:
                     if val_ty == "float":
@@ -3228,7 +3305,7 @@ class CodeGenerator:
         if op == "ret":
             # Check if returning a float value
             src = ins.operand1 or ""
-            src_ty = self._var_types.get(src, "") if isinstance(src, str) else ""
+            src_ty = self._get_type_str(src) if isinstance(src, str) else ""
             rty = getattr(self, "_fn_ret_ty", "") or ""
 
             # long double return: SysV ABI returns via x87 st(0)
@@ -3305,7 +3382,7 @@ class CodeGenerator:
 
             if not rty:
                 try:
-                    rty = (self._var_types.get(ins.operand1 or "", "") if hasattr(self, "_var_types") else "")
+                    rty = self._get_type_str(ins.operand1 or "") if isinstance(ins.operand1, str) else ""
                 except Exception:
                     rty = ""
 
@@ -3337,8 +3414,8 @@ class CodeGenerator:
             elem_sz = 4
             base_ty = None
             if isinstance(base, str):
-                base_ty = self._var_types.get(base)
-                if base_ty is None and base.startswith("@"):
+                base_ty = self._get_type_str(base) or None
+                if (base_ty is None or base_ty == "") and base.startswith("@"):
                     sym = base[1:]
                     base_ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
             if isinstance(base_ty, str) and base_ty.strip().startswith("array("):
@@ -3505,7 +3582,7 @@ class CodeGenerator:
         if operand.startswith("%t"):
             off = self._ensure_local(operand)
             # Load with correct width based on type info.
-            ty = self._var_types.get(operand, "")
+            ty = self._get_type_str(operand)
             b = ty.strip() if isinstance(ty, str) else ""
             # IMPORTANT: pointer temps are 8-byte values.
             if isinstance(b, str) and ("*" in b or b == "ptr"):
@@ -3558,7 +3635,7 @@ class CodeGenerator:
             # local variable if it already has a stack slot; otherwise treat as global
             if self._is_local(operand):
                 off = self._ensure_local(operand)
-                ty = self._var_types.get(operand, "")
+                ty = self._get_type_str(operand)
                 b = ty.strip()
                 # array variables: in expressions, array decays to pointer to first element
                 if isinstance(b, str) and b.startswith("array("):
@@ -3638,9 +3715,9 @@ class CodeGenerator:
             # loading it as a scalar is almost always wrong. Prefer returning
             # its address so member/index operations can proceed correctly.
             ty = getattr(self._sema_ctx, "global_types", {}).get(sym) if self._sema_ctx is not None else None
-            # Also check _var_types (seeded from gdecl/gdef for local statics).
+            # Also check CType symbol table (seeded from gdecl/gdef for local statics).
             if ty is None:
-                ty = self._var_types.get(operand)
+                ty = self._get_type_str(operand) or None
             # Resolve typedef to underlying type for correct load width.
             if isinstance(ty, str):
                 ty = self._resolve_type(ty)
@@ -3728,8 +3805,12 @@ class CodeGenerator:
         if result.startswith("%t"):
             off = self._ensure_local(result)
             # Store with correct width based on type info.
-            ty = self._var_types.get(result, "")
+            ty = self._get_type_str(result)
             b = ty.strip() if isinstance(ty, str) else ""
+            # IMPORTANT: pointer temps are 8-byte values.
+            if isinstance(b, str) and ("*" in b or b == "ptr"):
+                self._emit(f"  movq {reg}, -{off}(%rbp)")
+                return
             if b == "char" or b.startswith("char ") or b == "unsigned char" or b.startswith("unsigned char"):
                 src = "%al" if reg == "%rax" else reg
                 self._emit(f"  movb {src}, -{off}(%rbp)")
@@ -3748,7 +3829,7 @@ class CodeGenerator:
             # local if it has a slot; otherwise global
             if self._is_local(result):
                 off = self._ensure_local(result)
-                ty = self._var_types.get(result, "")
+                ty = self._get_type_str(result)
                 b = ty.strip()
                 # IMPORTANT: pointers are always 8-byte values. Do not let
                 # prefix checks like `startswith("unsigned char")` treat
@@ -3854,7 +3935,7 @@ class CodeGenerator:
             # stack slot is a header; the actual elements live at (slot + sizeof(type)).
             if sym in self._locals:
                 off = self._ensure_local(sym)
-                ty = self._var_types.get(sym, "")
+                ty = self._get_type_str(sym)
                 if isinstance(ty, str) and ty.strip().startswith("array("):
                     # Local arrays live directly in their allocated region.
                     # We store the array object at -off(%rbp) .. -(off-size+1)(%rbp).
