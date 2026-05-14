@@ -1148,3 +1148,187 @@ class TestCommaOpTypeAnnotation:
         analyzer._analyze_expr(expr)
         assert isinstance(expr.resolved_type, PointerType)
         assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+
+class TestMemberAccessTypeAnnotation:
+    """Tests for MemberAccess and PointerMemberAccess type annotation (task 6.5).
+
+    Verifies that .resolved_type is set to the member's declared CType
+    for both s.member (MemberAccess) and p->member (PointerMemberAccess).
+    """
+
+    def _make_analyzer_with_struct(self):
+        """Create an analyzer with a struct S { int x; long y; char *name; }."""
+        from pycc.semantics import StructLayout
+        sa = SemanticAnalyzer()
+        sa._decl_types = {}
+        sa._global_decl_types = {}
+
+        # Create struct layout with member_decl_types
+        from pycc.ast_nodes import Type as AType
+        mdecl = {
+            "x": AType(base="int", line=0, column=0),
+            "y": AType(base="long", line=0, column=0),
+            "name": AType(base="char", is_pointer=True, pointer_level=1, line=0, column=0),
+        }
+        layout = StructLayout(
+            kind="struct", name="S", size=24, align=8,
+            member_offsets={"x": 0, "y": 8, "name": 16},
+            member_sizes={"x": 4, "y": 8, "name": 8},
+            member_types={"x": "int", "y": "long", "name": "char"},
+            member_decl_types=mdecl,
+        )
+        sa._layouts = {"struct S": layout}
+        return sa
+
+    def test_member_access_int(self):
+        """s.x where x is int -> resolved_type is IntegerType(INT)."""
+        from pycc.ast_nodes import MemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "s": ASTType(base="struct S", line=0, column=0),
+        }
+        expr = MemberAccess(
+            object=Identifier(name="s", line=1, column=1),
+            member="x", line=1, column=3,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is not None
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_member_access_long(self):
+        """s.y where y is long -> resolved_type is IntegerType(LONG)."""
+        from pycc.ast_nodes import MemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "s": ASTType(base="struct S", line=0, column=0),
+        }
+        expr = MemberAccess(
+            object=Identifier(name="s", line=1, column=1),
+            member="y", line=1, column=3,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is not None
+        assert expr.resolved_type.kind == TypeKind.LONG
+
+    def test_member_access_pointer(self):
+        """s.name where name is char* -> resolved_type is PointerType(CHAR)."""
+        from pycc.ast_nodes import MemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "s": ASTType(base="struct S", line=0, column=0),
+        }
+        expr = MemberAccess(
+            object=Identifier(name="s", line=1, column=1),
+            member="name", line=1, column=3,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is not None
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+    def test_member_access_unknown_member(self):
+        """s.nonexistent -> resolved_type is None."""
+        from pycc.ast_nodes import MemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "s": ASTType(base="struct S", line=0, column=0),
+        }
+        expr = MemberAccess(
+            object=Identifier(name="s", line=1, column=1),
+            member="nonexistent", line=1, column=3,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is None
+
+    def test_pointer_member_access_int(self):
+        """p->x where x is int -> resolved_type is IntegerType(INT)."""
+        from pycc.ast_nodes import PointerMemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "p": ASTType(base="struct S", is_pointer=True, pointer_level=1, line=0, column=0),
+        }
+        expr = PointerMemberAccess(
+            pointer=Identifier(name="p", line=1, column=1),
+            member="x", line=1, column=4,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is not None
+        assert expr.resolved_type.kind == TypeKind.INT
+
+    def test_pointer_member_access_long(self):
+        """p->y where y is long -> resolved_type is IntegerType(LONG)."""
+        from pycc.ast_nodes import PointerMemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "p": ASTType(base="struct S", is_pointer=True, pointer_level=1, line=0, column=0),
+        }
+        expr = PointerMemberAccess(
+            pointer=Identifier(name="p", line=1, column=1),
+            member="y", line=1, column=4,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is not None
+        assert expr.resolved_type.kind == TypeKind.LONG
+
+    def test_pointer_member_access_pointer_member(self):
+        """p->name where name is char* -> resolved_type is PointerType(CHAR)."""
+        from pycc.ast_nodes import PointerMemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "p": ASTType(base="struct S", is_pointer=True, pointer_level=1, line=0, column=0),
+        }
+        expr = PointerMemberAccess(
+            pointer=Identifier(name="p", line=1, column=1),
+            member="name", line=1, column=4,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is not None
+        assert isinstance(expr.resolved_type, PointerType)
+        assert expr.resolved_type.pointee.kind == TypeKind.CHAR
+
+    def test_pointer_member_access_unknown_member(self):
+        """p->nonexistent -> resolved_type is None."""
+        from pycc.ast_nodes import PointerMemberAccess, Identifier
+        sa = self._make_analyzer_with_struct()
+        sa._decl_types = {
+            "p": ASTType(base="struct S", is_pointer=True, pointer_level=1, line=0, column=0),
+        }
+        expr = PointerMemberAccess(
+            pointer=Identifier(name="p", line=1, column=1),
+            member="nonexistent", line=1, column=4,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is None
+
+    def test_member_access_typedef_struct(self):
+        """Access member on typedef'd struct."""
+        from pycc.ast_nodes import MemberAccess, Identifier
+        from pycc.semantics import StructLayout
+        sa = SemanticAnalyzer()
+        sa._decl_types = {}
+        sa._global_decl_types = {}
+
+        mdecl = {
+            "val": ASTType(base="int", line=0, column=0),
+        }
+        layout = StructLayout(
+            kind="struct", name="MyStruct", size=4, align=4,
+            member_offsets={"val": 0},
+            member_sizes={"val": 4},
+            member_types={"val": "int"},
+            member_decl_types=mdecl,
+        )
+        sa._layouts = {"struct MyStruct": layout}
+        # typedef struct MyStruct MyType;
+        sa._typedefs = [{"MyType": ASTType(base="struct MyStruct", line=0, column=0)}]
+        sa._decl_types = {
+            "obj": ASTType(base="MyType", line=0, column=0),
+        }
+        expr = MemberAccess(
+            object=Identifier(name="obj", line=1, column=1),
+            member="val", line=1, column=5,
+        )
+        sa._analyze_expr(expr)
+        assert expr.resolved_type is not None
+        assert expr.resolved_type.kind == TypeKind.INT

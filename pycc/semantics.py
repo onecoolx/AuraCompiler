@@ -26,6 +26,7 @@ from pycc.types import (
     FunctionTypeCType,
     IntegerType,
     PointerType,
+    StructType,
     TypeKind,
 )
 
@@ -1709,6 +1710,59 @@ class SemanticAnalyzer:
 
         return None
 
+    def _resolve_member_ctype(self, struct_ct, member_name: str):
+        """Look up a struct/union member's declared type and return as CType.
+
+        Args:
+            struct_ct: CType of the struct/union (StructType or resolved typedef).
+            member_name: Name of the member to look up.
+
+        Returns:
+            CType of the member, or None if not found.
+        """
+        if struct_ct is None:
+            return None
+
+        # Determine the layout key from the CType.
+        # StructType has .tag which is the full key like "struct Foo" or "union Bar".
+        tag = None
+        if isinstance(struct_ct, StructType):
+            tag = struct_ct.tag
+        elif hasattr(struct_ct, 'kind') and struct_ct.kind == TypeKind.STRUCT:
+            tag = getattr(struct_ct, 'tag', None)
+
+        if tag is None:
+            return None
+
+        # Look up the layout.
+        layout = self._layouts.get(tag)
+        if layout is None:
+            # Try with "struct " or "union " prefix if not already present.
+            if not tag.startswith("struct ") and not tag.startswith("union "):
+                layout = self._layouts.get("struct " + tag)
+                if layout is None:
+                    layout = self._layouts.get("union " + tag)
+
+        if layout is None:
+            return None
+
+        # Get the member's declared AST Type from the layout.
+        mdecl = getattr(layout, "member_decl_types", None)
+        if not mdecl or member_name not in mdecl:
+            return None
+
+        member_ast_type = mdecl[member_name]
+        # Convert AST Type to CType with full typedef resolution.
+        sema_ctx = self._make_sema_ctx_for_types()
+        ct = ast_type_to_ctype_resolved(member_ast_type, sema_ctx)
+        # Handle array members: wrap in ArrayType if is_array flag is set.
+        if getattr(member_ast_type, 'is_array', False) and not isinstance(ct, ArrayType):
+            dims = getattr(member_ast_type, 'array_dimensions', None) or [None]
+            for dim in reversed(dims):
+                ct = ArrayType(kind=TypeKind.ARRAY, element=ct,
+                               size=int(dim) if dim is not None else None)
+        return ct
+
     def _make_sema_ctx_for_types(self):
         """Build a lightweight object with .typedefs for type resolution.
 
@@ -2565,6 +2619,17 @@ class SemanticAnalyzer:
         if isinstance(expr, ArrayAccess):
             self._analyze_expr(expr.array)
             self._analyze_expr(expr.index)
+            # Type annotation: result is element/pointee of base type
+            base_ct = getattr(expr.array, 'resolved_type', None)
+            if base_ct is not None:
+                if isinstance(base_ct, PointerType):
+                    self._annotate_type(expr, base_ct.pointee)
+                elif isinstance(base_ct, ArrayType):
+                    self._annotate_type(expr, base_ct.element)
+                else:
+                    self._annotate_type(expr, None)
+            else:
+                self._annotate_type(expr, None)
             return
 
         if isinstance(expr, MemberAccess):
@@ -2579,6 +2644,20 @@ class SemanticAnalyzer:
                         self._validate_member(base_ty, expr.member, expr.object.name)
             else:
                 self._analyze_expr(expr.object)
+            # Type annotation: resolve the member's declared type.
+            obj_ct = getattr(expr.object, 'resolved_type', None)
+            if obj_ct is None and isinstance(expr.object, Identifier):
+                obj_ct = self._resolve_identifier_ctype(expr.object.name)
+                # For MemberAccess, we need the struct type (not decayed pointer).
+                # _resolve_identifier_ctype may return ArrayType for arrays, but
+                # for '.' access we need the underlying struct type directly.
+                # If it's a StructType already, use it as-is.
+            if obj_ct is not None:
+                # If obj_ct is a StructType, look up the member directly.
+                member_ct = self._resolve_member_ctype(obj_ct, expr.member)
+                self._annotate_type(expr, member_ct)
+            else:
+                self._annotate_type(expr, None)
             return
 
         if isinstance(expr, PointerMemberAccess):
@@ -2598,6 +2677,25 @@ class SemanticAnalyzer:
                         self.errors.append(f"'->' used on non-pointer: {expr.pointer.name}")
             else:
                 self._analyze_expr(expr.pointer)
+            # Type annotation: dereference pointer to get struct type, then resolve member.
+            ptr_ct = getattr(expr.pointer, 'resolved_type', None)
+            if ptr_ct is None and isinstance(expr.pointer, Identifier):
+                ptr_ct = self._resolve_identifier_ctype(expr.pointer.name)
+            if ptr_ct is not None:
+                # Dereference: for p->member, p is a pointer to struct.
+                struct_ct = None
+                if isinstance(ptr_ct, PointerType):
+                    struct_ct = ptr_ct.pointee
+                elif isinstance(ptr_ct, ArrayType):
+                    # Array decays to pointer; element is the struct type.
+                    struct_ct = ptr_ct.element
+                if struct_ct is not None:
+                    member_ct = self._resolve_member_ctype(struct_ct, expr.member)
+                    self._annotate_type(expr, member_ct)
+                else:
+                    self._annotate_type(expr, None)
+            else:
+                self._annotate_type(expr, None)
             return
 
         if isinstance(expr, FunctionCall):
