@@ -3320,6 +3320,9 @@ class IRGenerator:
             return base
 
         # params are treated as locals; codegen will map them from ABI regs
+        # All parameters are dual-registered: _var_types (string) and
+        # _sym_table (CType via ast_type_to_ctype_resolved). This ensures
+        # complete CType coverage for function parameters.
         self._scope_stack = []
         self._push_scope()  # function-level scope
         if self._sym_table:
@@ -3457,6 +3460,12 @@ class IRGenerator:
                         # If initializer exists, we already applied it at global init time.
                         # Skip normal local decl/init lowering.
                         continue
+
+                    # ── Declaration type registration ──────────────────
+                    # All paths below (array, struct/union, scalar/pointer)
+                    # dual-write to both _var_types and _sym_table via
+                    # _insert_decl_ctype(). This ensures _sym_table has
+                    # complete CType coverage for all local declarations.
 
                     # If this is an array with known size, encode element count in operand1.
                     # Also support C89: `char s[] = "..."` (size inferred from string literal).
