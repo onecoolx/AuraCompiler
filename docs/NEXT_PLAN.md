@@ -264,3 +264,38 @@ rather than big-bang.
 | E: hir-to-lir-lowering | 16–20 | High |
 | F: x86-64-regalloc-emit | 14–16 | High |
 | **Total** | **76–90** | |
+
+
+---
+
+## Other Planned Tasks
+
+### Preprocessor Performance for Large Source Files
+
+**Problem**: Built-in preprocessor times out on sqlite3.c (250K lines). Forces
+`use_system_cpp=True` for real projects.
+
+**Proposed**:
+- Algorithm audit: identify O(n²) patterns in macro expansion and include handling
+- PyPy compatibility: ensure no CPython-specific patterns block PyPy JIT
+- Optional: mypyc compilation of hot paths
+
+**Dependencies**: None (independent of IR refactoring).
+
+**Complexity**: Medium.
+**Estimated time**: 8–16h (algorithm audit), +4h (PyPy), +16h (mypyc).
+
+---
+
+### Support 128-bit Integers on x86-64
+
+**Problem**: `__uint128_t` mapped to 64-bit (lossy). sqlite3 uses it for
+high-precision math.
+
+**Proposed**: Add `CType.INT128/UINT128`, register-pair codegen using x86-64
+mul/div idioms.
+
+**Dependencies**: Spec E/F (LIR must support register pairs cleanly).
+
+**Complexity**: Medium. ~250 lines type system + ~400 lines codegen.
+**Estimated time**: 8–12h.
