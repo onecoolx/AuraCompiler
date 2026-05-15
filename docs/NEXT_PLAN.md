@@ -1,62 +1,266 @@
-# AuraCompiler — 下一阶段重构计划
+# AuraCompiler — IR Architecture Refactoring Plan
 
-> 跟踪待实施的架构改进。
-> 更新时间：2026-05-18。基线：2692 个 pytest 测试通过。
-
----
-
-## 1. IR 架构重构：结构化、强类型、多层 IR
-
-**问题**：当前 IR 是扁平的 `IRInstruction` 列表，没有 Function/BasicBlock/CFG 结构。目标平台细节（寄存器名、ABI 约定）泄漏到 IR 生成阶段。无 SSA 形式。
-
-**方案**：HIR（强类型、结构化）→ LIR（虚拟寄存器、平台相关）→ 汇编。分 5 个迁移阶段。
-
-**前置依赖**：TargetInfo（已完成）、TypedSymbolTable 统一类型系统（已完成）。
-
-**复杂度**：非常大。2000-3000 行新代码，横跨 3-5 个 spec。根本性架构变更。
-**预估时间**：40-60h（数周）。
+> This document describes the multi-phase plan to introduce a two-level IR
+> (HIR + LIR) architecture, enabling multi-backend support, platform-independent
+> optimizations, and future multi-language frontends.
+>
+> Updated: 2026-05-18. Baseline: 2692 tests passing.
 
 ---
 
-## 2. 预处理器大文件性能优化
+## Architecture Overview
 
-**问题**：内置预处理器处理 sqlite3.c（25 万行）时超时。迫使真实项目使用 `use_system_cpp=True`。
+```
+┌─────────────────────────────────────────────────────────┐
+│  Frontend A (C89)    Frontend B (C99)    Frontend C (…)  │  language-specific
+└────────────────────────────┬────────────────────────────┘
+                             │ AST → HIR lowering
+┌────────────────────────────▼────────────────────────────┐
+│  Optimizer  (language-independent, platform-independent) │
+│                                                         │
+│  HIR: Module / Function / BasicBlock / Instruction      │
+│  CFG, dominator tree, liveness analysis                 │
+│  Optimization passes: const-fold, DCE, copy-prop, …    │
+└────────────────────────────┬────────────────────────────┘
+                             │ instruction selection + ABI lowering
+┌────────────────────────────▼────────────────────────────┐
+│  Backend  (language-independent, platform-specific)      │
+│                                                         │
+│  LIR: target instructions, virtual registers            │
+│  Register allocation, instruction scheduling            │
+│  Assembly emission (nearly 1:1 from LIR)                │
+│                                                         │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐              │
+│  │ x86_64/  │  │ aarch64/ │  │ riscv/   │  (future)    │
+│  └──────────┘  └──────────┘  └──────────┘              │
+└─────────────────────────────────────────────────────────┘
+```
 
-**方案**：
-- 算法审计：定位宏展开和 include 处理中的 O(n²) 模式
-- PyPy 兼容：确保无 CPython 特有模式阻碍 PyPy JIT
-- 可选：mypyc 编译热路径
+### Layer Responsibilities
 
-**前置依赖**：无。
+| Layer | Language-specific? | Platform-specific? | Responsibility |
+|-------|-------------------|--------------------|----------------|
+| Frontend | Yes | No | Parse source → AST → lower to HIR |
+| Optimizer (HIR) | No | No | Platform-independent analysis & optimization |
+| Backend (LIR) | No | Yes | Instruction selection, regalloc, emit assembly |
 
-**复杂度**：中等。算法审计是核心工作。
-**预估时间**：8-16h（算法审计），+4h（PyPy），+16h（mypyc）。
+### Directory Layout
+
+```
+pycc/
+├── frontend/
+│   └── c89/                # current C89 frontend
+│       ├── lexer.py
+│       ├── parser.py
+│       ├── semantics.py
+│       └── hir_lowering.py # AST → HIR translation
+│
+├── optimizer/              # mid-end: HIR + optimization passes
+│   ├── hir.py             # HIRModule, HIRFunction, BasicBlock, HIRInst
+│   ├── types.py           # CType hierarchy (existing, moved here)
+│   ├── cfg.py             # CFG construction, dominator tree, liveness
+│   └── passes/            # optimization pass framework + passes
+│       ├── manager.py     # PassManager (extensible, plugin-friendly)
+│       ├── const_fold.py  # constant folding
+│       ├── dce.py         # dead code elimination
+│       └── copy_prop.py   # copy propagation
+│
+├── backend/
+│   ├── common/            # shared backend infrastructure
+│   │   ├── regalloc.py    # generic register allocation algorithms
+│   │   └── frame.py       # stack frame layout utilities
+│   ├── x86_64/            # x86-64 backend (LIR + lowering + emit)
+│   │   ├── lir.py         # x86-64 LIR instruction definitions
+│   │   ├── lowering.py    # HIR → x86-64 LIR (instruction selection + ABI)
+│   │   ├── regalloc.py    # x86-64 register allocation
+│   │   ├── emit.py        # LIR → GAS assembly text
+│   │   └── abi.py         # SysV AMD64 calling convention
+│   └── aarch64/           # ARM64 backend (future)
+│
+└── driver.py              # compiler driver (frontend → optimizer → backend)
+```
 
 ---
 
-## 3. x86-64 128 位整数支持
+## Spec Breakdown
 
-**问题**：`__uint128_t` 当前映射为 64 位（有损）。sqlite3 用它做高精度数学运算。
+### Spec A: `hir-data-model` (10–12h)
 
-**方案**：新增 `CType.INT128/UINT128`，寄存器对 codegen（x86-64 mul/div 惯用法）。
+**Goal**: Define the HIR core data structures and provide bidirectional bridging
+with the existing flat IR instruction list.
 
-**前置依赖**：Plan 1（IR 重构）— 寄存器对需要结构化 IR 才能干净表达。
+**Deliverables**:
+- `pycc/optimizer/hir.py`: HIRModule, HIRFunction, BasicBlock, HIRInst, Terminator
+- HIR instruction set design (platform-independent operations):
+  - Arithmetic: `add`, `sub`, `mul`, `div`, `mod`
+  - Bitwise: `and`, `or`, `xor`, `shl`, `shr`
+  - Comparison: `icmp`, `fcmp` (with condition codes: eq, ne, lt, le, gt, ge)
+  - Memory: `load`, `store`, `alloca`, `gep` (get element pointer)
+  - Control: `call`, `ret` (as terminators or instructions)
+  - Conversion: `trunc`, `zext`, `sext`, `fptoui`, `fptosi`, `uitofp`, `sitofp`, `fpext`, `fptrunc`
+  - Aggregate: `extractvalue`, `insertvalue`
+- Terminator types: `Branch(cond, true_bb, false_bb)`, `Jump(target_bb)`, `Ret(value?)`, `Switch(val, cases, default)`, `Unreachable`
+- `lift(instructions: List[IRInstruction]) -> HIRModule`: existing flat IR → HIR
+- `flatten(module: HIRModule) -> List[IRInstruction]`: HIR → existing flat IR
+- Property tests: `flatten(lift(instrs)) == instrs` roundtrip consistency
+- Unit tests for each HIR instruction type
 
-**复杂度**：中等。~250 行类型系统 + ~400 行 codegen。
-**预估时间**：8-12h。
+**Key constraint**: `flatten()` ensures the existing CodeGenerator continues to
+work unchanged during the migration period.
 
 ---
 
-## 评估与推荐
+### Spec B: `hir-generator` (14–16h)
 
-| 计划 | 复杂度 | 预估时间 | 前置依赖 | 价值 |
-|------|--------|---------|---------|------|
-| 1. IR 架构重构 | 非常大 | 40-60h | ✅ 无 | 极高 — 解锁优化 pass、SSA、多后端 |
-| 2. 预处理器性能 | 中 | 8-16h | 无 | 中 — 仅大文件场景需要 |
-| 3. 128 位整数 | 中 | 8-12h | Plan 1 | 低 — 小众场景 |
+**Goal**: Refactor the current `IRGenerator` to emit HIR directly instead of a
+flat instruction list.
 
-**推荐下一步**：取决于目标——
+**Deliverables**:
+- New `HIRGenerator` class (or refactored `IRGenerator`) that outputs `HIRModule`
+- Internal state: `current_function: HIRFunction`, `current_block: BasicBlock`
+- Block splitting logic: new block on `label`, end block on branch/jump/ret
+- Global declarations → `HIRModule.globals`
+- Transition support: `generate()` returns `HIRModule`; callers use `flatten()` for backward compat
+- Move into `pycc/frontend/c89/hir_lowering.py` (frontend responsibility)
+- All 2692+ existing tests must continue passing via the flatten bridge
 
-- **如果追求架构正确性**：选 Plan 1（IR 重构）。这是最大的架构提升，解锁后续所有优化工作（常量折叠、死代码消除、寄存器分配）。但规模巨大，需要拆成多个 spec 分阶段推进。
+---
 
-- **如果追求短期可交付成果**：选 Plan 2（预处理器性能）。独立性强，8-16h 可完成，立即让编译器能处理 sqlite3 等大型真实项目。
+### Spec C: `optimizer-framework` (12–14h)
+
+**Goal**: Build the analysis infrastructure and optimization pass framework on
+top of HIR. Implement a minimal set of demonstration passes. The framework must
+be extensible — new passes can be added as Python modules or, in the future, as
+native C extension modules for performance.
+
+**Deliverables**:
+- `pycc/optimizer/cfg.py`:
+  - CFG construction (predecessors / successors for each BasicBlock)
+  - Reachability analysis (detect unreachable blocks)
+  - Dominator tree computation
+  - Liveness analysis skeleton
+- `pycc/optimizer/passes/manager.py`:
+  - `PassManager` class with plugin-style registration
+  - Pass interface: `class Pass(Protocol): def run(self, func: HIRFunction) -> HIRFunction`
+  - Pass ordering / dependency declaration
+  - Enable/disable individual passes via configuration
+  - Designed to support future native (C/Cython/mypyc) pass modules via the same interface
+- Demonstration passes (minimal, proof-of-concept):
+  - `ConstantFolding`: evaluate constant arithmetic at compile time
+  - `DeadCodeElimination`: remove unreachable blocks and unused assignments
+- Property tests for CFG correctness
+- Unit tests for each pass
+
+**Extensibility requirements**:
+- Adding a new pass = adding a new module that implements the `Pass` protocol
+- PassManager discovers passes via explicit registration (not import magic)
+- Pass interface is simple enough to implement in C via ctypes/cffi in the future
+
+---
+
+### Spec D: `x86-64-lir` (10–12h)
+
+**Goal**: Define the x86-64 backend's LIR data structures and instruction set.
+
+**Deliverables**:
+- `pycc/backend/x86_64/lir.py`:
+  - `LIRFunction`, `LIRBlock`, `LIRInst`, `MachineOperand`
+  - x86-64 instruction enum (`X86Op`): MOV, ADD, SUB, IMUL, IDIV, CMP, TEST,
+    JMP, Jcc, CALL, RET, PUSH, POP, LEA, MOVSS, MOVSD, ADDSS, ADDSD, etc.
+  - Operand kinds: `VReg` (virtual register), `PReg` (physical register),
+    `Imm` (immediate), `Mem` (memory reference), `Label`
+- `pycc/backend/x86_64/abi.py`:
+  - SysV AMD64 calling convention definition
+  - Parameter registers (rdi, rsi, rdx, rcx, r8, r9 / xmm0–xmm7)
+  - Return registers (rax, rdx / xmm0)
+  - Caller-saved vs callee-saved register sets
+- `pycc/backend/common/frame.py`:
+  - Stack frame layout utilities (local slots, spill area, alignment)
+- Unit tests for instruction encoding and ABI parameter classification
+
+---
+
+### Spec E: `hir-to-lir-lowering` (16–20h)
+
+**Goal**: Implement the HIR → x86-64 LIR translation (instruction selection +
+ABI lowering).
+
+**Deliverables**:
+- `pycc/backend/x86_64/lowering.py`:
+  - Instruction selection: map each HIR op to one or more x86-64 LIR instructions
+  - ABI lowering for function calls: place arguments in registers/stack per SysV AMD64
+  - ABI lowering for function entry: move parameters from ABI registers to virtual registers
+  - Type lowering: struct-by-value → register pairs or stack copy
+  - Address computation: array/member access → LEA + offset
+  - Float/integer register class separation
+  - Comparison + branch pattern: `icmp` + `Branch` → `CMP` + `Jcc`
+- Integration test: compile simple C programs through full pipeline (HIR → LIR → flatten → existing codegen as reference)
+- All existing tests must pass (via flatten bridge during transition)
+
+---
+
+### Spec F: `x86-64-regalloc-emit` (14–16h)
+
+**Goal**: Register allocation and assembly text emission for the x86-64 backend.
+
+**Deliverables**:
+- `pycc/backend/x86_64/regalloc.py`:
+  - Linear scan register allocation (virtual registers → physical registers)
+  - Spill handling: insert load/store for spilled virtual registers
+  - Callee-saved register save/restore in prologue/epilogue
+- `pycc/backend/x86_64/emit.py`:
+  - LIR → GAS assembly text (nearly 1:1 translation)
+  - Prologue/epilogue emission (stack frame setup/teardown)
+  - String/float constant pool emission
+  - Global variable emission
+- `pycc/backend/common/regalloc.py`:
+  - Generic liveness interval computation
+  - Shared spill-slot allocation logic
+- End-to-end test: compile programs through the full new pipeline without the flatten bridge
+- Performance comparison: new pipeline vs old pipeline (correctness, not speed)
+
+---
+
+## Execution Order
+
+```
+Phase 1:  Spec A (HIR structure) + Spec D (LIR structure)    [parallel, pure data definitions]
+Phase 2:  Spec B (HIR generator)                             [depends on A]
+Phase 3:  Spec E (HIR → LIR lowering)                       [depends on A + D]
+Phase 4:  Spec F (regalloc + emit)                           [depends on D + E]
+Phase 5:  Spec C (optimizer passes)                          [depends on A, can run anytime]
+```
+
+After Phase 4, the compiler can run the full new pipeline:
+`AST → HIR → x86-64 LIR → register allocation → assembly`.
+
+Phase 5 (optimization) is additive — it improves output quality but is not
+required for correctness.
+
+---
+
+## Migration Strategy
+
+Throughout the migration, the existing flat-IR + CodeGenerator pipeline remains
+functional via the `flatten()` bridge. This ensures:
+
+1. All 2692+ existing tests continue passing at every step
+2. New pipeline can be validated against old pipeline output
+3. Old pipeline can be removed only after new pipeline passes all tests independently
+
+The `flatten()` bridge is the safety net that makes this refactoring incremental
+rather than big-bang.
+
+---
+
+## Total Estimated Effort
+
+| Spec | Hours | Risk |
+|------|-------|------|
+| A: hir-data-model | 10–12 | Low |
+| B: hir-generator | 14–16 | Medium |
+| C: optimizer-framework | 12–14 | Low |
+| D: x86-64-lir | 10–12 | Low |
+| E: hir-to-lir-lowering | 16–20 | High |
+| F: x86-64-regalloc-emit | 14–16 | High |
+| **Total** | **76–90** | |
