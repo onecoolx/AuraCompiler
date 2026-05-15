@@ -604,10 +604,13 @@ class CodeGenerator:
                 while j < len(instructions) and instructions[j].op != "func_end":
                     d = instructions[j]
                     if d.op == "decl" and d.result and d.operand1 and self._sym_table:
-                        _decl_ty = self._resolve_type(str(d.operand1).strip())
-                        ct = _str_to_ctype(_decl_ty)
-                        if ct is not None:
-                            self._register_type(d.result, ct)
+                        # Only register if not already known (IR gen may have
+                        # registered a more precise CType via activate_function).
+                        if self._sym_table.lookup(d.result) is None:
+                            _decl_ty = self._resolve_type(str(d.operand1).strip())
+                            ct = _str_to_ctype(_decl_ty)
+                            if ct is not None:
+                                self._register_type(d.result, ct)
                     if d.op == "addr_index" and d.result and self._sym_table:
                         if self._sym_table.lookup(d.result) is None:
                             self._register_type(d.result, PointerType(kind=TypeKind.POINTER, pointee=CType(kind=TypeKind.VOID)))
@@ -685,9 +688,13 @@ class CodeGenerator:
                 # (e.g. local `char s[] = "..."` lowers by overriding decl).
                 if ins.operand1:
                     if self._sym_table:
-                        ct = _str_to_ctype(str(ins.operand1))
-                        if ct is not None:
-                            self._register_type(ins.result, ct)
+                        # Only register if not already known with a more precise
+                        # type from the IR generator (via activate_function).
+                        if self._sym_table.lookup(ins.result) is None:
+                            _decl_ty = self._resolve_type(str(ins.operand1).strip())
+                            ct = _str_to_ctype(_decl_ty)
+                            if ct is not None:
+                                self._register_type(ins.result, ct)
                     # If an array decl is introduced late, remember its size so
                     # later stack addressing and array decay behaves consistently.
                     op1 = str(ins.operand1)
@@ -1066,9 +1073,13 @@ class CodeGenerator:
                         self._emit(f"  movq {arg_regs[gp_idx]}, -{off}(%rbp)")
                 gp_idx += 1
             if d.operand1 and self._sym_table:
-                ct = _str_to_ctype(str(d.operand1))
-                if ct is not None:
-                    self._register_type(d.result, ct)
+                # Only register if not already known with a more precise type
+                # from the IR generator (via activate_function).
+                if self._sym_table.lookup(d.result) is None:
+                    _param_ty = self._resolve_type(str(d.operand1).strip())
+                    ct = _str_to_ctype(_param_ty)
+                    if ct is not None:
+                        self._register_type(d.result, ct)
 
         # Varargs support (SysV AMD64): reserve a fixed reg_save_area and tag
         # area in the callee frame so `__builtin_va_start` can produce a glibc
@@ -1871,8 +1882,9 @@ class CodeGenerator:
             member = ins.operand2 or ""
             # If IR carries struct type metadata from a cast, seed type info
             # so _resolve_member_offset can find the layout.
+            # Only register if not already known (IR gen types are more precise).
             if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
-                if self._sym_table and base:
+                if self._sym_table and base and self._get_base_struct_ctype(base) is None:
                     _bct = _str_to_ctype(ins.meta['struct_type'])
                     if _bct is not None:
                         self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=_bct))
@@ -3222,8 +3234,10 @@ class CodeGenerator:
             base = ins.operand1 or ""
             member = ins.operand2 or ""
             val = ins.result
+            # Only register struct type from meta if not already known
+            # (IR gen types via activate_function are more precise).
             if isinstance(ins.meta, dict) and "struct_type" in ins.meta:
-                if self._sym_table and base:
+                if self._sym_table and base and self._get_base_struct_ctype(base) is None:
                     _bct = _str_to_ctype(ins.meta['struct_type'])
                     if _bct is not None:
                         self._register_type(base, PointerType(kind=TypeKind.POINTER, pointee=_bct))
@@ -3486,7 +3500,18 @@ class CodeGenerator:
         b = ty.strip()
         # Already a known type — no resolution needed.
         if (b.startswith("struct ") or b.startswith("union ") or b.startswith("enum ")
-                or "*" in b or b.startswith("array(")):
+                or b.startswith("array(")):
+            return b
+        # Handle pointer types: strip trailing *, resolve base, re-add *
+        if b.endswith("*"):
+            ptr_level = 0
+            core = b
+            while core.endswith("*"):
+                ptr_level += 1
+                core = core[:-1].strip()
+            if core:
+                resolved_core = self._resolve_type(core)
+                return resolved_core + "*" * ptr_level
             return b
         _PRIMITIVES = {
             "void", "char", "unsigned char", "signed char",
