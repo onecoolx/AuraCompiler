@@ -1,87 +1,62 @@
-# AuraCompiler — Next Major Refactoring Plan
+# AuraCompiler — 下一阶段重构计划
 
-> This document tracks planned architectural improvements for the next development phase.
-> Updated: 2026-05-18. Baseline: 2692 pycc tests passing, expression type annotation and _var_types removal complete.
-
----
-
-## ~~1. Complete expression type annotation in semantic analysis~~ ✅ DONE
-
-Completed 2026-05-14. Spec: `.kiro/specs/expr-type-annotation/`. All 17 correctness properties verified via Hypothesis PBT. IR generator now reads `.resolved_type` for Cast, BinaryOp pointer arithmetic, and FunctionCall return type.
+> 跟踪待实施的架构改进。
+> 更新时间：2026-05-18。基线：2692 个 pytest 测试通过。
 
 ---
 
-## ~~2. Remove _var_types dictionary~~ ✅ DONE
+## 1. IR 架构重构：结构化、强类型、多层 IR
 
-Completed 2026-05-18. Spec: `.kiro/specs/remove-var-types/`. 6 correctness properties verified via Hypothesis PBT.
+**问题**：当前 IR 是扁平的 `IRInstruction` 列表，没有 Function/BasicBlock/CFG 结构。目标平台细节（寄存器名、ABI 约定）泄漏到 IR 生成阶段。无 SSA 形式。
 
-**Result**:
-- `_var_types` fully removed from `CodeGenerator` — all type queries use `TypedSymbolTable` (CType-based)
-- `_var_types` writes remain in `IRGenerator` for two methods that still need string-based type info:
-  - `_operand_type_string`: function pointer types (e.g. `"int (*)(int)"`) cannot be accurately represented by `ctype_to_ir_type` yet
-  - `_is_function_pointer_operand`: uses `"(*)"` pattern matching on `_var_types` strings as fallback
-- All IR generator type READS use `_sym_table` exclusively; `_var_types` is write-only (for codegen compatibility during the transition)
-- Full removal of IR generator `_var_types` is blocked on adding `FunctionTypeCType` support to `ctype_to_ir_type`
+**方案**：HIR（强类型、结构化）→ LIR（虚拟寄存器、平台相关）→ 汇编。分 5 个迁移阶段。
 
-**Migration stats**: 104 codegen references eliminated, IR generator reads fully migrated to CType-based queries. 2692 tests passing, cJSON and Lua integration tests verified.
+**前置依赖**：TargetInfo（已完成）、TypedSymbolTable 统一类型系统（已完成）。
+
+**复杂度**：非常大。2000-3000 行新代码，横跨 3-5 个 spec。根本性架构变更。
+**预估时间**：40-60h（数周）。
 
 ---
 
-## 3. IR Architecture Refactoring: Structured, Typed, Multi-Layer IR
+## 2. 预处理器大文件性能优化
 
-**Problem**: Current IR is a flat list of `IRInstruction` with no Function/BasicBlock/CFG structure. Target-dependent details (register names, ABI conventions) leak into IR generation. No SSA form.
+**问题**：内置预处理器处理 sqlite3.c（25 万行）时超时。迫使真实项目使用 `use_system_cpp=True`。
 
-**Proposed**: HIR (typed, structured) → LIR (virtual registers, platform-specific) → Assembly. 5 migration phases.
+**方案**：
+- 算法审计：定位宏展开和 include 处理中的 O(n²) 模式
+- PyPy 兼容：确保无 CPython 特有模式阻碍 PyPy JIT
+- 可选：mypyc 编译热路径
 
-**Dependencies**: TargetInfo (done). Plan 2 ✅ (clean type system established).
+**前置依赖**：无。
 
-**Complexity**: Very large. 2000-3000 lines across 3-5 specs. Fundamental architecture change.
-**Estimated time**: 40-60h (multiple weeks).
-
----
-
-## 4. Preprocessor performance for large source files
-
-**Problem**: Built-in preprocessor times out on sqlite3.c (250K lines). Forces `use_system_cpp=True` for real projects.
-
-**Proposed**:
-- Algorithm audit: identify O(n²) patterns in macro expansion and include handling
-- PyPy compatibility: ensure no CPython-specific patterns block PyPy JIT
-- Optional: mypyc compilation of hot paths
-
-**Dependencies**: None.
-
-**Complexity**: Medium. Algorithm audit is the core work; PyPy/mypyc are incremental.
-**Estimated time**: 8-16h for algorithm audit, +4h for PyPy, +16h for mypyc.
+**复杂度**：中等。算法审计是核心工作。
+**预估时间**：8-16h（算法审计），+4h（PyPy），+16h（mypyc）。
 
 ---
 
-## 5. Support 128-bit integers on x86-64
+## 3. x86-64 128 位整数支持
 
-**Problem**: `__uint128_t` mapped to 64-bit (lossy). sqlite3 uses it for high-precision math.
+**问题**：`__uint128_t` 当前映射为 64 位（有损）。sqlite3 用它做高精度数学运算。
 
-**Proposed**: Add `CType.INT128/UINT128`, register-pair codegen using x86-64 mul/div idioms.
+**方案**：新增 `CType.INT128/UINT128`，寄存器对 codegen（x86-64 mul/div 惯用法）。
 
-**Dependencies**: Plan 3 (IR refactoring) — register pairs need structured IR to express cleanly.
+**前置依赖**：Plan 1（IR 重构）— 寄存器对需要结构化 IR 才能干净表达。
 
-**Complexity**: Medium. ~250 lines of type system + ~400 lines of codegen.
-**Estimated time**: 8-12h.
+**复杂度**：中等。~250 行类型系统 + ~400 行 codegen。
+**预估时间**：8-12h。
 
 ---
 
-## Prioritization & Next Task Recommendation
+## 评估与推荐
 
-| Plan | Complexity | Time Est. | Dependencies | Value |
-|------|-----------|-----------|--------------|-------|
-| ~~2. Remove _var_types~~ | ~~Large~~ | ~~16-24h~~ | ✅ Done | ✅ Done |
-| 4. Preprocessor perf | Medium | 8-16h | None | Medium — only matters for large files |
-| 3. IR restructuring | Very Large | 40-60h | Plan 2 ✅ | Very High — Plan 2 done, path is clear |
-| 5. 128-bit integers | Medium | 8-12h | Plan 3 | Low priority — niche use case |
+| 计划 | 复杂度 | 预估时间 | 前置依赖 | 价值 |
+|------|--------|---------|---------|------|
+| 1. IR 架构重构 | 非常大 | 40-60h | ✅ 无 | 极高 — 解锁优化 pass、SSA、多后端 |
+| 2. 预处理器性能 | 中 | 8-16h | 无 | 中 — 仅大文件场景需要 |
+| 3. 128 位整数 | 中 | 8-12h | Plan 1 | 低 — 小众场景 |
 
-**Recommended next**: **Plan 3 (IR Architecture Refactoring)**
+**推荐下一步**：取决于目标——
 
-Rationale:
-- Plan 1 ✅ and Plan 2 ✅ are both complete — all prerequisites satisfied
-- Plan 3 is the biggest architectural win: structured IR with Function/BasicBlock/CFG
-- TypedSymbolTable is now the single source of truth for type info in codegen, making IR restructuring cleaner
-- Alternatively, Plan 4 (preprocessor perf) is a smaller independent task if a shorter project is preferred
+- **如果追求架构正确性**：选 Plan 1（IR 重构）。这是最大的架构提升，解锁后续所有优化工作（常量折叠、死代码消除、寄存器分配）。但规模巨大，需要拆成多个 spec 分阶段推进。
+
+- **如果追求短期可交付成果**：选 Plan 2（预处理器性能）。独立性强，8-16h 可完成，立即让编译器能处理 sqlite3 等大型真实项目。
