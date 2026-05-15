@@ -3767,7 +3767,7 @@ class CodeGenerator:
                 if g_ty is not None and getattr(g_ty, 'is_array', False):
                     is_global_array = True
             is_aggregate = (
-                (isinstance(ty, str) and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")))
+                (isinstance(ty, str) and not ty.strip().endswith("*") and (ty.strip().startswith("struct ") or ty.strip().startswith("union ") or ty.strip().startswith("array(")))
                 or is_global_array
             )
             if is_aggregate:
