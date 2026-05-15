@@ -1,4 +1,4 @@
-"""Tests for task 2.1: parameter and local variable declaration CType coverage.
+"""Tests for parameter and local variable declaration CType coverage.
 
 Verifies that _insert_decl_ctype covers ALL declaration paths:
 - Array declarations (explicit size, inferred size)

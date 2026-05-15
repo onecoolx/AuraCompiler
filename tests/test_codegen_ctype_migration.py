@@ -1,4 +1,4 @@
-"""Tests for codegen CType-based type judgment migration (task 5.2).
+"""Tests for codegen CType-based type judgment.
 
 Verifies that CodeGenerator's type helper methods correctly use CType
 from the symbol table, with string-based fallback when CType is unavailable.
@@ -300,7 +300,7 @@ class TestTypeSizeBytesCtype:
 
 
 # ---------------------------------------------------------------------------
-# Task 5.5: Cast and pointer arithmetic CType migration
+# Cast and pointer arithmetic CType handling
 # ---------------------------------------------------------------------------
 
 class TestCastCTypeMigration:
@@ -462,7 +462,7 @@ class TestPointerArithmeticCTypeMigration:
 
 
 # ---------------------------------------------------------------------------
-# Task 1.2: _operand_sizeof, _is_float_type_op, _is_array_type_op
+# _operand_sizeof, _is_float_type_op, _is_array_type_op
 # ---------------------------------------------------------------------------
 
 class TestOperandSizeof:

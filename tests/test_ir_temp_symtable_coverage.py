@@ -1,8 +1,7 @@
 """Unit tests verifying that temporary variable type registrations
 write to _sym_table (TypedSymbolTable) in addition to _var_types.
 
-This validates task 2.2 of the remove-var-types spec: all temp variable
-type registrations must have _sym_table coverage for the migration.
+All temp variable type registrations must have _sym_table coverage.
 """
 import pytest
 from pycc.types import (

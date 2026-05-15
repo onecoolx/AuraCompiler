@@ -1,11 +1,11 @@
 # Feature: remove-var-types, Property 6: 回退一致性
-# Property-based tests for transition period fallback consistency
+# Property-based tests for fallback consistency between _sym_table and _var_types
 #
 # **Validates: Requirements 5.1, 5.3**
 #
-# During the transition period, symbols may exist in BOTH _var_types (string)
-# and _sym_table (CType). This test verifies that helper functions return
-# consistent results regardless of which source they consult.
+# Symbols may exist in BOTH _var_types (string) and _sym_table (CType).
+# This test verifies that helper functions return consistent results
+# regardless of which source they consult.
 # The helpers that still have _var_types fallback are: _is_pointer_operand,
 # _is_array_operand, _is_struct_operand, _is_float_operand.
 # _is_unsigned_operand has already been migrated (no _var_types fallback).
@@ -143,7 +143,7 @@ def _str_is_array(ty: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# Property 6: 回退一致性（过渡期）
+# Property 6: 回退一致性
 #
 # For any symbol that exists in BOTH _var_types and _sym_table, the helper
 # functions (using _sym_table as primary) should return results consistent
@@ -156,15 +156,12 @@ def _str_is_array(ty: str) -> bool:
 @given(name=symbol_name_st(), ctype=roundtrippable_ctype_st())
 @settings(max_examples=100)
 def test_property6_fallback_consistency(name, ctype):
-    """Property 6: 回退一致性（过渡期）
+    """Property 6: 回退一致性
 
     For any symbol that exists in BOTH _var_types (as type string) and
     _sym_table (as CType), the helper functions return results consistent
     with what the _var_types string-parsing fallback would independently
     compute from the type string.
-
-    This ensures that during the dual-write transition period, there is no
-    divergence between the two type information sources.
 
     **Validates: Requirements 5.1, 5.3**
     """

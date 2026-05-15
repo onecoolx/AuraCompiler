@@ -587,7 +587,6 @@ _KNOWN_BASE_NAMES = frozenset({
 class TypedSymbolTable:
     """Centralized symbol-to-CType mapping with scope support.
 
-    Replaces IRGenerator._var_types and CodeGenerator._var_types.
     All typedefs are resolved to the underlying concrete type at insertion time.
     """
 

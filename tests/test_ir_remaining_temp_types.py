@@ -1,4 +1,4 @@
-"""Unit tests for task 3.9: remaining temp variable CType annotations.
+"""Unit tests for remaining temp variable CType annotations.
 
 Verifies that the IR generator correctly annotates CTypes for:
 - Function call return values
@@ -8,8 +8,8 @@ Verifies that the IR generator correctly annotates CTypes for:
 - Logical operators (&&, ||)
 
 Since the symbol table scope is popped after function generation completes,
-integration tests verify via _var_types (dual-populated) and IR instruction
-inspection. Helper method tests verify CType logic directly.
+integration tests verify via _var_types and IR instruction inspection.
+Helper method tests verify CType logic directly.
 """
 
 import pytest
@@ -100,7 +100,7 @@ class TestStringLiteralCType:
         str_insts = [i for i in ir if i.op == "str_const"]
         assert len(str_insts) >= 1
         result_temp = str_insts[0].result
-        # Verify dual-population: _var_types should have char*
+        # Verify _var_types has char*
         assert result_temp in gen._var_types
         assert gen._var_types[result_temp] == "char*"
 

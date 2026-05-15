@@ -1874,8 +1874,8 @@ class IRGenerator:
 
         Uses _sym_table lookup → ctype_to_ir_type. For globals not in
         _sym_table, falls back to sema_ctx.global_types.
-        Preserves _var_types representation for function pointer types
-        that ctype_to_ir_type cannot accurately represent.
+        Prefers _var_types for function pointer types that
+        ctype_to_ir_type cannot accurately represent.
         """
         if not isinstance(op, str):
             return ""
@@ -1884,9 +1884,9 @@ class IRGenerator:
             ct = self._sym_table.lookup(op)
             if ct is not None:
                 ir_str = ctype_to_ir_type(ct)
-                # If _var_types has a richer function pointer representation
-                # (e.g. "int (*)(int)" vs CType's "int *"), prefer it.
-                # ctype_to_ir_type cannot represent FunctionTypeCType yet.
+                # Prefer _var_types for function pointer types
+                # (e.g. "int (*)(int)") since ctype_to_ir_type cannot
+                # represent FunctionTypeCType yet.
                 vt = getattr(self, "_var_types", {}).get(op, "")
                 if isinstance(vt, str) and "(*)" in vt:
                     return vt
@@ -1960,7 +1960,7 @@ class IRGenerator:
         return t
 
     def _new_temp_typed(self, ctype: CType) -> str:
-        """Create a new temp and register its CType in both _sym_table and _var_types."""
+        """Create a new temp and register its CType in _sym_table and _var_types."""
         name = self._new_temp()
         if self._sym_table:
             self._sym_table.insert(name, ctype)
@@ -3209,11 +3209,9 @@ class IRGenerator:
                 if ct.pointee.kind == TypeKind.FUNCTION:
                     return True
 
-        # 2. Fallback: check _var_types for function pointer patterns.
+        # 2. Fallback: _var_types for function pointer patterns.
         # The CType system cannot yet represent function pointer typedefs
-        # (e.g. typedef void*(*Alloc)(...)) — _base_str_to_ctype produces
-        # PointerType(pointee=IntegerType) instead of
-        # PointerType(pointee=FunctionTypeCType). Keep this until CType
+        # (e.g. typedef void*(*Alloc)(...)), so keep this path until CType
         # handles function pointer typedefs natively.
         op_ty = getattr(self, "_var_types", {}).get(ir_sym)
         if not op_ty and ast_expr is not None and isinstance(ast_expr, Identifier):
@@ -3292,8 +3290,6 @@ class IRGenerator:
         if self._fn_ret_type:
             self.instructions.append(IRInstruction(op="func_ret", operand1=self._fn_ret_type))
         self._local_ast_types = {}
-        # String-typed local variable types for codegen compatibility.
-        # Removal tracked in docs/NEXT_PLAN.md (Plan 2).
         self._var_types: dict[str, str] = {}
         # Track volatile-qualified variables (IR symbols like @x).
         self._var_volatile: set[str] = set()
@@ -3317,9 +3313,6 @@ class IRGenerator:
             return base
 
         # params are treated as locals; codegen will map them from ABI regs
-        # All parameters are dual-registered: _var_types (string) and
-        # _sym_table (CType via ast_type_to_ctype_resolved). This ensures
-        # complete CType coverage for function parameters.
         self._scope_stack = []
         self._push_scope()  # function-level scope
         if self._sym_table:
@@ -3332,7 +3325,7 @@ class IRGenerator:
             # Store AST Type for Type.is_array checks in Identifier handling.
             if p.type is not None:
                 self._local_ast_types[p.name] = p.type
-            # Insert parameter CType into symbol table (dual-populate).
+            # Insert parameter CType into symbol table.
             if self._sym_table:
                 ctype = ast_type_to_ctype_resolved(p.type, self._sema_ctx)
                 self._sym_table.insert(f"@{p.name}", ctype)
@@ -3448,7 +3441,7 @@ class IRGenerator:
                             self._var_types[f"@{gname}"] = f"array({item.type.base},${arr_sz})"
                         else:
                             self._var_types[f"@{gname}"] = str(item.type.base)
-                        # Insert local static CType into symbol table (dual-populate).
+                        # Insert local static CType into symbol table.
                         self._insert_decl_ctype(f"@{gname}", item)
                         # Track volatile for local statics.
                         if getattr(item.type, "is_volatile", False):
@@ -3459,10 +3452,6 @@ class IRGenerator:
                         continue
 
                     # ── Declaration type registration ──────────────────
-                    # All paths below (array, struct/union, scalar/pointer)
-                    # dual-write to both _var_types and _sym_table via
-                    # _insert_decl_ctype(). This ensures _sym_table has
-                    # complete CType coverage for all local declarations.
 
                     # If this is an array with known size, encode element count in operand1.
                     # Also support C89: `char s[] = "..."` (size inferred from string literal).
@@ -3559,7 +3548,7 @@ class IRGenerator:
                         if item.type is not None:
                             self._local_ast_types[item.name] = item.type
                         self._var_types[self._resolve_name(item.name)] = str(op1)
-                        # Insert array CType into symbol table (dual-populate).
+                        # Insert array CType into symbol table.
                         self._insert_decl_ctype(self._resolve_name(item.name), item)
                     elif not getattr(item.type, "is_pointer", False) and self._is_struct_or_union_type(item.type.base):
                         decl_op1 = str(item.type.base)
@@ -3568,7 +3557,7 @@ class IRGenerator:
                         # Store AST Type for Type.is_array checks in Identifier handling.
                         if item.type is not None:
                             self._local_ast_types[item.name] = item.type
-                        # Insert struct/union CType into symbol table (dual-populate).
+                        # Insert struct/union CType into symbol table.
                         self._insert_decl_ctype(self._resolve_name(item.name), item)
                     else:
                         # Infer `T[]` element count from brace initializer.
@@ -3599,7 +3588,7 @@ class IRGenerator:
                             # Store AST Type for Type.is_array checks in Identifier handling.
                             if item.type is not None:
                                 self._local_ast_types[item.name] = item.type
-                            # Insert scalar CType into symbol table (dual-populate).
+                            # Insert scalar CType into symbol table.
                             self._insert_decl_ctype(self._resolve_name(item.name), item)
                     # If this is a pointer variable, record its declared pointee
                     # type so pointer arithmetic can scale correctly.
@@ -3645,7 +3634,7 @@ class IRGenerator:
                                 elem_ctype = ast_type_to_ctype_resolved(item.type, self._sema_ctx)
                             # Determine the effective array size.  For inferred
                             # sizes (e.g. `char s[] = "hi"`) item.array_size
-                            # may still be None — extract from _var_types.
+                            # may still be None — extract from the type string.
                             eff_sz = int(arr_sz) if arr_sz is not None else None
                             if eff_sz is None:
                                 # Try to extract from the recorded var type
@@ -4246,8 +4235,7 @@ class IRGenerator:
                 if dst_norm.startswith("unsigned unsigned "):
                     dst_norm = dst_norm.replace("unsigned unsigned ", "unsigned ", 1)
 
-                # Keep dst_str in sync with the normalized spelling for later
-                # _var_types recording.
+                # Keep dst_str in sync with the normalized spelling.
                 dst_str = dst_norm
 
                 # Determine the CType for the cast destination (used for

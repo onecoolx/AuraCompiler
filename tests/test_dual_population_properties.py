@@ -1,13 +1,12 @@
-"""Property-based tests for dual population consistency during migration.
+"""Property-based tests for population consistency between _sym_table and _var_types.
 
-**Feature: ir-type-annotations, Property 9: Dual population consistency during migration**
+**Feature: ir-type-annotations, Property 9: Population consistency**
 
 **Validates: Requirements 8.3**
 
-For any valid C89 program, during migration, every entry in the
-TypedSymbolTable should have a corresponding string type entry in the
-_var_types dictionary, and the two representations should be semantically
-equivalent.
+For any valid C89 program, every entry in the TypedSymbolTable should have
+a corresponding string type entry in the _var_types dictionary, and the two
+representations should be semantically equivalent.
 
 Testing approach: use Hypothesis to generate random C89 programs, compile
 through the IR generator with a RecordingSymbolTable that captures all
@@ -373,9 +372,9 @@ class TestDualPopulationConsistency:
 
             # Only check @-prefixed symbols (declared variables and params).
             # Temp variables (%tN) may be created via _new_temp_typed which
-            # dual-populates, but also via plain _new_temp() in unmigrated
-            # code paths. We focus on declared symbols which are always
-            # dual-populated via _insert_decl_ctype + direct _var_types set.
+            # populates both, but also via plain _new_temp() in code paths
+            # that only set _var_types. We focus on declared symbols which
+            # are always populated via _insert_decl_ctype + _var_types set.
             declared_syms = {s for s in st_scope if s.startswith("@")}
             missing = {s for s in declared_syms if s not in vt}
 
@@ -418,7 +417,7 @@ class TestDualPopulationConsistency:
             st_scope = st_snaps[i]
 
             # Check reverse: temps in _var_types should be in symbol table.
-            # This verifies _new_temp_typed dual-populates correctly.
+            # This verifies _new_temp_typed populates both correctly.
             vt_temps = {s for s in vt if s.startswith("%t")}
             st_temps = {s for s in st_scope if s.startswith("%t")}
 
@@ -447,7 +446,7 @@ class TestDualPopulationConsistency:
         """For any valid C89 program, the broad type category (pointer,
         integer, float, aggregate, array) should be consistent between
         the TypedSymbolTable CType and the _var_types string for every
-        dual-populated symbol.
+        symbol present in both.
 
         This uses a relaxed comparison because the _var_types string
         representation may differ from ctype_to_ir_type() output due to

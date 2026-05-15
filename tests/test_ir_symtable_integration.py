@@ -1,9 +1,9 @@
-"""Tests for IRGenerator TypedSymbolTable integration (task 3.1).
+"""Tests for IRGenerator TypedSymbolTable integration.
 
 Verifies:
 - _sym_table is initialized in generate() when _sema_ctx is present
 - _sym_table is None when _sema_ctx is absent
-- _new_temp_typed dual-populates _sym_table and _var_types
+- _new_temp_typed populates _sym_table and _var_types
 - push_scope/pop_scope are called around function bodies
 """
 
@@ -84,7 +84,7 @@ class TestSymTableInitialization:
 
 
 class TestNewTempTyped:
-    """Verify _new_temp_typed dual-populates _sym_table and _var_types."""
+    """Verify _new_temp_typed populates _sym_table and _var_types."""
 
     def test_dual_population_int(self):
         gen = IRGenerator()
@@ -166,7 +166,7 @@ class TestNewTempTyped:
         assert n2 == f"%t{base_counter + 1}"
 
 
-# ---- Task 3.2: Parameter and local variable CType insertion ----
+# ---- Parameter and local variable CType insertion ----
 
 from pycc.types import ArrayType as CArrayType
 
