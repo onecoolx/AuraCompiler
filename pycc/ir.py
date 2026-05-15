@@ -1573,46 +1573,16 @@ class IRGenerator:
         return s
 
     def _const_expr_to_int(self, expr: Any) -> Optional[int]:
-        """Best-effort const int evaluator for global initializers."""
+        """Evaluate a constant integer expression. Returns None if not evaluable.
+
+        Delegates to the unified _eval_const_int_expr, converting exceptions to None.
+        """
         if expr is None:
             return None
-        if isinstance(expr, IntLiteral):
-            return int(expr.value)
-        if isinstance(expr, CharLiteral):
-            return ord(expr.value)
-        if isinstance(expr, UnaryOp) and expr.operator in {"+", "-", "~", "!"}:
-            v = self._const_expr_to_int(expr.operand)
-            if v is None:
-                return None
-            if expr.operator == "+": return v
-            if expr.operator == "-": return -v
-            if expr.operator == "~": return ~v
-            return 0 if v != 0 else 1
-        if isinstance(expr, BinaryOp):
-            l = self._const_expr_to_int(expr.left)
-            r = self._const_expr_to_int(expr.right)
-            if l is None or r is None:
-                return None
-            op = expr.operator
-            if op == "+": return l + r
-            if op == "-": return l - r
-            if op == "*": return l * r
-            if op == "/": return int(l / r) if r != 0 else None
-            if op == "%": return l % r if r != 0 else None
-            if op == "|": return l | r
-            if op == "&": return l & r
-            if op == "^": return l ^ r
-            if op == "<<": return l << r
-            if op == ">>": return l >> r
-        if isinstance(expr, Cast):
-            return self._const_expr_to_int(expr.expression)
-        if isinstance(expr, Identifier):
-            v = getattr(expr, '_enum_value', None)
-            if v is not None:
-                return int(v)
-            if expr.name in getattr(self, "_enum_constants", {}):
-                return self._enum_constants[expr.name]
-        return None
+        try:
+            return _eval_const_int_expr(expr, getattr(self, "_enum_constants", {}))
+        except (IRGenError, Exception):
+            return None
 
     def _const_expr_to_float(self, expr: Any) -> Optional[float]:
         """Best-effort const float evaluator for global initializers."""
