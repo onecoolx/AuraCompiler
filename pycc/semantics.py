@@ -2879,15 +2879,26 @@ class SemanticAnalyzer:
                             if layout is not None and getattr(layout, 'bit_fields', None) and op.member in layout.bit_fields:
                                 self._err("invalid application of sizeof to bit-field", expr)
                                 return
-                    # Reject sizeof on incomplete array objects (e.g. `extern int a[]; sizeof(a)`)
-                    # when we can see the declaration. Uses Type.is_array and array_dimensions.
+                    # Reject sizeof on truly incomplete array objects (e.g. `extern int a[];`)
+                    # An array is incomplete only if dimensions are None AND the variable
+                    # has no initializer that would determine the size. Note: array_dimensions
+                    # may contain None when the parser couldn't evaluate a constant expression
+                    # (e.g. sizeof(other_array)+4) — this does NOT mean the array is incomplete.
+                    # We only reject when the declaration is clearly extern without definition.
                     if isinstance(op, Identifier):
                         decl_ty = self._lookup_decl_type(op.name)
                         if decl_ty is not None and getattr(decl_ty, 'is_array', False):
                             dims = getattr(decl_ty, 'array_dimensions', None)
                             if isinstance(dims, list) and any(d is None for d in dims):
-                                self._err("invalid application of sizeof to incomplete array", expr)
-                                return
+                                # Only report error if this is an extern declaration
+                                # (no definition visible in this TU). Variables with
+                                # initializers have their dimensions inferred earlier.
+                                # Variables whose dimension is a complex constant expression
+                                # (e.g. sizeof(x)+4) may have None here but are NOT incomplete.
+                                sc = self._global_kinds.get(op.name)
+                                if sc == "extern_decl":
+                                    self._err("invalid application of sizeof to incomplete array", expr)
+                                    return
 
                     # sizeof((void)0) (cast-to-void) is invalid.
                     if isinstance(op, Cast):
